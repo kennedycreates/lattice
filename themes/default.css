@@ -1,0 +1,546 @@
+/* ============================================================
+   Lattice — Default Dark Cyberpunk Theme
+   ============================================================
+
+   Palette:
+     bg0   #0d0e14   deepest background
+     bg1   #13141c   panel / sidebar / toolbar background
+     bg2   #1a1b26   widget background / hover surface
+     bg3   #22243a   raised widget background
+     bg4   #2e3055   active / focus surface
+     acc   #00e5ff   primary cyan accent
+     acc2  #7b2fff   secondary violet accent
+     warn  #ff4b6e   danger / destructive
+     fg0   #e2e4f0   primary text
+     fg1   #8890b0   secondary / muted text
+     fg2   #4a5070   disabled / decorative text
+     sep   #1e2035   separator / border colour
+   ============================================================ */
+
+/* ── Reset / base ────────────────────────────────────────── */
+* {
+    -gtk-icon-size: 16px;
+    outline: none;
+}
+
+/* ── Root window ─────────────────────────────────────────── */
+.app-window,
+window {
+    background-color: #0d0e14;
+    color: #e2e4f0;
+    font-family: "Inter", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 13px;
+}
+
+/* ── CSD titlebar / headerbar ────────────────────────────── */
+headerbar,
+.titlebar {
+    background-color: #13141c;
+    border-bottom: 1px solid #1e2035;
+    color: #e2e4f0;
+    min-height: 44px;
+    padding: 0 8px;
+}
+
+headerbar .title,
+.titlebar .title {
+    color: #e2e4f0;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+}
+
+headerbar button,
+.titlebar button {
+    background: transparent;
+    border: none;
+    color: #8890b0;
+    border-radius: 6px;
+    padding: 4px 6px;
+    min-width: 24px;
+    min-height: 24px;
+    transition: background 120ms ease, color 120ms ease;
+}
+
+headerbar button:hover,
+.titlebar button:hover {
+    background-color: #1a1b26;
+    color: #e2e4f0;
+}
+
+/* Window close/min/max decoration buttons */
+headerbar windowcontrols button {
+    padding: 2px;
+    margin: 0 2px;
+}
+
+/* ── Top toolbar ─────────────────────────────────────────── */
+.top-toolbar {
+    background-color: #13141c;
+    border-bottom: 1px solid #1e2035;
+    padding: 6px 10px;
+    min-height: 44px;
+    /* Subtle top accent line on the very top edge */
+    box-shadow: inset 0 1px 0 0 #00e5ff18;
+}
+
+.toolbar-nav-btn,
+.toolbar-action-btn {
+    background: #1a1b26;
+    border: 1px solid #22243a;
+    border-radius: 6px;
+    color: #e2e4f0;
+    padding: 4px 10px;
+    min-width: 32px;
+    min-height: 28px;
+    font-size: 13px;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.toolbar-nav-btn:hover,
+.toolbar-action-btn:hover {
+    background: #22243a;
+    border-color: #00e5ff40;
+    color: #00e5ff;
+}
+
+.toolbar-nav-btn:active,
+.toolbar-action-btn:active {
+    background: #2e3055;
+    border-color: #00e5ff;
+    color: #00e5ff;
+}
+
+.toolbar-action-btn:checked,
+.toolbar-toggle:checked {
+    background: #1e2240;
+    border-color: #00e5ff;
+    color: #00e5ff;
+    box-shadow: 0 0 0 1px #00e5ff40;
+}
+
+.toolbar-danger-btn:hover {
+    border-color: #ff4b6e70;
+    color: #ff7c94;
+}
+
+.toolbar-danger-btn:active {
+    background: #3b1620;
+    border-color: #ff4b6e;
+    color: #ff7c94;
+}
+
+.toolbar-sep {
+    background-color: #1e2035;
+    min-width: 1px;
+    margin: 4px 6px;
+}
+
+.toolbar-search {
+    background-color: #1a1b26;
+    border: 1px solid #22243a;
+    border-radius: 6px;
+    color: #e2e4f0;
+    caret-color: #00e5ff;
+    padding: 4px 12px;
+    min-height: 28px;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.toolbar-search:focus {
+    border-color: #00e5ff60;
+    box-shadow: 0 0 0 2px #00e5ff18;
+}
+
+.toolbar-search placeholder {
+    color: #4a5070;
+}
+
+.toolbar-path {
+    background-color: #10111a;
+    border: 1px solid #22243a;
+    border-radius: 6px;
+    color: #e2e4f0;
+    padding: 4px 12px;
+    min-height: 28px;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+}
+
+/* Force text colour inside the GTK Entry text node */
+.toolbar-path text,
+.toolbar-path > text {
+    color: #e2e4f0;
+}
+
+.toolbar-path:disabled {
+    opacity: 1;
+    background-color: #10111a;
+    color: #e2e4f0;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+.sidebar {
+    background-color: #13141c;
+    border-right: 1px solid #1e2035;
+    min-width: 200px;
+}
+
+.sidebar-section {
+    padding: 0;
+}
+
+.sidebar-section-heading {
+    color: #4a5070;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+}
+
+.sidebar-sep {
+    background-color: #1e2035;
+    min-height: 1px;
+    margin: 4px 0;
+}
+
+.sidebar-button {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: #8890b0;
+    padding: 7px 14px 7px 16px;
+    font-size: 13px;
+    transition: background 100ms ease, color 100ms ease;
+}
+
+.sidebar-button:hover {
+    background-color: #1a1b26;
+    color: #e2e4f0;
+}
+
+.sidebar-button:disabled {
+    color: #4a5070;
+    background-color: transparent;
+}
+
+.sidebar-button:active,
+.sidebar-button.active {
+    background: linear-gradient(90deg, #00e5ff1a 0%, transparent 80%);
+    border-left: 2px solid #00e5ff;
+    color: #00e5ff;
+    padding-left: 14px;
+}
+
+/* ── Tab strip ───────────────────────────────────────────── */
+.tab-strip {
+    background-color: #13141c;
+    border-bottom: 1px solid #1e2035;
+    padding: 0 8px;
+    min-height: 36px;
+}
+
+.tab-button {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: #8890b0;
+    padding: 6px 18px;
+    font-size: 13px;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.tab-button:hover {
+    color: #e2e4f0;
+    background-color: #1a1b2680;
+}
+
+.tab-button.active {
+    color: #00e5ff;
+    border-bottom-color: #00e5ff;
+}
+
+.tab-button:active {
+    color: #00e5ff;
+}
+
+.tab-add-button {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #4a5070;
+    padding: 4px 10px;
+    font-size: 16px;
+    transition: color 120ms ease, background 120ms ease;
+}
+
+.tab-add-button:hover {
+    color: #00e5ff;
+    background-color: #1a1b26;
+}
+
+/* ── File grid ───────────────────────────────────────────── */
+.file-grid-scroll {
+    background-color: #0d0e14;
+}
+
+.file-grid {
+    background-color: #0d0e14;
+}
+
+.file-card {
+    background-color: #13141c;
+    border: 1px solid #1e2035;
+    border-radius: 10px;
+    padding: 16px 12px 12px 12px;
+    min-width: 110px;
+    min-height: 110px;
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.file-card:hover {
+    background-color: #1a1b26;
+    border-color: #00e5ff40;
+    box-shadow: 0 2px 16px #00e5ff0f;
+}
+
+.file-card-selected {
+    background-color: #1e2240;
+    border-color: #00e5ff;
+    box-shadow: 0 0 0 1px #00e5ff80, 0 4px 24px #00e5ff28;
+}
+
+.file-card-icon {
+    font-size: 36px;
+    margin-bottom: 4px;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+}
+
+.file-card-name {
+    color: #e2e4f0;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.file-card-kind {
+    color: #4a5070;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+
+/* FlowBoxChild wrapper — remove default focus ring */
+flowboxchild {
+    padding: 0;
+    border-radius: 10px;
+    background: transparent;
+}
+
+flowboxchild:selected > .file-card {
+    background-color: #1e2240;
+    border-color: #00e5ff;
+    box-shadow: 0 0 0 1px #00e5ff80, 0 4px 24px #00e5ff28;
+}
+
+.file-grid-empty {
+    color: #4a5070;
+    font-size: 14px;
+    letter-spacing: 0.4px;
+}
+
+/* ── File type badge colours ─────────────────────────────── */
+/* Applied via .file-type-* on the card box and on the preview icon label */
+
+.file-type-folder .file-card-icon { color: #00e5ff; }
+.file-type-image  .file-card-icon { color: #a855f7; }
+.file-type-video  .file-card-icon { color: #ff4b6e; }
+.file-type-text   .file-card-icon { color: #8890b0; }
+.file-type-archive .file-card-icon { color: #f59e0b; }
+.file-type-config .file-card-icon { color: #10b981; }
+.file-type-unknown .file-card-icon { color: #4a5070; }
+
+/* Same colours for the large preview-pane icon */
+label.preview-icon.file-type-folder  { color: #00e5ff; }
+label.preview-icon.file-type-image   { color: #a855f7; }
+label.preview-icon.file-type-video   { color: #ff4b6e; }
+label.preview-icon.file-type-text    { color: #8890b0; }
+label.preview-icon.file-type-archive { color: #f59e0b; }
+label.preview-icon.file-type-config  { color: #10b981; }
+label.preview-icon.file-type-unknown { color: #4a5070; }
+
+/* ── Preview pane ────────────────────────────────────────── */
+.preview-pane {
+    background-color: #13141c;
+    border-left: 1px solid #1e2035;
+    min-width: 260px;
+}
+
+.preview-header {
+    color: #4a5070;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+}
+
+.preview-icon {
+    font-size: 72px;
+    margin-top: 32px;
+    margin-bottom: 12px;
+    opacity: 0.90;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+    font-weight: 700;
+    letter-spacing: 2px;
+}
+
+.preview-filename {
+    color: #e2e4f0;
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.preview-meta-sep {
+    background-color: #1e2035;
+    margin-top: 16px;
+    margin-bottom: 8px;
+}
+
+.preview-meta-row {
+    /* inherits margin from Rust layout code */
+}
+
+.preview-meta-key {
+    color: #4a5070;
+    font-size: 12px;
+}
+
+.preview-meta-value {
+    color: #8890b0;
+    font-size: 12px;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+}
+
+/* ── Status bar ──────────────────────────────────────────── */
+.status-bar {
+    background-color: #13141c;
+    border-top: 1px solid #1e2035;
+    padding: 4px 0;
+    min-height: 26px;
+}
+
+.status-info {
+    color: #4a5070;
+    font-size: 11px;
+}
+
+.status-path {
+    color: #4a5070;
+    font-size: 11px;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+}
+
+.status-message {
+    color: #8890b0;
+    font-size: 11px;
+}
+
+/* ── Context menu / dialogs ─────────────────────────────── */
+.context-menu {
+    background-color: #13141c;
+    border: 1px solid #22243a;
+    border-radius: 10px;
+    padding: 0;
+    box-shadow: 0 8px 30px #00000066;
+}
+
+.context-menu contents {
+    background-color: transparent;
+}
+
+.context-menu-button {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: #e2e4f0;
+    padding: 8px 12px;
+}
+
+.context-menu-button:hover {
+    background-color: #1a1b26;
+    border-color: #00e5ff30;
+    color: #00e5ff;
+}
+
+.context-menu-danger:hover {
+    border-color: #ff4b6e40;
+    color: #ff7c94;
+}
+
+.dialog-prompt {
+    color: #8890b0;
+}
+
+.dialog-entry {
+    background-color: #10111a;
+    border: 1px solid #22243a;
+    border-radius: 8px;
+    color: #e2e4f0;
+    min-height: 34px;
+    padding: 6px 10px;
+}
+
+/* ── GtkPaned divider ────────────────────────────────────── */
+paned > separator {
+    background-color: #1e2035;
+    min-width: 1px;
+    min-height: 1px;
+}
+
+paned > separator:hover {
+    background-color: #00e5ff50;
+}
+
+/* ── Scrollbars ──────────────────────────────────────────── */
+scrollbar {
+    background-color: transparent;
+    border: none;
+}
+
+scrollbar slider {
+    background-color: #22243a;
+    border-radius: 4px;
+    min-width: 6px;
+    min-height: 40px;
+    margin: 2px;
+    transition: background 100ms ease;
+}
+
+scrollbar slider:hover {
+    background-color: #2e3055;
+}
+
+scrollbar.vertical {
+    margin-left: 2px;
+}
+
+scrollbar.horizontal {
+    margin-top: 2px;
+}
+
+/* ── Tooltips ────────────────────────────────────────────── */
+tooltip {
+    background-color: #22243a;
+    border: 1px solid #2e3055;
+    border-radius: 6px;
+    color: #e2e4f0;
+    font-size: 12px;
+    padding: 4px 8px;
+}
+
+tooltip > label {
+    color: #e2e4f0;
+}

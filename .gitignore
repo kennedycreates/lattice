@@ -1,0 +1,8 @@
+/target/
+
+# Local agent/editor state
+.claude/
+.codex
+.DS_Store
+*.swp
+*.swo

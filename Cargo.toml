@@ -1,0 +1,15 @@
+[package]
+name = "lattice"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "A mouse-first GTK4 file manager for custom Linux desktops."
+
+[[bin]]
+name = "lattice"
+path = "src/main.rs"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
+glib = "0.20"
+gio = "0.20"
