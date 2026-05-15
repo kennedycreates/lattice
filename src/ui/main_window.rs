@@ -158,7 +158,6 @@ impl MainWindow {
             secondary_pane.clone(),
             preview.clone(),
             body.preview_host.clone(),
-            body.split_host.clone(),
             status.clone(),
         );
         controller.bootstrap();
@@ -211,7 +210,6 @@ struct BrowserController {
     secondary_pane: PaneWidgets,
     preview: PreviewPane,
     preview_host: GtkBox,
-    split_host: Paned,
     status: StatusBar,
     context_popover: RefCell<Option<Popover>>,
     tabs: RefCell<Vec<TabState>>,
@@ -248,7 +246,6 @@ impl BrowserController {
         secondary_pane: PaneWidgets,
         preview: PreviewPane,
         preview_host: GtkBox,
-        split_host: Paned,
         status: StatusBar,
     ) -> Rc<Self> {
         let initial_tab = TabState::new(places.home.clone());
@@ -268,7 +265,6 @@ impl BrowserController {
             secondary_pane,
             preview,
             preview_host,
-            split_host,
             status,
             context_popover: RefCell::new(None),
             back_history: RefCell::new(Vec::new()),
@@ -689,9 +685,6 @@ impl BrowserController {
         let enabled = self.split_enabled.get();
         self.secondary_pane.root.set_visible(enabled);
         self.secondary_pane.path_label.set_visible(enabled);
-        if enabled {
-            self.split_host.set_position(540);
-        }
     }
 
     fn set_split_enabled(self: &Rc<Self>, enabled: bool) {
@@ -1847,7 +1840,7 @@ impl BrowserController {
         result: Rc<RefCell<BatchResult>>,
     ) {
         if index >= paths.len() {
-            self.finish_batch("Moved item(s) to trash.", result);
+            self.finish_batch("moved to trash", result);
             return;
         }
 
@@ -1876,7 +1869,7 @@ impl BrowserController {
 
         if result.failures.is_empty() {
             self.pending_status_message.replace(Some(format!(
-                "{} {} completed.",
+                "{} item(s) {}.",
                 result.success_count, success_message
             )));
         } else {
@@ -2172,12 +2165,10 @@ struct InputDialog {
 struct BodyLayout {
     root: Paned,
     preview_host: GtkBox,
-    split_host: Paned,
 }
 
 struct CenterLayout {
     root: GtkBox,
-    split_host: Paned,
 }
 
 fn build_body(
@@ -2206,7 +2197,6 @@ fn build_body(
     let center = build_center(tab_strip, primary_pane, secondary_pane);
     let preview_host = GtkBox::new(Orientation::Vertical, 0);
     preview_host.add_css_class("preview-host");
-    preview_host.set_size_request(320, -1);
     preview_host.append(&preview.root);
     center_and_preview.set_start_child(Some(&center.root));
     center_and_preview.set_end_child(Some(&preview_host));
@@ -2216,7 +2206,6 @@ fn build_body(
     BodyLayout {
         root: outer,
         preview_host,
-        split_host: center.split_host,
     }
 }
 
@@ -2242,10 +2231,7 @@ fn build_center(
     panes.set_hexpand(true);
 
     vbox.append(&panes);
-    CenterLayout {
-        root: vbox,
-        split_host: panes,
-    }
+    CenterLayout { root: vbox }
 }
 
 fn connect_directory_button(controller: &Rc<BrowserController>, button: &Button, path: PathBuf) {
@@ -2302,7 +2288,7 @@ fn build_input_dialog(
     let column = GtkBox::new(Orientation::Vertical, 12);
     column.set_halign(Align::Fill);
     column.set_hexpand(true);
-    column.set_size_request(420, -1);
+    column.add_css_class("dialog-column");
     content.append(&column);
 
     let prompt_label = Label::new(Some(prompt));
@@ -2317,7 +2303,6 @@ fn build_input_dialog(
     entry.select_region(0, -1);
     entry.set_width_chars(36);
     entry.set_hexpand(true);
-    entry.set_size_request(420, -1);
     entry.add_css_class("dialog-entry");
     column.append(&entry);
 

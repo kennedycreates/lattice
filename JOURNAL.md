@@ -2,6 +2,31 @@
 
 Chronological development journal for the active project state.
 
+## 2026-05-15 — Milestone 4 audit
+
+Audited Milestone 4 (tabs and split-pane browsing) for shared-state bugs, wrong-pane action routing, crashes, and layout issues.
+
+Confirmed working:
+- Tab close guard (`len <= 1` prevents closing the last tab)
+- Pane activation on left-click (both `file_grid.flow` and `pane.root` have click controllers)
+- Context menus capture slot in closure — right-click always acts on the correct pane
+- All toolbar actions (`rename`, `trash`, `new folder`, etc.) route through `active_slot()`
+- `show_hidden` toggle reloads both panes in split mode via `reload_active_tab()`
+- Generation-based async cancellation is per-slot — stale loads cannot overwrite fresh ones
+
+Fixed:
+- **Split divider reset bug**: `sync_split_visibility()` was calling `split_host.set_position(540)` every time split was enabled (including on every tab switch that restored a split tab). This reset any user-adjusted divider position. Removed the `set_position` call; the initial `540` in `build_center()` handles first-construction only.
+- **`split_host` dead field**: After removing the `set_position` call, `split_host` was unused everywhere. Removed it from `BrowserController`, `BrowserController::new()`, `BodyLayout`, `CenterLayout`, and both builder functions.
+- **CSS violation — preview host**: `build_body()` called `preview_host.set_size_request(320, -1)`. The CSS already had `.preview-host { min-width: 320px; }`. Removed the duplicate Rust call.
+- **CSS violation — input dialog**: `build_input_dialog()` had hardcoded `column.set_size_request(420, -1)` and `entry.set_size_request(420, -1)`. Changed `column` to use a `dialog-column` CSS class; added `.dialog-column { min-width: 420px; }` and `min-width: 420px` to `.dialog-entry` in CSS. Removed both Rust calls.
+- **Malformed status message**: `finish_batch()` formatted as `"{count} {message} completed."` with `message = "Moved item(s) to trash."` — produced `"3 Moved item(s) to trash. completed."`. Changed format to `"{count} item(s) {message}."` and updated call site to `"moved to trash"` → produces `"3 item(s) moved to trash."`.
+
+Ran `cargo fmt`: succeeded.
+Ran `cargo check`: succeeded — zero warnings.
+`cargo run` skipped — environment is headless. No runtime behavior other than the fixes above was changed.
+
+Known gap: Milestone 4 still requires a manual desktop acceptance pass. Tabs and split panes are implemented and compile clean but have not been validated in a live GTK session.
+
 ## 2026-05-15 — Remove permanent delete
 
 Removed permanent delete entirely at user direction. Move to Trash is and remains the only destructive action in Lattice.

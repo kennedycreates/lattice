@@ -627,12 +627,17 @@ label.preview-icon.file-type-unknown { color: #4a5070; }
     color: #8890b0;
 }
 
+.dialog-column {
+    min-width: 420px;
+}
+
 .dialog-entry {
     background-color: #10111a;
     border: 1px solid #22243a;
     border-radius: 8px;
     color: #e2e4f0;
     min-height: 34px;
+    min-width: 420px;
     padding: 6px 10px;
 }
 

@@ -43,23 +43,26 @@ impl Toolbar {
 
         let new_folder_button = Button::with_label("New Folder");
         new_folder_button.add_css_class("toolbar-action-btn");
+        new_folder_button.set_tooltip_text(Some("Create a new folder here"));
         bar.append(&new_folder_button);
 
         let rename_button = Button::with_label("Rename");
         rename_button.add_css_class("toolbar-action-btn");
+        rename_button.set_tooltip_text(Some("Rename the selected item"));
         rename_button.set_sensitive(false);
         bar.append(&rename_button);
 
         let trash_button = Button::with_label("Trash");
         trash_button.add_css_class("toolbar-action-btn");
         trash_button.add_css_class("toolbar-danger-btn");
+        trash_button.set_tooltip_text(Some("Move selected items to the trash"));
         trash_button.set_sensitive(false);
         bar.append(&trash_button);
 
         let show_hidden_toggle = ToggleButton::with_label("Show Hidden Files");
         show_hidden_toggle.add_css_class("toolbar-action-btn");
         show_hidden_toggle.add_css_class("toolbar-toggle");
-        show_hidden_toggle.set_tooltip_text(Some("Toggle hidden files"));
+        show_hidden_toggle.set_tooltip_text(Some("Show or hide hidden files"));
         bar.append(&show_hidden_toggle);
 
         let preview_toggle = ToggleButton::with_label("Preview");
