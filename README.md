@@ -6,7 +6,9 @@ Lattice is aimed at a slick, dark, cursor-driven workflow. The default view is a
 
 ## Current Status
 
-Lattice is currently at **Milestone 2: core browsing + core file actions**.
+Lattice is currently in **Milestone 4: tabs and split-pane browsing**.
+
+The Milestone 4 code path is implemented and compiling, but it has **not** been manually validated in a real desktop session from this headless environment yet.
 
 Implemented now:
 
@@ -16,14 +18,15 @@ Implemented now:
 - Hidden-file toggle
 - Double-click to open folders and files
 - Back / Up / Refresh navigation
-- Preview pane updates for the current selection
+- Breadcrumb-style location bar that flips into full-path editing on click
+- Toggleable preview pane with real folder, image, and text/config previews
 - Right-click context menus on file and folder cards
-- New Folder, Rename, Move to Trash, Permanent Delete, Copy Path, and Open Terminal Here
+- New Folder, Rename, Move to Trash, Copy Path, and Open Terminal Here
+- Real tabs with per-tab folder state
+- Split-pane browsing with an active pane model
 
 Not implemented yet:
 
-- Real tabs
-- Split panes
 - Search and rich previews
 - Drag and drop
 - Tags / project metadata / config system
@@ -73,6 +76,13 @@ cargo fmt --check
 cargo check
 ```
 
+## Project Workflow
+
+- Read `AGENTS.md` and `JOURNAL.md` before starting work.
+- Record each meaningful work session in `JOURNAL.md`.
+- Keep `README.md` updated after each major step so it stays accurate and low-chaff.
+- Follow `docs/agent_rules.md` and `docs/roadmap.md` when making changes.
+
 ## GitHub CI
 
 The repo includes a minimal GitHub Actions workflow at `.github/workflows/ci.yml` that installs GTK4 development packages on Ubuntu and runs:
@@ -87,6 +97,8 @@ lattice/
   Cargo.toml
   Cargo.lock
   README.md
+  AGENTS.md
+  JOURNAL.md
   .github/
     workflows/
       ci.yml

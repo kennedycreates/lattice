@@ -25,6 +25,8 @@ impl Sidebar {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .build();
         root.add_css_class("sidebar");
+        root.set_min_content_width(188);
+        root.set_propagate_natural_width(true);
 
         let vbox = Box::new(Orientation::Vertical, 0);
         vbox.set_margin_top(8);
@@ -110,6 +112,9 @@ fn section_button(label: &str, sensitive: bool) -> Button {
     let text = Label::new(Some(label));
     text.set_halign(gtk::Align::Start);
     text.set_hexpand(true);
+    text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    text.set_wrap(false);
+    text.set_single_line_mode(true);
     button.set_child(Some(&text));
 
     button

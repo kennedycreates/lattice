@@ -40,40 +40,52 @@ Goal: navigate the filesystem with the mouse.
 
 Goal: right-click menus and safe day-to-day file actions.
 
-- [x] Right-click context menu on file cards with Open, Open With, Rename, Copy Path, Open Terminal Here, Move to Trash, and Permanent Delete
+- [x] Right-click context menu on file cards with Open, Open With, Rename, Copy Path, Open Terminal Here, and Move to Trash
 - [x] Toolbar actions for New Folder, Rename, and Trash
 - [x] Rename dialog with empty-name guardrails and name-conflict handling
 - [x] New Folder creation with `New Folder`, `New Folder 2`, … fallback naming
 - [x] Move to Trash as the default destructive path
-- [x] Permanent Delete confirmation dialog for irreversible removal
 - [x] Copy Path to clipboard and Open Terminal Here support
 - [x] Basic mouse selection flow: single-click selects, double-click opens
 
 ---
 
-## Milestone 3 — Multi-View Navigation
+## Milestone 3 — Real Preview Pane ✅
+
+Goal: make the preview pane real, useful, and toggleable.
+
+- [x] Preview pane can be shown and hidden from the toolbar
+- [x] Folder previews show name, path, type label, and modified time when available
+- [x] Image previews render directly in the preview pane
+- [x] Text / config / code files show safe partial text previews with a size limit
+- [x] Video / audio / unknown files show lightweight metadata-only previews
+- [x] Preview actions for Open, Copy Path, and Open Parent Folder
+
+---
+
+## Milestone 4 — Multi-View Navigation
 
 Goal: extend the browser shell into a more capable workspace.
 
 - [ ] Functional tab strip — open new tabs, close tabs, switch tabs
 - [ ] Split-pane view — two independent directory views side by side
+- [ ] Active-pane routing for toolbar actions, preview updates, and context actions
+- [ ] Manual desktop acceptance pass on a real GTK display session
 - [ ] Keyboard shortcuts as secondary input (not primary)
 
 ---
 
-## Milestone 4 — Preview & Search
+## Milestone 5 — Search & Rich Media
 
 Goal: actually useful file information.
 
-- [ ] Image preview rendered in the preview pane
-- [ ] Text file preview (syntax-highlighted if feasible)
 - [ ] Video thumbnail via GStreamer or ffmpegthumbnailer
 - [ ] Search bar filters the current view
 - [ ] Search across subdirectories (async, cancellable)
 
 ---
 
-## Milestone 5 — Polish & Power Features
+## Milestone 6 — Polish & Power Features
 
 Goal: power-user workflows and configurability.
 
