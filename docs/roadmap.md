@@ -5,7 +5,7 @@
 Goal: a beautiful, compilable app shell with no real functionality.
 
 - [x] GTK4 app compiles and runs with `cargo run`
-- [x] Dark cyberpunk CSS theme (`themes/default.css`)
+- [x] Victorian Gothic dark CSS theme (`themes/default.css`)
 - [x] Layout: toolbar, sidebar, tab strip, file grid, preview pane, status bar
 - [x] Placeholder sidebar sections: Home, Downloads, Documents, Projects, Tags, Drives, Recent
 - [x] Placeholder toolbar buttons: Back, Up, Refresh, New Folder, Split, View, Search
@@ -40,10 +40,11 @@ Goal: navigate the filesystem with the mouse.
 
 Goal: right-click menus and safe day-to-day file actions.
 
-- [x] Right-click context menu on file cards with Open, Open With, Rename, Copy Path, Open Terminal Here, and Move to Trash
+- [x] Right-click context menu on file cards with Open, Rename, Copy Path, Open Terminal Here, and Move to Trash
 - [x] Toolbar actions for New Folder, Rename, and Trash
 - [x] Rename dialog with empty-name guardrails and name-conflict handling
 - [x] New Folder creation with `New Folder`, `New Folder 2`, … fallback naming
+- [x] New Text Document creation from the toolbar and current-folder right-click menu, using extensionless `Untitled`, `Untitled 2`, … default naming
 - [x] Move to Trash as the default destructive path
 - [x] Copy Path to clipboard and Open Terminal Here support
 - [x] Basic mouse selection flow: single-click selects, double-click opens
@@ -67,33 +68,74 @@ Goal: make the preview pane real, useful, and toggleable.
 
 Goal: extend the browser shell into a more capable workspace.
 
-- [ ] Functional tab strip — open new tabs, close tabs, switch tabs
-- [ ] Split-pane view — two independent directory views side by side
-- [ ] Active-pane routing for toolbar actions, preview updates, and context actions
+- [x] Functional tab strip — open new tabs, close tabs, switch tabs
+- [x] Split-pane view — two independent directory views side by side
+- [x] Active-pane routing for toolbar actions, preview updates, and context actions
 - [ ] Manual desktop acceptance pass on a real GTK display session
-- [ ] Keyboard shortcuts as secondary input (not primary)
+- [x] Keyboard shortcuts as secondary input (not primary)
 
 ---
 
-## Milestone 5 — Search & Rich Media
+## Milestone 5 — Projects, Tags, and Downloads Triage
 
-Goal: actually useful file information.
+Goal: make Lattice meaningfully different from a generic folder browser.
 
-- [ ] Video thumbnail via GStreamer or ffmpegthumbnailer
-- [ ] Search bar filters the current view
-- [ ] Search across subdirectories (async, cancellable)
+- [x] Local SQLite metadata database in the user data directory
+- [x] App-local tables for projects, tags, file tags, and project destinations
+- [x] Sidebar Projects section populated from pinned folders
+- [x] Pin current folder or folder card as Project
+- [x] `Send to Project` with copy/move choice and conflict prompts
+- [x] Sidebar Tags section populated from created tags
+- [x] Create tags and apply them to files/folders
+- [x] Show tag chips on file cards
+- [x] Click a tag to open a virtual tagged-files view
+- [x] Downloads Triage view rooted at `~/Downloads`
+- [x] Downloads Triage filters for Today / This Week / This Month / Older Than 1 Month / Images / Videos / Archives / Documents / Large Files
+- [ ] Manual desktop acceptance pass on a real GTK display session
 
 ---
 
-## Milestone 6 — Polish & Power Features
+## Milestone 6 — Polish, Theme System, and labwc Integration
 
-Goal: power-user workflows and configurability.
+Goal: fit, finish, and daily-driver readiness on custom Wayland desktops.
 
-- [ ] SQLite tags — tag files/folders, filter by tag
-- [ ] Project metadata panel
-- [ ] TOML config (`~/.config/lattice/config.toml`)
+**Config & Themes**
+- [x] TOML config at `~/.config/lattice/config.toml` (theme selection)
+- [x] Configurable keyboard shortcuts, right-click menu order, and custom context actions
+- [x] Theme loading from `~/.config/lattice/themes/` with bundled fallback
+- [x] Bundled theme: `default` (Victorian Gothic dark)
+- [x] Bundled theme: `high-contrast` (maximum contrast dark)
+- [x] `docs/theming.md` — CSS class reference and theme authoring guide
+
+**CLI Launch Modes**
+- [x] `lattice --path /folder` — open a specific folder
+- [x] `lattice /folder` — positional shorthand
+- [x] `lattice --downloads` — open Downloads Triage view
+- [x] `lattice --project "Name"` — open a pinned project's root
+- [x] `lattice --split /left /right` — launch in split-pane mode
+
+**Desktop Integration**
+- [x] `lattice.desktop` for application launchers and `xdg-mime` default-opener
+- [x] `docs/labwc.md` — keybindings, Waybar snippet, install instructions
+
+**Virtual System Views**
+- [x] Sidebar Trash view backed by `trash:///`
+- [x] Basic `Restore from Trash` action when the original path is available
+- [x] Sidebar System Drives view listing mounted local volumes from GIO VolumeMonitor
+- [x] Sidebar Recent view backed by app-local recent folder history
+
+**Visual Polish**
+- [x] Emoji file-type icons replacing text badges for folders, images, video, audio, documents, text, archives, config/code, and unknown files
+- [x] Gradient file cards with enhanced hover glow
+- [x] Per-type radial aura glow on preview pane icon
+- [x] Secondary pane uses violet accent when active in split view
+- [x] Active tab underline thickened + background tint
+- [x] Status bar inset accent glow (mirrors toolbar)
+- [x] Scrollbar hover glow
+- [x] Empty folder state: brighter, larger text
+
+**Not yet in scope for M6**
 - [ ] Drag-and-drop within and between panes
-- [ ] Trash integration (send to trash, restore)
 - [ ] Undo for destructive operations
-- [ ] Confirmation dialogs for delete / overwrite
-- [ ] Bookmarks / pinned paths in sidebar
+- [ ] Search across folders
+- [ ] Manual desktop acceptance pass on a real GTK display session

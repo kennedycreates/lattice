@@ -1,0 +1,818 @@
+/* ============================================================
+   Lattice — High-Contrast Dark Theme
+   ============================================================
+
+   Palette:
+     bg0   #000000   deepest background
+     bg1   #0a0a0a   panel / sidebar / toolbar background
+     bg2   #141414   widget background / hover surface
+     bg3   #1e1e1e   raised widget background
+     bg4   #2a2a2a   active / focus surface
+     acc   #00ffff   primary cyan accent (full brightness)
+     warn  #ff3355   danger / destructive
+     fg0   #ffffff   primary text
+     fg1   #cccccc   secondary / muted text
+     fg2   #888888   disabled / decorative text
+     sep   #333333   separator / border colour
+   ============================================================ */
+
+/* ── Reset / base ────────────────────────────────────────── */
+* {
+    -gtk-icon-size: 16px;
+    outline: none;
+}
+
+/* ── Root window ─────────────────────────────────────────── */
+.app-window,
+window {
+    background-color: #000000;
+    color: #ffffff;
+    font-family: "Inter", "Cantarell", "Noto Sans", sans-serif;
+    font-size: 13px;
+}
+
+/* ── CSD titlebar / headerbar ────────────────────────────── */
+headerbar,
+.titlebar {
+    background-color: #0a0a0a;
+    border-bottom: 1px solid #333333;
+    color: #ffffff;
+    min-height: 44px;
+    padding: 0 8px;
+}
+
+headerbar .title,
+.titlebar .title {
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+}
+
+headerbar button,
+.titlebar button {
+    background: transparent;
+    border: none;
+    color: #cccccc;
+    border-radius: 6px;
+    padding: 4px 6px;
+    min-width: 24px;
+    min-height: 24px;
+    transition: background 120ms ease, color 120ms ease;
+}
+
+headerbar button:hover,
+.titlebar button:hover {
+    background-color: #1e1e1e;
+    color: #ffffff;
+}
+
+headerbar windowcontrols button {
+    padding: 2px;
+    margin: 0 2px;
+}
+
+/* ── Top toolbar ─────────────────────────────────────────── */
+.top-toolbar {
+    background-color: #0a0a0a;
+    border-bottom: 2px solid #00ffff;
+    padding: 4px 8px;
+    min-height: 38px;
+}
+
+.toolbar-nav-btn,
+.toolbar-action-btn {
+    background: #141414;
+    border: 1px solid #333333;
+    border-radius: 6px;
+    color: #ffffff;
+    padding: 3px 8px;
+    min-width: 32px;
+    min-height: 26px;
+    font-size: 13px;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.toolbar-icon-btn {
+    -gtk-icon-size: 17px;
+    padding: 3px 7px;
+    min-width: 30px;
+    min-height: 28px;
+}
+
+.toolbar-nav-btn:hover,
+.toolbar-action-btn:hover {
+    background: #1e1e1e;
+    border-color: #00ffff;
+    color: #00ffff;
+}
+
+.toolbar-nav-btn:active,
+.toolbar-action-btn:active {
+    background: #2a2a2a;
+    border-color: #00ffff;
+    color: #00ffff;
+}
+
+.toolbar-action-btn:checked,
+.toolbar-toggle:checked {
+    background: #002a2a;
+    border-color: #00ffff;
+    color: #00ffff;
+    box-shadow: 0 0 0 1px #00ffff80;
+}
+
+.toolbar-danger-btn:hover {
+    border-color: #ff3355;
+    color: #ff3355;
+}
+
+.toolbar-danger-btn:active {
+    background: #2a0010;
+    border-color: #ff3355;
+    color: #ff3355;
+}
+
+.toolbar-sep {
+    background-color: #333333;
+    min-width: 1px;
+    margin: 3px 5px;
+}
+
+.toolbar-path {
+    background-color: #000000;
+    border: 1px solid #333333;
+    border-radius: 6px;
+    color: #ffffff;
+    padding: 3px 10px;
+    min-height: 26px;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+}
+
+.toolbar-path text,
+.toolbar-path > text {
+    color: #ffffff;
+}
+
+.toolbar-path:disabled {
+    opacity: 1;
+    background-color: #000000;
+    color: #ffffff;
+}
+
+.toolbar-path-stack {
+    min-height: 26px;
+}
+
+.toolbar-path-button {
+    background-color: #000000;
+    border: 1px solid #333333;
+    border-radius: 6px;
+    padding: 3px 10px;
+    min-height: 26px;
+}
+
+.toolbar-path-button:hover {
+    border-color: #00ffff;
+    background-color: #001a1a;
+}
+
+.toolbar-path-button:active {
+    border-color: #00ffff;
+    background-color: #002a2a;
+}
+
+.toolbar-breadcrumbs {
+    min-height: 18px;
+}
+
+.toolbar-path-segment {
+    color: #cccccc;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.toolbar-path-current {
+    color: #00ffff;
+}
+
+.toolbar-path-separator {
+    color: #888888;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+.sidebar {
+    background-color: #0a0a0a;
+    border-right: 2px solid #333333;
+    min-width: 200px;
+}
+
+.sidebar-section {
+    padding: 0;
+}
+
+.sidebar-section-heading {
+    color: #888888;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+}
+
+.sidebar-sep {
+    background-color: #333333;
+    min-height: 1px;
+    margin: 4px 0;
+}
+
+.sidebar-button {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: #cccccc;
+    padding: 6px 12px 6px 14px;
+    font-size: 13px;
+    transition: background 100ms ease, color 100ms ease;
+}
+
+.sidebar-button:hover {
+    background-color: #141414;
+    color: #ffffff;
+}
+
+.sidebar-button:disabled {
+    color: #888888;
+    background-color: transparent;
+}
+
+.sidebar-button:active,
+.sidebar-button.active {
+    background: #001a1a;
+    border-left: 3px solid #00ffff;
+    color: #00ffff;
+    padding-left: 11px;
+}
+
+.sidebar-note {
+    color: #888888;
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+/* ── Tab strip ───────────────────────────────────────────── */
+.tab-strip {
+    background-color: #0a0a0a;
+    border-bottom: 1px solid #333333;
+    padding: 0 6px;
+    min-height: 34px;
+}
+
+.tab-chip {
+    background-color: transparent;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 0 2px 0 0;
+}
+
+.tab-chip.active {
+    border-bottom: 3px solid #00ffff;
+    background-color: #00ffff0a;
+}
+
+.tab-button {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: #888888;
+    padding: 5px 11px;
+    font-size: 13px;
+    transition: color 120ms ease, background 120ms ease;
+}
+
+.tab-button:hover {
+    color: #ffffff;
+    background-color: #14141480;
+}
+
+.tab-button.active {
+    color: #00ffff;
+}
+
+.tab-button:active {
+    color: #00ffff;
+}
+
+.tab-close-button {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #888888;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0 6px;
+}
+
+.tab-close-button:hover {
+    background-color: #1e1e1e;
+    color: #ff3355;
+}
+
+.tab-close-button:disabled {
+    color: #444444;
+}
+
+.tab-add-button {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: #888888;
+    padding: 3px 8px;
+    font-size: 16px;
+    transition: color 120ms ease, background 120ms ease;
+}
+
+.tab-add-button:hover {
+    color: #00ffff;
+    background-color: #141414;
+}
+
+/* ── Browser panes / split view ─────────────────────────── */
+.split-panes {
+    background-color: #000000;
+}
+
+.browser-pane {
+    background-color: #000000;
+    min-width: 220px;
+}
+
+.browser-pane-header {
+    background-color: #0a0a0a;
+    border-bottom: 1px solid #333333;
+    min-height: 32px;
+}
+
+.browser-pane-path {
+    color: #888888;
+    font-size: 12px;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+}
+
+.browser-pane-active .browser-pane-header {
+    background-color: #001a1a;
+    border-bottom-color: #00ffff;
+}
+
+.browser-pane-active .browser-pane-path {
+    color: #00ffff;
+}
+
+.browser-pane-secondary.browser-pane-active .browser-pane-header {
+    background-color: #1a0030;
+    border-bottom-color: #cc88ff;
+}
+
+.browser-pane-secondary.browser-pane-active .browser-pane-path {
+    color: #cc88ff;
+}
+
+/* ── Pane view strip ─────────────────────────────────────── */
+.pane-view-strip {
+    background-color: #0a0a0a;
+    border-bottom: 1px solid #333333;
+}
+
+.pane-view-title {
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+
+.pane-filter-row {
+    margin-bottom: 2px;
+}
+
+.pane-filter-button {
+    background: #141414;
+    border: 1px solid #333333;
+    border-radius: 999px;
+    color: #888888;
+    padding: 3px 10px;
+    font-size: 11px;
+}
+
+.pane-filter-button:hover {
+    border-color: #00ffff;
+    color: #ffffff;
+}
+
+.pane-filter-button.active {
+    background: #002a2a;
+    border-color: #00ffff;
+    color: #00ffff;
+}
+
+/* ── File grid ───────────────────────────────────────────── */
+.file-grid-scroll {
+    background-color: #000000;
+}
+
+.file-grid {
+    background-color: #000000;
+}
+
+.file-card-shell {
+    min-width: 96px;
+    min-height: 116px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+}
+
+.file-card {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding: 4px 5px 3px 5px;
+    min-width: 96px;
+    min-height: 116px;
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease,
+                transform 120ms ease;
+}
+
+.file-card:hover {
+    background: linear-gradient(180deg, #ffffff06 0%, #00ffff08 100%);
+    border-color: #00ffff;
+    box-shadow: 0 0 0 1px #00ffff55, 0 8px 18px #00ffff18;
+    transform: translateY(-1px);
+}
+
+.file-card-icon {
+    font-size: 40px;
+    margin-bottom: 0;
+    min-width: 52px;
+    min-height: 52px;
+    line-height: 1;
+    text-shadow: 0 2px 10px #00000055;
+}
+
+.file-card-media {
+    background: radial-gradient(circle at 50% 38%, #ffffff08 0%, transparent 72%);
+    border: none;
+    border-radius: 999px;
+    min-width: 52px;
+    min-height: 52px;
+}
+
+.file-card-name {
+    color: #ffffff;
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1.16;
+}
+
+.file-card-kind {
+    color: #888888;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+
+.file-card-tags {
+    margin-top: 2px;
+}
+
+.file-tag-chip {
+    background: #050505;
+    border: 1px solid #444444;
+    border-radius: 999px;
+    color: #00ffff;
+    padding: 0 4px;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+
+.file-tag-chip-muted {
+    color: #888888;
+}
+
+.sidebar-button.drop-hover {
+    background-color: #141414;
+    color: #00ffff;
+    border-left: 3px solid #00ffff;
+    padding-left: 11px;
+}
+
+flowboxchild {
+    padding: 0;
+    border-radius: 10px;
+    background: transparent;
+}
+
+flowboxchild:selected > .file-card-shell > .file-card {
+    background: linear-gradient(180deg, #00ffff10 0%, #cc88ff0f 100%);
+    border-color: #00ffff;
+    box-shadow: 0 0 0 1px #00ffff80, 0 0 18px #00ffff28, 0 8px 22px #00000028;
+}
+
+.file-card-shell.drop-hover > .file-card {
+    background: linear-gradient(180deg, #00ffff10 0%, #ffffff04 100%);
+    border-color: #00ffff;
+    box-shadow: 0 0 0 1px #00ffff80, 0 0 18px #00ffff28, 0 8px 22px #00000028;
+}
+
+.file-grid-empty {
+    color: #888888;
+    font-size: 16px;
+    letter-spacing: 0.4px;
+    opacity: 0.7;
+}
+
+/* ── File type badge colours ─────────────────────────────── */
+.file-type-folder .file-card-icon { color: #00ffff; }
+.file-type-image  .file-card-icon { color: #cc88ff; }
+.file-type-video  .file-card-icon { color: #ff3355; }
+.file-type-audio  .file-card-icon { color: #ff88cc; }
+.file-type-document .file-card-icon { color: #ffd166; }
+.file-type-text   .file-card-icon { color: #aaaaaa; }
+.file-type-archive .file-card-icon { color: #ffcc00; }
+.file-type-config .file-card-icon { color: #44ff88; }
+.file-type-unknown .file-card-icon { color: #888888; }
+
+label.preview-icon.file-type-folder  { color: #00ffff; background: radial-gradient(circle, #00ffff18 0%, transparent 65%); }
+label.preview-icon.file-type-image   { color: #cc88ff; background: radial-gradient(circle, #cc88ff18 0%, transparent 65%); }
+label.preview-icon.file-type-video   { color: #ff3355; background: radial-gradient(circle, #ff335518 0%, transparent 65%); }
+label.preview-icon.file-type-audio   { color: #ff88cc; background: radial-gradient(circle, #ff88cc18 0%, transparent 65%); }
+label.preview-icon.file-type-document { color: #ffd166; background: radial-gradient(circle, #ffd16618 0%, transparent 65%); }
+label.preview-icon.file-type-text    { color: #aaaaaa; background: radial-gradient(circle, #aaaaaa18 0%, transparent 65%); }
+label.preview-icon.file-type-archive { color: #ffcc00; background: radial-gradient(circle, #ffcc0018 0%, transparent 65%); }
+label.preview-icon.file-type-config  { color: #44ff88; background: radial-gradient(circle, #44ff8818 0%, transparent 65%); }
+label.preview-icon.file-type-unknown { color: #888888; background: radial-gradient(circle, #88888818 0%, transparent 65%); }
+
+/* ── Preview pane ────────────────────────────────────────── */
+.preview-host {
+    min-width: 320px;
+}
+
+.preview-pane {
+    background-color: #0a0a0a;
+    border-left: 2px solid #333333;
+    min-width: 320px;
+}
+
+.preview-scroll {
+    background-color: transparent;
+}
+
+.preview-header {
+    color: #888888;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+}
+
+.preview-icon {
+    font-size: 72px;
+    margin-top: 8px;
+    margin-bottom: 4px;
+    padding: 16px;
+    border-radius: 50%;
+    opacity: 0.95;
+}
+
+.preview-title {
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.15;
+}
+
+.preview-actions {
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
+
+.preview-image {
+    background-color: #000000;
+    border: 1px solid #444444;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+.preview-meta-sep {
+    background-color: #333333;
+    margin-top: 8px;
+    margin-bottom: 6px;
+}
+
+.preview-meta {
+    background-color: #000000;
+    border: 1px solid #333333;
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+
+.preview-meta-key {
+    color: #888888;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+}
+
+.preview-meta-value {
+    color: #cccccc;
+    font-size: 12px;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+}
+
+.preview-path-value {
+    color: #aaaaaa;
+}
+
+.preview-text,
+.preview-text text {
+    background-color: #000000;
+    color: #cccccc;
+    border: 1px solid #333333;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+/* ── Status bar ──────────────────────────────────────────── */
+.status-bar {
+    background-color: #0a0a0a;
+    border-top: 1px solid #333333;
+    padding: 3px 0;
+    min-height: 24px;
+    box-shadow: inset 0 1px 0 0 #00ffff18;
+}
+
+.status-info {
+    color: #888888;
+    font-size: 11px;
+}
+
+.status-path {
+    color: #888888;
+    font-size: 11px;
+    font-family: "JetBrains Mono", "Fira Mono", monospace;
+}
+
+.status-message {
+    color: #cccccc;
+    font-size: 11px;
+}
+
+/* ── Context menu / dialogs ─────────────────────────────── */
+.context-menu {
+    background-color: #0a0a0a;
+    border: 1px solid #444444;
+    border-radius: 10px;
+    padding: 0;
+    box-shadow: 0 8px 30px #00000099;
+}
+
+.context-menu contents {
+    background-color: transparent;
+}
+
+.context-menu-button {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: #ffffff;
+    padding: 8px 12px;
+}
+
+.context-menu-button:hover {
+    background-color: #141414;
+    border-color: #00ffff60;
+    color: #00ffff;
+}
+
+.context-menu-danger:hover {
+    border-color: #ff3355;
+    color: #ff3355;
+}
+
+.dialog-prompt {
+    color: #cccccc;
+}
+
+.dialog-column {
+    min-width: 420px;
+}
+
+.dialog-entry {
+    background-color: #000000;
+    border: 1px solid #444444;
+    border-radius: 8px;
+    color: #ffffff;
+    min-height: 34px;
+    min-width: 420px;
+    padding: 6px 10px;
+}
+
+/* ── GtkPaned divider ────────────────────────────────────── */
+paned > separator {
+    background-color: #333333;
+    min-width: 1px;
+    min-height: 1px;
+}
+
+paned > separator:hover {
+    background-color: #00ffff;
+}
+
+/* ── Scrollbars ──────────────────────────────────────────── */
+scrollbar {
+    background-color: transparent;
+    border: none;
+}
+
+scrollbar slider {
+    background-color: #333333;
+    border-radius: 4px;
+    min-width: 6px;
+    min-height: 40px;
+    margin: 2px;
+    transition: background 100ms ease;
+}
+
+scrollbar slider:hover {
+    background-color: #00ffff80;
+}
+
+scrollbar.vertical {
+    margin-left: 2px;
+}
+
+scrollbar.horizontal {
+    margin-top: 2px;
+}
+
+/* ── Tooltips ────────────────────────────────────────────── */
+tooltip {
+    background-color: #1e1e1e;
+    border: 1px solid #00ffff60;
+    border-radius: 6px;
+    padding: 5px 10px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.tooltip-label {
+    color: #ffffff;
+    font-size: 12px;
+}
+
+/* ── Bulk Rename dialog ───────────────────────────────────── */
+
+.bulk-rename-mode-btn { border: 2px solid #606060; background: #000; color: #ccc; padding: 5px 18px; border-radius: 4px; }
+.bulk-rename-mode-btn:checked { border-color: #ffff00; color: #ffff00; background: #111; }
+.bulk-rename-mode-btn > check { min-width: 0; min-height: 0; opacity: 0; margin: 0; padding: 0; }
+.bulk-rename-field-label { color: #cccccc; font-size: 12px; }
+.bulk-rename-spin { background: #000; border: 2px solid #606060; color: #fff; min-width: 80px; padding: 4px 8px; }
+.bulk-rename-sep { background-color: #606060; min-height: 2px; }
+.bulk-rename-section-label { color: #cccccc; font-size: 11px; }
+.bulk-rename-preview-scroll { background: #000; border: 2px solid #606060; min-height: 180px; }
+.bulk-rename-preview { background: transparent; }
+.bulk-rename-preview > row { background: transparent; padding: 0; }
+.bulk-rename-row { border-bottom: 1px solid #333; }
+.bulk-rename-row-conflict { background: #330000; }
+.bulk-rename-old { color: #999; font-size: 12px; }
+.bulk-rename-arrow { color: #666; font-size: 12px; }
+.bulk-rename-new { color: #00ff00; font-size: 12px; }
+.bulk-rename-new-unchanged { color: #666; font-size: 12px; font-style: italic; }
+.bulk-rename-new-conflict { color: #ff4444; font-size: 12px; }
+.bulk-rename-conflict-icon { color: #ff4444; font-size: 12px; }
+.bulk-rename-warn { color: #ff4444; font-size: 12px; }
+.dialog-btn-accept { background: #002200; border: 2px solid #00aa00; color: #00ff00; padding: 5px 14px; border-radius: 4px; }
+.dialog-btn-accept:hover { background: #004400; }
+.dialog-btn-accept:disabled { background: transparent; border-color: #333; color: #555; }
+
+/* ── Tag Filter Panel ────────────────────────────────────── */
+.toolbar-filter-btn:checked { background: #111; border-color: #ff00ff; color: #ff00ff; }
+.toolbar-filter-active { color: #ff00ff; }
+.tf-panel { background: #0a000f; border-bottom: 2px solid #880088; }
+.tf-inner { padding: 10px 14px 14px 14px; }
+.tf-header-label { color: #cc88ff; font-size: 11px; font-weight: 700; }
+.tf-mode-btn { background: #000; border: 2px solid #880088; border-radius: 8px; color: #cc88ff; font-size: 10px; padding: 2px 10px; }
+.tf-mode-btn:hover { border-color: #ff00ff; color: #ffffff; }
+.tf-clear-btn { background: transparent; border: 2px solid #880000; color: #ff4444; font-size: 10px; padding: 2px 10px; }
+.tf-clear-btn:hover { border-color: #ff0000; color: #ff8888; }
+.tf-active-label { color: #aa66ff; font-size: 10px; font-weight: 600; }
+.tf-active-chip { background: #110018; border: 2px solid #880088; color: #ff88ff; font-size: 11px; padding: 1px 8px; border-radius: 8px; }
+.tf-sep { background-color: #880088; min-height: 2px; }
+.tf-chip { background: #0a0010; border: 2px solid #440055; color: #aa88cc; font-size: 12px; padding: 3px 12px; border-radius: 10px; }
+.tf-chip > check { min-width: 0; min-height: 0; opacity: 0; }
+.tf-chip:hover { border-color: #880088; color: #ffffff; }
+.tf-chip:checked, .tf-chip-active { background: #200030; border-color: #ff00ff; color: #ffffff; }
+.tf-empty-hint { color: #664488; font-size: 12px; font-style: italic; }

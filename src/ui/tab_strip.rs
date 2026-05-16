@@ -10,16 +10,16 @@ pub struct TabStrip {
 
 impl TabStrip {
     pub fn build() -> Self {
-        let root = Box::new(Orientation::Horizontal, 8);
+        let root = Box::new(Orientation::Horizontal, 6);
         root.add_css_class("tab-strip");
 
-        let tabs_box = Box::new(Orientation::Horizontal, 6);
+        let tabs_box = Box::new(Orientation::Horizontal, 4);
         tabs_box.set_hexpand(true);
         root.append(&tabs_box);
 
-        let new_tab_button = Button::with_label("+");
+        let new_tab_button = Button::builder().icon_name("list-add-symbolic").build();
         new_tab_button.add_css_class("tab-add-button");
-        new_tab_button.set_tooltip_text(Some("Open a new tab"));
+        super::attach_tooltip(&new_tab_button, "New tab (Ctrl+T)");
         root.append(&new_tab_button);
 
         Self {

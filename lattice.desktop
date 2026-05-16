@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Lattice
+Comment=Mouse-first file manager for custom Linux desktops
+Exec=lattice %F
+Icon=system-file-manager
+Terminal=false
+Type=Application
+Categories=System;FileManager;
+MimeType=inode/directory;
+StartupNotify=true
+StartupWMClass=Lattice

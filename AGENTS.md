@@ -61,6 +61,7 @@ Non-negotiable enforcement:
 - Route styling through stable CSS classes in `themes/default.css`.
 - Do not scatter hardcoded visual styling through Rust code unless GTK specifically requires it.
 - Preserve existing CSS class names unless they are being intentionally migrated and the theme/docs are updated in the same pass.
+- All popup dialogs must use the shared dialog layout helpers and shared dialog CSS classes. Keep popup width stabilized through the shared helper's GTK width request path; do not hand-roll dialog sizing in ways that let long prompt text or initial entry text change the popup width after it appears.
 - Do not introduce keyboard-first flows.
 - Never silently overwrite.
 - Never make permanent delete the default destructive action.

@@ -11,13 +11,13 @@ pub struct StatusBar {
 
 impl StatusBar {
     pub fn build() -> Self {
-        let root = Box::new(Orientation::Horizontal, 16);
+        let root = Box::new(Orientation::Horizontal, 12);
         root.add_css_class("status-bar");
 
         let info_label = Label::new(Some("0 items · 0 selected"));
         info_label.add_css_class("status-info");
         info_label.set_halign(gtk::Align::Start);
-        info_label.set_margin_start(12);
+        info_label.set_margin_start(10);
         root.append(&info_label);
 
         let message_label = Label::new(None);
@@ -29,7 +29,7 @@ impl StatusBar {
         let path_label = Label::new(Some(""));
         path_label.add_css_class("status-path");
         path_label.set_halign(gtk::Align::End);
-        path_label.set_margin_end(12);
+        path_label.set_margin_end(10);
         root.append(&path_label);
 
         Self {

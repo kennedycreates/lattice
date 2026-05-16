@@ -61,10 +61,12 @@ pub struct PreviewPane {
     text_buffer: TextBuffer,
     text_scroll: ScrolledWindow,
     type_row: MetaRow,
+    mime_row: MetaRow,
     path_row: MetaRow,
     size_row: MetaRow,
     modified_row: MetaRow,
     dimensions_row: MetaRow,
+    duration_row: MetaRow,
     note_row: MetaRow,
 }
 
@@ -143,12 +145,14 @@ impl PreviewPane {
         content.append(&sep2);
 
         let type_row = MetaRow::build(&content);
+        let mime_row = MetaRow::build(&content);
         let path_row = MetaRow::build(&content);
         path_row.value.set_wrap_mode(gtk::pango::WrapMode::Char);
         path_row.value.add_css_class("preview-path-value");
         let size_row = MetaRow::build(&content);
         let modified_row = MetaRow::build(&content);
         let dimensions_row = MetaRow::build(&content);
+        let duration_row = MetaRow::build(&content);
         let note_row = MetaRow::build(&content);
 
         let text_buffer = TextBuffer::new(None);
@@ -180,10 +184,12 @@ impl PreviewPane {
             text_buffer,
             text_scroll,
             type_row,
+            mime_row,
             path_row,
             size_row,
             modified_row,
             dimensions_row,
+            duration_row,
             note_row,
         };
         pane.show_current_folder("~", 0);
@@ -215,11 +221,20 @@ impl PreviewPane {
         (width > 0 && height > 0).then_some((width, height))
     }
 
-    pub fn set_dimensions(&self, dimensions: Option<&str>) {
-        if let Some(dimensions) = dimensions {
-            self.dimensions_row.set("Dimensions", dimensions);
+    pub fn set_mime_type(&self, mime: Option<&str>) {
+        if let Some(m) = mime.filter(|s| !s.is_empty()) {
+            self.mime_row.set("MIME Type", m);
         } else {
-            self.dimensions_row.clear();
+            self.mime_row.clear();
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn set_duration(&self, duration: Option<&str>) {
+        if let Some(d) = duration {
+            self.duration_row.set("Duration", d);
+        } else {
+            self.duration_row.clear();
         }
     }
 
@@ -344,7 +359,7 @@ impl PreviewPane {
 
     pub fn show_error(&self, path: &str, message: &str) {
         self.reset(&FileKind::Unknown, "Preview Unavailable");
-        self.icon.set_label("ERR");
+        self.icon.set_label("⚠");
         self.type_row.set("Type", "Error");
         self.path_row.set("Path", path);
         self.note_row.set("Status", message);
@@ -359,10 +374,12 @@ impl PreviewPane {
         self.text_buffer.set_text("");
         self.text_scroll.set_visible(false);
         self.type_row.clear();
+        self.mime_row.clear();
         self.path_row.clear();
         self.size_row.clear();
         self.modified_row.clear();
         self.dimensions_row.clear();
+        self.duration_row.clear();
         self.note_row.clear();
     }
 }

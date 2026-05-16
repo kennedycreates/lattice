@@ -4,7 +4,7 @@
 
 Lattice is a mouse-first, visually polished file manager for custom Wayland desktops — especially setups using labwc, Sway, or similar compositors where GTK4 apps are the primary citizens.
 
-It is **not** a keyboard-driven power tool. It is a slick, dark, cyberpunk-aesthetic graphical file manager that feels at home on a well-customized desktop.
+It is **not** a keyboard-driven power tool. It is a slick, dark, visually intentional graphical file manager that feels at home on a well-customized desktop.
 
 ## Target User
 
@@ -23,18 +23,19 @@ It is **not** a keyboard-driven power tool. It is a slick, dark, cyberpunk-aesth
 
 | Feature | Status |
 |---|---|
-| Dark cyberpunk CSS theme | ✅ M0 |
+| Distinctive dark CSS theme | ✅ M0 |
 | App shell layout (toolbar, sidebar, grid, preview, status) | ✅ M0 |
-| Placeholder file cards | ✅ M0 |
+| Real file grid | ✅ M1 |
 | Real GIO directory browsing | ✅ M1 |
 | Sidebar navigation (click to browse) | ✅ M1 |
 | Right-click context menus | ✅ M2 |
-| Core file actions (rename, new folder, trash, delete, copy path, terminal) | ✅ M2 |
-| Tabbed browsing | Planned M3 |
-| Split-pane view | Planned M3 |
-| File preview (images, text, video thumbnails) | Planned M4 |
-| Search | Planned M4 |
-| Drag and drop | Planned M5 |
-| Tags and project metadata (SQLite) | Planned M5 |
-| TOML config | Planned M5 |
-| Trash restore / undo / deeper safety flows | Planned M5 |
+| Core file actions (rename, new folder, trash, copy path, terminal) | ✅ M2 |
+| Tabbed browsing | ✅ M4 |
+| Split-pane view | ✅ M4 |
+| File preview (images, text, metadata) | ✅ M3 |
+| Projects, tags, and Downloads Triage | ✅ M5 |
+| TOML config and launch modes | ✅ M6 |
+| Search | Not implemented |
+| Drag and drop | Not implemented |
+| Basic trash restore from Trash view | ✅ |
+| Trash undo / deeper safety flows | Not implemented |
