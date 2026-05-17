@@ -1,4 +1,4 @@
-use crate::metadata::{ProjectRecord, TagRecord};
+use crate::metadata::{PlaceRecord, ProjectRecord};
 use gtk::prelude::*;
 use gtk::{Box, Button, Label, Orientation, ScrolledWindow, Separator};
 use std::cell::RefCell;
@@ -6,30 +6,32 @@ use std::cell::RefCell;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarTarget {
     Home,
-    Downloads,
-    Documents,
-    DownloadsTriage,
+    Place(i64),
+    Search,
+    Triage,
+    ActivityLog,
+    Tags,
     SystemDrives,
     Recent,
     Trash,
     Project(i64),
-    Tag(i64),
 }
 
 #[derive(Clone)]
 pub struct Sidebar {
     pub root: ScrolledWindow,
     pub home_button: Button,
-    pub downloads_button: Button,
-    pub documents_button: Button,
-    pub downloads_triage_button: Button,
+    pub search_button: Button,
+    pub triage_button: Button,
+    pub activity_log_button: Button,
+    pub tags_button: Button,
     pub drives_button: Button,
     pub recent_button: Button,
     pub trash_button: Button,
+    place_list: Box,
     project_list: Box,
-    tag_list: Box,
+    place_buttons: RefCell<Vec<(PlaceRecord, Button)>>,
     project_buttons: RefCell<Vec<(i64, Button)>>,
-    tag_buttons: RefCell<Vec<(i64, Button)>>,
 }
 
 impl Sidebar {
@@ -40,23 +42,34 @@ impl Sidebar {
             .build();
         root.add_css_class("sidebar");
         root.set_min_content_width(188);
-        root.set_propagate_natural_width(true);
+        root.set_propagate_natural_width(false);
 
         let vbox = Box::new(Orientation::Vertical, 0);
         vbox.set_margin_top(8);
         vbox.set_margin_bottom(8);
 
         let home_button = section_button("🏠  Home", true);
-        let downloads_button = section_button("⬇  Downloads", true);
-        let documents_button = section_button("📄  Documents", true);
+        let places_section = Box::new(Orientation::Vertical, 0);
+        places_section.add_css_class("sidebar-section");
+        places_section.append(&section_heading("PLACES"));
+        places_section.append(&home_button);
+        let place_list = Box::new(Orientation::Vertical, 0);
+        place_list.add_css_class("sidebar-dynamic-list");
+        places_section.append(&place_list);
+        vbox.append(&places_section);
+        let sep = Separator::new(Orientation::Horizontal);
+        sep.add_css_class("sidebar-sep");
+        vbox.append(&sep);
+
+        let search_button = section_button("🔍  Search", true);
+        let triage_button = section_button("🧹  Triage", true);
+        let activity_log_button = section_button("📋  Activity Log", true);
+        let tags_button = section_button("🏷  Tags", true);
         append_section(
             &vbox,
-            "PLACES",
-            [&home_button, &downloads_button, &documents_button].as_slice(),
+            "TOOLS",
+            [&search_button, &triage_button, &activity_log_button, &tags_button].as_slice(),
         );
-
-        let downloads_triage_button = section_button("🧹  Downloads Triage", true);
-        append_section(&vbox, "TOOLS", [&downloads_triage_button].as_slice());
 
         let workspace_section = Box::new(Orientation::Vertical, 0);
         workspace_section.add_css_class("sidebar-section");
@@ -66,12 +79,6 @@ impl Sidebar {
         let project_list = Box::new(Orientation::Vertical, 0);
         project_list.add_css_class("sidebar-dynamic-list");
         workspace_section.append(&project_list);
-
-        let tags_heading = section_heading("TAGS");
-        workspace_section.append(&tags_heading);
-        let tag_list = Box::new(Orientation::Vertical, 0);
-        tag_list.add_css_class("sidebar-dynamic-list");
-        workspace_section.append(&tag_list);
 
         vbox.append(&workspace_section);
         let sep = Separator::new(Orientation::Horizontal);
@@ -92,17 +99,34 @@ impl Sidebar {
         Self {
             root,
             home_button,
-            downloads_button,
-            documents_button,
-            downloads_triage_button,
+            search_button,
+            triage_button,
+            activity_log_button,
+            tags_button,
             drives_button,
             recent_button,
             trash_button,
+            place_list,
             project_list,
-            tag_list,
+            place_buttons: RefCell::new(Vec::new()),
             project_buttons: RefCell::new(Vec::new()),
-            tag_buttons: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn set_places(&self, places: &[PlaceRecord]) {
+        clear_box(&self.place_list);
+        let mut buttons = Vec::with_capacity(places.len());
+        if places.is_empty() {
+            self.place_list
+                .append(&section_note("Pin folders here for quick access."));
+        }
+
+        for place in places {
+            let button = dynamic_button("📁", &place.name);
+            self.place_list.append(&button);
+            buttons.push((place.clone(), button));
+        }
+        self.place_buttons.replace(buttons);
     }
 
     pub fn set_projects(&self, projects: &[ProjectRecord]) {
@@ -114,46 +138,28 @@ impl Sidebar {
         }
 
         for project in projects {
-            let button = dynamic_button("🗂", &project.name);
+            let button = dynamic_button("📁", &project.name);
             self.project_list.append(&button);
             buttons.push((project.id, button));
         }
         self.project_buttons.replace(buttons);
     }
 
-    pub fn set_tags(&self, tags: &[TagRecord]) {
-        clear_box(&self.tag_list);
-        let mut buttons = Vec::with_capacity(tags.len());
-        if tags.is_empty() {
-            self.tag_list
-                .append(&section_note("Tags appear after you create them."));
-        }
-
-        for tag in tags {
-            let button = dynamic_button("#", &tag.name);
-            self.tag_list.append(&button);
-            buttons.push((tag.id, button));
-        }
-        self.tag_buttons.replace(buttons);
-    }
-
     pub fn project_buttons(&self) -> Vec<(i64, Button)> {
         self.project_buttons.borrow().clone()
     }
 
-    pub fn tag_buttons(&self) -> Vec<(i64, Button)> {
-        self.tag_buttons.borrow().clone()
+    pub fn place_buttons(&self) -> Vec<(PlaceRecord, Button)> {
+        self.place_buttons.borrow().clone()
     }
 
     pub fn set_active(&self, active: Option<&SidebarTarget>) {
         for (button, location) in [
             (&self.home_button, SidebarTarget::Home),
-            (&self.downloads_button, SidebarTarget::Downloads),
-            (&self.documents_button, SidebarTarget::Documents),
-            (
-                &self.downloads_triage_button,
-                SidebarTarget::DownloadsTriage,
-            ),
+            (&self.search_button, SidebarTarget::Search),
+            (&self.triage_button, SidebarTarget::Triage),
+            (&self.activity_log_button, SidebarTarget::ActivityLog),
+            (&self.tags_button, SidebarTarget::Tags),
             (&self.drives_button, SidebarTarget::SystemDrives),
             (&self.recent_button, SidebarTarget::Recent),
             (&self.trash_button, SidebarTarget::Trash),
@@ -165,16 +171,16 @@ impl Sidebar {
             }
         }
 
-        for (project_id, button) in self.project_buttons.borrow().iter() {
-            if active == Some(&SidebarTarget::Project(*project_id)) {
+        for (place, button) in self.place_buttons.borrow().iter() {
+            if active == Some(&SidebarTarget::Place(place.id)) {
                 button.add_css_class("active");
             } else {
                 button.remove_css_class("active");
             }
         }
 
-        for (tag_id, button) in self.tag_buttons.borrow().iter() {
-            if active == Some(&SidebarTarget::Tag(*tag_id)) {
+        for (project_id, button) in self.project_buttons.borrow().iter() {
+            if active == Some(&SidebarTarget::Project(*project_id)) {
                 button.add_css_class("active");
             } else {
                 button.remove_css_class("active");

@@ -75,9 +75,10 @@ in any theme — they will not change between releases within a major version.
 | `.top-toolbar` | Horizontal toolbar at the top | |
 | `.sidebar` | Left navigation panel | |
 | `.tab-strip` | Tab bar row | |
-| `.browser-pane` | File browsing pane (primary or secondary) | |
+| `.browser-pane` | File browsing pane (primary, secondary, or tertiary) | |
 | `.browser-pane-primary` | Primary pane | always visible |
-| `.browser-pane-secondary` | Secondary pane | visible when split is active |
+| `.browser-pane-secondary` | Secondary pane | visible in two- and three-panel layouts |
+| `.browser-pane-tertiary` | Tertiary pane | visible in three-panel layouts |
 | `.browser-pane-active` | Active pane | added to whichever pane has focus |
 | `.browser-pane-header` | Path header inside a pane | |
 | `.browser-pane-path` | Path label inside the pane header | |
@@ -90,8 +91,8 @@ in any theme — they will not change between releases within a major version.
 | Class | Notes |
 |-------|-------|
 | `.toolbar-nav-btn` | Back / Up / Refresh buttons |
-| `.toolbar-action-btn` | Sidebar, Preview, Split, New Folder, New Text Document, Rename, Trash, Search, Filter, Show Hidden |
-| `.toolbar-toggle` | Toggle variant (Sidebar, Preview, Split, Filter, Show Hidden) |
+| `.toolbar-action-btn` | Sidebar, Preview, Split, New Folder, New Text Document, Rename, Trash |
+| `.toolbar-toggle` | Toggle variant (Sidebar, Preview, Split) |
 | `.toolbar-danger-btn` | Destructive action variant (Trash) |
 | `.toolbar-sep` | Vertical separator between button groups |
 | `.toolbar-path-button` | Breadcrumb path bar button |
@@ -176,10 +177,29 @@ Example:
 | Class | Notes |
 |-------|-------|
 | `.pane-view-strip` | Header strip shown in tag/triage views |
+| `.pane-view-btn` | Compact per-pane header button for tag filter, hidden files, and icon/list view |
+| `.pane-filter-btn` | Per-pane tag filter header button |
+| `.pane-hidden-btn` | Per-pane hidden-files header button |
+| `.pane-control-active` | Active state for per-pane header controls |
 | `.pane-view-title` | View name label |
 | `.pane-filter-row` | Row of filter buttons |
 | `.pane-filter-button` | Individual filter pill |
 | `.pane-filter-button.active` | Currently selected filter |
+
+### Activity Log
+
+| Class | Notes |
+|-------|-------|
+| `.activity-log` | Activity Log root container |
+| `.activity-log-row` | One receipt row |
+| `.activity-log-op-icon` | Operation icon at the start of a row |
+| `.activity-log-summary` | Main receipt summary |
+| `.activity-log-timestamp` | Relative timestamp text |
+| `.activity-log-actions` | Compact row-action button group |
+| `.activity-log-action-btn` | Undo / repeat / reveal / copy-path row button |
+| `.activity-log-status-ok` | Success marker |
+| `.activity-log-status-fail` | Failure marker |
+| `.activity-log-empty` | Empty-state message |
 
 ### Context menus and dialogs
 

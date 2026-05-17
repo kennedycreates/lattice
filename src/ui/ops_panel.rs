@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use gtk::{Box as GtkBox, Label, Orientation, ProgressBar};
+use gtk::{Box as GtkBox, Label, Orientation, ProgressBar, Revealer};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -24,19 +24,25 @@ struct Inner {
 /// Hidden automatically when no operations are active.
 #[derive(Clone)]
 pub struct OpsPanel {
-    pub root: GtkBox,
+    /// The animated revealer — add this to the window layout.
+    pub root: Revealer,
     inner: Rc<RefCell<Inner>>,
 }
 
 impl OpsPanel {
     pub fn build() -> Self {
-        let root = GtkBox::new(Orientation::Vertical, 0);
-        root.add_css_class("ops-panel");
-        root.set_visible(false);
+        let panel = GtkBox::new(Orientation::Vertical, 0);
+        panel.add_css_class("ops-panel");
 
         let ops_box = GtkBox::new(Orientation::Vertical, 0);
         ops_box.add_css_class("ops-panel-list");
-        root.append(&ops_box);
+        panel.append(&ops_box);
+
+        let root = Revealer::new();
+        root.set_transition_type(gtk::RevealerTransitionType::SlideUp);
+        root.set_transition_duration(200);
+        root.set_child(Some(&panel));
+        root.set_reveal_child(false);
 
         Self {
             root,
@@ -101,6 +107,8 @@ impl OpsPanel {
         detail.set_visible(false);
         row.append(&detail);
 
+        row.add_css_class("op-row-enter");
+
         {
             let mut inn = self.inner.borrow_mut();
             inn.ops_box.append(&row);
@@ -115,8 +123,62 @@ impl OpsPanel {
             );
         }
 
-        self.root.set_visible(true);
+        self.root.set_reveal_child(true);
         id
+    }
+
+    /// Add a completed operation receipt. Receipts stay visible until dismissed.
+    pub fn add_receipt(&self, label: &str, detail: &str, failed: bool) {
+        let row = GtkBox::new(Orientation::Vertical, 3);
+        row.add_css_class("op-row");
+        row.add_css_class("op-row-enter");
+        row.add_css_class("op-row-receipt");
+        if failed {
+            row.add_css_class("op-row-failed");
+        }
+        row.set_margin_top(6);
+        row.set_margin_bottom(6);
+        row.set_margin_start(10);
+        row.set_margin_end(10);
+
+        let top = GtkBox::new(Orientation::Horizontal, 8);
+        let lbl = Label::new(Some(label));
+        lbl.add_css_class("op-label");
+        lbl.set_halign(gtk::Align::Start);
+        lbl.set_hexpand(true);
+        lbl.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        top.append(&lbl);
+
+        let dismiss_btn = gtk::Button::with_label("Dismiss");
+        dismiss_btn.add_css_class("op-action-button");
+        top.append(&dismiss_btn);
+        row.append(&top);
+
+        let detail_label = Label::new(Some(detail));
+        detail_label.add_css_class("op-detail");
+        detail_label.set_halign(gtk::Align::Start);
+        detail_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        row.append(&detail_label);
+
+        {
+            let mut inn = self.inner.borrow_mut();
+            inn.ops_box.append(&row);
+            let id = inn.next_id;
+            inn.next_id += 1;
+            inn.entries.insert(
+                id,
+                OpEntry {
+                    root: row.clone(),
+                    progress_bar: ProgressBar::new(),
+                    detail_label,
+                    action_button: dismiss_btn.clone(),
+                },
+            );
+            let panel = self.clone();
+            dismiss_btn.connect_clicked(move |_| panel.remove_op(id));
+        }
+
+        self.root.set_reveal_child(true);
     }
 
     /// Update the progress bar and detail text for a running operation.
@@ -182,7 +244,7 @@ impl OpsPanel {
             self.inner.borrow().ops_box.remove(&e.root);
         }
         if self.inner.borrow().entries.is_empty() {
-            self.root.set_visible(false);
+            self.root.set_reveal_child(false);
         }
     }
 }

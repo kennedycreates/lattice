@@ -1,16 +1,29 @@
 use crate::metadata::TagRecord;
-use crate::thumbnail::ThumbnailTarget;
+use crate::thumbnail::{ThumbnailKind, ThumbnailTarget};
 use gio::FileType;
+use glib::SourceId;
 use gtk::prelude::*;
-use gtk::{Align, Box, FlowBox, Label, Orientation, Overlay, Picture, ScrolledWindow, Stack};
-use std::cell::RefCell;
+use gtk::{
+    Align, Box, FlowBox, Label, ListBox, ListBoxRow, Orientation, Overlay, Picture, ScrolledWindow,
+    Stack,
+};
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
 
-const FILE_CARD_WIDTH: i32 = 96;
-const FILE_CARD_HEIGHT: i32 = 116;
-const FILE_CARD_THUMB_SIZE: i32 = 48;
-const FILE_CARD_MEDIA_SIZE: i32 = 52;
-const FILE_CARD_NAME_MAX_WIDTH_CHARS: i32 = 14;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Icons,
+    List,
+}
+
+const FILE_CARD_WIDTH: i32 = 112;
+const FILE_CARD_HEIGHT: i32 = 136;
+const FILE_CARD_THUMB_SIZE: i32 = 56;
+const FILE_CARD_MEDIA_SIZE: i32 = 60;
+const FILE_CARD_NAME_MAX_WIDTH_CHARS: i32 = 16;
 const FILE_CARD_TAGS_HEIGHT: i32 = 13;
 const FILE_GRID_MARGIN: i32 = 8;
 const FILE_GRID_COLUMN_SPACING: u32 = 4;
@@ -131,6 +144,20 @@ impl FileKind {
 
         Self::Unknown
     }
+
+    pub fn sort_key(&self) -> u8 {
+        match self {
+            Self::Folder => 0,
+            Self::Image => 1,
+            Self::Video => 2,
+            Self::Audio => 3,
+            Self::Document => 4,
+            Self::Text => 5,
+            Self::Archive => 6,
+            Self::ConfigCode => 7,
+            Self::Unknown => 8,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,17 +202,21 @@ impl FileItem {
 pub struct FileGrid {
     pub root: Overlay,
     pub flow: FlowBox,
+    pub list_box: ListBox,
+    content_stack: Stack,
     empty_state: Label,
+    pub view_mode: Cell<ViewMode>,
     thumb_targets: RefCell<Vec<ThumbnailTarget>>,
+    exit_timer: Rc<RefCell<Option<SourceId>>>,
 }
 
 impl FileGrid {
     pub fn build() -> Self {
-        let scroll = ScrolledWindow::builder()
+        let icon_scroll = ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .build();
-        scroll.add_css_class("file-grid-scroll");
+        icon_scroll.add_css_class("file-grid-scroll");
 
         let flow = FlowBox::new();
         flow.add_css_class("file-grid");
@@ -200,8 +231,27 @@ impl FileGrid {
         flow.set_margin_bottom(FILE_GRID_MARGIN);
         flow.set_margin_start(FILE_GRID_MARGIN);
         flow.set_margin_end(FILE_GRID_MARGIN);
+        icon_scroll.set_child(Some(&flow));
 
-        scroll.set_child(Some(&flow));
+        let list_scroll = ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .build();
+        list_scroll.add_css_class("file-list-scroll");
+
+        let list_box = ListBox::new();
+        list_box.add_css_class("file-list");
+        list_box.set_selection_mode(gtk::SelectionMode::Multiple);
+        list_box.set_activate_on_single_click(false);
+        list_box.set_can_focus(true);
+        list_scroll.set_child(Some(&list_box));
+
+        let content_stack = Stack::new();
+        content_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        content_stack.set_transition_duration(150);
+        content_stack.add_named(&icon_scroll, Some("icons"));
+        content_stack.add_named(&list_scroll, Some("list"));
+        content_stack.set_visible_child_name("icons");
 
         let empty_state = Label::new(Some("Loading folder…"));
         empty_state.add_css_class("file-grid-empty");
@@ -209,32 +259,88 @@ impl FileGrid {
         empty_state.set_valign(Align::Center);
 
         let root = Overlay::new();
-        root.set_child(Some(&scroll));
+        root.set_child(Some(&content_stack));
         root.add_overlay(&empty_state);
 
         Self {
             root,
             flow,
+            list_box,
+            content_stack,
             empty_state,
+            view_mode: Cell::new(ViewMode::Icons),
             thumb_targets: RefCell::new(Vec::new()),
+            exit_timer: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    pub fn set_view_mode(&self, mode: ViewMode) {
+        self.view_mode.set(mode);
+        self.content_stack.set_visible_child_name(match mode {
+            ViewMode::Icons => "icons",
+            ViewMode::List => "list",
+        });
+    }
+
+    pub fn grab_focus_on_active(&self) {
+        match self.view_mode.get() {
+            ViewMode::Icons => {
+                self.flow.grab_focus();
+            }
+            ViewMode::List => {
+                self.list_box.grab_focus();
+            }
+        }
+    }
+
+    fn cancel_exit_timer(&self) {
+        if let Some(id) = self.exit_timer.borrow_mut().take() {
+            id.remove();
         }
     }
 
     pub fn set_loading(&self) {
+        self.cancel_exit_timer();
         self.thumb_targets.borrow_mut().clear();
-        self.clear();
-        self.empty_state.set_label("Loading folder…");
-        self.empty_state.set_visible(true);
+
+        let has_icon_children = self.flow.child_at_index(0).is_some();
+        let has_list_children = self.list_box.row_at_index(0).is_some();
+
+        if has_icon_children || has_list_children {
+            let mut idx = 0;
+            while let Some(child) = self.flow.child_at_index(idx) {
+                child.add_css_class("card-exit");
+                idx += 1;
+            }
+            let mut idx = 0;
+            while let Some(row) = self.list_box.row_at_index(idx) {
+                row.add_css_class("card-exit");
+                idx += 1;
+            }
+            let grid = self.clone();
+            let id = glib::timeout_add_local_once(Duration::from_millis(80), move || {
+                *grid.exit_timer.borrow_mut() = None;
+                grid.clear();
+                grid.empty_state.set_label("Loading folder…");
+                grid.empty_state.set_visible(true);
+            });
+            *self.exit_timer.borrow_mut() = Some(id);
+        } else {
+            self.clear();
+            self.empty_state.set_label("Loading folder…");
+            self.empty_state.set_visible(true);
+        }
     }
 
     pub fn set_empty_message(&self, message: &str) {
-        self.thumb_targets.borrow_mut().clear();
+        self.cancel_exit_timer();
         self.clear();
         self.empty_state.set_label(message);
         self.empty_state.set_visible(true);
     }
 
     pub fn set_items(&self, items: &[FileItem]) {
+        self.cancel_exit_timer();
         self.clear();
         self.empty_state.set_visible(items.is_empty());
         if items.is_empty() {
@@ -243,14 +349,23 @@ impl FileGrid {
         }
 
         let mut targets = Vec::new();
-        for item in items {
+        for (index, item) in items.iter().enumerate() {
             let (card, target) = build_card(item);
+            card.add_css_class("card-anim");
+            card.add_css_class(&format!("card-delay-{}", index.min(15)));
             self.flow.append(&card);
             if let Some(t) = target {
                 targets.push(t);
             }
         }
         *self.thumb_targets.borrow_mut() = targets;
+
+        for (index, item) in items.iter().enumerate() {
+            let row = build_list_row(item);
+            row.add_css_class("list-row-anim");
+            row.add_css_class(&format!("card-delay-{}", index.min(15)));
+            self.list_box.append(&row);
+        }
     }
 
     /// Take all pending thumbnail targets out of this grid so the caller can
@@ -261,18 +376,30 @@ impl FileGrid {
 
     pub fn clear_selection(&self) {
         self.flow.unselect_all();
+        self.list_box.unselect_all();
     }
 
     pub fn select_only_index(&self, index: i32) {
         self.flow.unselect_all();
-        if let Some(child) = self.flow.child_at_index(index) {
-            self.flow.select_child(&child);
+        self.list_box.unselect_all();
+        match self.view_mode.get() {
+            ViewMode::Icons => {
+                if let Some(child) = self.flow.child_at_index(index) {
+                    self.flow.select_child(&child);
+                }
+            }
+            ViewMode::List => {
+                if let Some(row) = self.list_box.row_at_index(index) {
+                    self.list_box.select_row(Some(&row));
+                }
+            }
         }
     }
 
     pub fn select_range(&self, start: i32, end: i32, clear_first: bool) {
         if clear_first {
             self.flow.unselect_all();
+            self.list_box.unselect_all();
         }
 
         let (from, to) = if start <= end {
@@ -281,36 +408,77 @@ impl FileGrid {
             (end, start)
         };
 
-        for index in from..=to {
-            if let Some(child) = self.flow.child_at_index(index) {
-                self.flow.select_child(&child);
+        match self.view_mode.get() {
+            ViewMode::Icons => {
+                for index in from..=to {
+                    if let Some(child) = self.flow.child_at_index(index) {
+                        self.flow.select_child(&child);
+                    }
+                }
+            }
+            ViewMode::List => {
+                for index in from..=to {
+                    if let Some(row) = self.list_box.row_at_index(index) {
+                        self.list_box.select_row(Some(&row));
+                    }
+                }
             }
         }
     }
 
     pub fn toggle_index(&self, index: i32) {
-        if let Some(child) = self.flow.child_at_index(index) {
-            if child.is_selected() {
-                self.flow.unselect_child(&child);
-            } else {
-                self.flow.select_child(&child);
+        match self.view_mode.get() {
+            ViewMode::Icons => {
+                if let Some(child) = self.flow.child_at_index(index) {
+                    if child.is_selected() {
+                        self.flow.unselect_child(&child);
+                    } else {
+                        self.flow.select_child(&child);
+                    }
+                }
+            }
+            ViewMode::List => {
+                if let Some(row) = self.list_box.row_at_index(index) {
+                    if row.is_selected() {
+                        self.list_box.unselect_row(&row);
+                    } else {
+                        self.list_box.select_row(Some(&row));
+                    }
+                }
             }
         }
     }
 
     pub fn focus_index(&self, index: i32) {
-        if let Some(child) = self.flow.child_at_index(index) {
-            child.grab_focus();
-        } else {
-            self.flow.grab_focus();
+        match self.view_mode.get() {
+            ViewMode::Icons => {
+                if let Some(child) = self.flow.child_at_index(index) {
+                    child.grab_focus();
+                } else {
+                    self.flow.grab_focus();
+                }
+            }
+            ViewMode::List => {
+                if let Some(row) = self.list_box.row_at_index(index) {
+                    row.grab_focus();
+                } else {
+                    self.list_box.grab_focus();
+                }
+            }
         }
     }
 
     pub fn child_count(&self) -> i32 {
-        self.flow.observe_children().n_items() as i32
+        match self.view_mode.get() {
+            ViewMode::Icons => self.flow.observe_children().n_items() as i32,
+            ViewMode::List => self.list_box.observe_children().n_items() as i32,
+        }
     }
 
     pub fn estimated_columns(&self) -> i32 {
+        if self.view_mode.get() == ViewMode::List {
+            return 1;
+        }
         let width = self.flow.width();
         if width <= 0 {
             return 1;
@@ -322,17 +490,30 @@ impl FileGrid {
     }
 
     pub fn selected_indices(&self) -> Vec<i32> {
-        self.flow
-            .selected_children()
-            .into_iter()
-            .map(|child| child.index())
-            .filter(|index| *index >= 0)
-            .collect()
+        match self.view_mode.get() {
+            ViewMode::Icons => self
+                .flow
+                .selected_children()
+                .into_iter()
+                .map(|child| child.index())
+                .filter(|index| *index >= 0)
+                .collect(),
+            ViewMode::List => self
+                .list_box
+                .selected_rows()
+                .into_iter()
+                .map(|row| row.index())
+                .filter(|index| *index >= 0)
+                .collect(),
+        }
     }
 
     fn clear(&self) {
         while let Some(child) = self.flow.child_at_index(0) {
             self.flow.remove(&child);
+        }
+        while let Some(row) = self.list_box.row_at_index(0) {
+            self.list_box.remove(&row);
         }
     }
 }
@@ -361,9 +542,16 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
     media.set_halign(Align::Center);
     media.set_valign(Align::Start);
 
-    // For image files, slot a Stack so we can crossfade in the real thumbnail
-    // once it loads. Other file types just use the emoji badge label.
-    let thumb_target = if file.kind == FileKind::Image {
+    // For image, video, and audio files slot a Stack so we can crossfade in
+    // the real thumbnail once it loads. Other kinds use a plain emoji badge.
+    let thumb_kind = match file.kind {
+        FileKind::Image => Some(ThumbnailKind::Image),
+        FileKind::Video => Some(ThumbnailKind::Video),
+        FileKind::Audio => Some(ThumbnailKind::Audio),
+        _ => None,
+    };
+
+    let thumb_target = if let Some(kind) = thumb_kind {
         let badge = Label::new(Some(file.kind.badge()));
         badge.add_css_class("file-card-icon");
         badge.set_halign(Align::Center);
@@ -373,7 +561,7 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
         let picture = Picture::new();
         picture.add_css_class("file-thumb");
         picture.set_size_request(FILE_CARD_THUMB_SIZE, FILE_CARD_THUMB_SIZE);
-        picture.set_content_fit(gtk::ContentFit::Contain);
+        picture.set_content_fit(gtk::ContentFit::Cover);
         picture.set_halign(Align::Center);
         picture.set_valign(Align::Center);
 
@@ -393,6 +581,7 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
             mtime: file.modified_unix.unwrap_or(0),
             stack,
             picture,
+            kind,
         })
     } else {
         let icon = Label::new(Some(file.kind.badge()));
@@ -443,6 +632,89 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
     card.append(&tags);
 
     (shell, thumb_target)
+}
+
+fn build_list_row(file: &FileItem) -> ListBoxRow {
+    let row = ListBoxRow::new();
+    row.add_css_class("file-list-row");
+    row.add_css_class(file.kind.css_class());
+
+    let inner = Box::new(Orientation::Horizontal, 0);
+    inner.add_css_class("file-list-row-inner");
+    inner.set_hexpand(true);
+
+    let icon = Label::new(Some(file.kind.badge()));
+    icon.add_css_class("file-list-icon");
+    icon.set_halign(Align::Center);
+    icon.set_valign(Align::Center);
+    icon.set_size_request(36, -1);
+    icon.set_xalign(0.5);
+    inner.append(&icon);
+
+    let name = Label::new(Some(&file.name));
+    name.add_css_class("file-list-name");
+    name.set_hexpand(true);
+    name.set_halign(Align::Start);
+    name.set_valign(Align::Center);
+    name.set_size_request(1, -1);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name.set_single_line_mode(true);
+    name.set_xalign(0.0);
+    inner.append(&name);
+
+    let size_text = if file.is_dir {
+        String::new()
+    } else {
+        file.size_bytes
+            .map(format_file_size_list)
+            .unwrap_or_default()
+    };
+    let size = Label::new(Some(&size_text));
+    size.add_css_class("file-list-size");
+    size.set_halign(Align::End);
+    size.set_valign(Align::Center);
+    size.set_size_request(64, -1);
+    size.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    size.set_single_line_mode(true);
+    size.set_xalign(1.0);
+    inner.append(&size);
+
+    let date_text = file
+        .modified_unix
+        .and_then(|unix| {
+            glib::DateTime::from_unix_local(unix)
+                .ok()
+                .and_then(|dt| dt.format("%Y-%m-%d %H:%M").ok())
+                .map(|gs| gs.to_string())
+        })
+        .unwrap_or_default();
+    let date = Label::new(Some(&date_text));
+    date.add_css_class("file-list-date");
+    date.set_halign(Align::End);
+    date.set_valign(Align::Center);
+    date.set_size_request(116, -1);
+    date.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    date.set_single_line_mode(true);
+    date.set_xalign(1.0);
+    inner.append(&date);
+
+    row.set_child(Some(&inner));
+    row
+}
+
+fn format_file_size_list(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0usize;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes}B")
+    } else {
+        format!("{size:.1}{}", UNITS[unit])
+    }
 }
 
 fn is_archive(extension: &str, content_type: &str) -> bool {

@@ -2,13 +2,13 @@
 
 ## Vision
 
-Lattice is a mouse-first, visually polished file manager for custom Wayland desktops — especially setups using labwc, Sway, or similar compositors where GTK4 apps are the primary citizens.
+Lattice is a mouse-first, visually polished file manager for Linux desktops — it runs on any GTK4-compatible environment, including labwc, GNOME, COSMIC, Sway, and traditional X11 desktops.
 
 It is **not** a keyboard-driven power tool. It is a slick, dark, visually intentional graphical file manager that feels at home on a well-customized desktop.
 
 ## Target User
 
-- Linux power users who run custom Wayland compositors
+- Linux power users on any GTK4-compatible desktop
 - Users who prefer a mouse-first workflow but want full GTK4 integration
 - People who care about desktop aesthetics and want a cohesive dark theme
 
@@ -27,15 +27,16 @@ It is **not** a keyboard-driven power tool. It is a slick, dark, visually intent
 | App shell layout (toolbar, sidebar, grid, preview, status) | ✅ M0 |
 | Real file grid | ✅ M1 |
 | Real GIO directory browsing | ✅ M1 |
-| Sidebar navigation (click to browse) | ✅ M1 |
+| Sidebar navigation (click to browse) | ✅ Home fixed, user-pinned Places removable, Projects separate |
 | Right-click context menus | ✅ M2 |
 | Core file actions (rename, new folder, trash, copy path, terminal) | ✅ M2 |
 | Tabbed browsing | ✅ M4 |
-| Split-pane view | ✅ M4 |
+| Split-pane view | ✅ M4, now supports two or three panels |
 | File preview (images, text, metadata) | ✅ M3 |
 | Projects, tags, and Downloads Triage | ✅ M5 |
 | TOML config and launch modes | ✅ M6 |
-| Search | Not implemented |
-| Drag and drop | Not implemented |
+| Folder search | ✅ Current-folder or recursive scope with name, kind, date, size, and tag filters |
+| Drag and drop | ✅ Within/between panes and key sidebar destinations, with polished visual feedback |
 | Basic trash restore from Trash view | ✅ |
-| Trash undo / deeper safety flows | Not implemented |
+| Activity Log undo / repeat | ✅ Reversible new log rows support guarded undo, repeat, reveal, and copy-path actions |
+| Permanent-delete undo | Not implemented |

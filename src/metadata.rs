@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const DB_FILE_NAME: &str = "metadata.db";
-const DB_SCHEMA_VERSION: i32 = 2;
+const DB_SCHEMA_VERSION: i32 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectRecord {
@@ -23,10 +23,40 @@ pub struct ProjectDestinationRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaceRecord {
+    pub id: i64,
+    pub name: String,
+    pub folder_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TagRecord {
     pub id: i64,
     pub name: String,
     pub color: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct ActivityLogEntry {
+    pub id: i64,
+    pub timestamp_ms: i64,
+    pub operation: String,
+    pub file_count: i32,
+    pub summary: String,
+    pub source_path: String,
+    pub destination_path: Option<String>,
+    pub status: String,
+    pub error_detail: Option<String>,
+    pub items: Vec<ActivityLogItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityLogItem {
+    pub source_path: String,
+    pub destination_path: Option<String>,
+    pub status: String,
+    pub error_detail: Option<String>,
 }
 
 pub struct MetadataStore {
@@ -135,6 +165,143 @@ impl MetadataStore {
             .map_err(|error| error.to_string())?;
 
         rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn delete_project(&mut self, project_id: i64) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM projects WHERE id = ?1", params![project_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn add_project_destination(
+        &mut self,
+        project_id: i64,
+        name: &str,
+        relative_path: &str,
+    ) -> Result<ProjectDestinationRecord, String> {
+        self.conn
+            .execute(
+                "INSERT INTO project_destinations (project_id, name, relative_path)
+                 VALUES (?1, ?2, ?3)",
+                params![project_id, name.trim(), relative_path.trim()],
+            )
+            .map_err(map_constraint_error)?;
+        let id = self.conn.last_insert_rowid();
+        Ok(ProjectDestinationRecord {
+            id,
+            project_id,
+            name: name.trim().to_string(),
+            relative_path: relative_path.trim().to_string(),
+        })
+    }
+
+    pub fn remove_project_destination(&mut self, destination_id: i64) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM project_destinations WHERE id = ?1",
+                params![destination_id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_project_activity(&self, root_path: &str, limit: usize) -> Vec<ActivityLogEntry> {
+        let prefix = format!("{root_path}/%");
+        let mut stmt = match self.conn.prepare(
+            "SELECT id, timestamp_ms, operation, file_count, summary,
+                    source_path, destination_path, status, error_detail
+             FROM activity_log
+             WHERE source_path = ?1 OR source_path LIKE ?2
+                OR (destination_path IS NOT NULL
+                    AND (destination_path = ?1 OR destination_path LIKE ?2))
+             ORDER BY timestamp_ms DESC, id DESC
+             LIMIT ?3",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut entries: Vec<ActivityLogEntry> = stmt
+            .query_map(params![root_path, prefix, limit as i64], |row| {
+                Ok(ActivityLogEntry {
+                    id: row.get(0)?,
+                    timestamp_ms: row.get(1)?,
+                    operation: row.get(2)?,
+                    file_count: row.get(3)?,
+                    summary: row.get(4)?,
+                    source_path: row.get(5)?,
+                    destination_path: row.get(6)?,
+                    status: row.get(7)?,
+                    error_detail: row.get(8)?,
+                    items: Vec::new(),
+                })
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        for entry in &mut entries {
+            entry.items = self.list_activity_items(entry.id);
+        }
+        entries
+    }
+
+    pub fn list_places(&self) -> Result<Vec<PlaceRecord>, String> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT id, name, folder_path
+                 FROM places
+                 ORDER BY position ASC, name COLLATE NOCASE ASC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(PlaceRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    folder_path: PathBuf::from(row.get::<_, String>(2)?),
+                })
+            })
+            .map_err(|error| error.to_string())?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn create_place(&mut self, name: &str, folder_path: &Path) -> Result<PlaceRecord, String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err("Place names cannot be empty.".to_string());
+        }
+        let normalized_path = normalize_path(folder_path);
+        if normalized_path.is_empty() {
+            return Err("Place folder path cannot be empty.".to_string());
+        }
+        let next_position = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM places",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(1);
+        self.conn
+            .execute(
+                "INSERT INTO places (name, folder_path, position) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(folder_path) DO UPDATE SET name = excluded.name",
+                params![trimmed, normalized_path, next_position],
+            )
+            .map_err(map_constraint_error)?;
+        self.find_place_by_path(folder_path)?
+            .ok_or_else(|| "Failed to reload saved place.".to_string())
+    }
+
+    pub fn remove_place(&mut self, place_id: i64) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM places WHERE id = ?1", params![place_id])
+            .map(|_| ())
             .map_err(|error| error.to_string())
     }
 
@@ -302,6 +469,57 @@ impl MetadataStore {
         Ok(tags)
     }
 
+    pub fn rename_tag(&mut self, id: i64, new_name: &str) -> Result<(), String> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            return Err("Tag name cannot be empty.".to_string());
+        }
+        let rows = self
+            .conn
+            .execute(
+                "UPDATE tags SET name = ?1 WHERE id = ?2",
+                params![trimmed, id],
+            )
+            .map_err(map_constraint_error)?;
+        if rows == 0 {
+            return Err(format!("Tag {id} not found."));
+        }
+        Ok(())
+    }
+
+    pub fn update_tag_color(&mut self, id: i64, color: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE tags SET color = ?1 WHERE id = ?2",
+                params![color, id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_tag(&mut self, id: i64) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM tags WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn count_files_per_tag(&self) -> Result<HashMap<i64, usize>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tag_id, COUNT(*) FROM file_tags GROUP BY tag_id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, usize>(1)?)))
+            .map_err(|e| e.to_string())?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (tag_id, count) = row.map_err(|e| e.to_string())?;
+            map.insert(tag_id, count);
+        }
+        Ok(map)
+    }
+
     pub fn list_paths_for_tag(&self, tag_id: i64) -> Result<Vec<PathBuf>, String> {
         let mut statement = self
             .conn
@@ -384,6 +602,143 @@ impl MetadataStore {
         tx.commit().map_err(|error| error.to_string())
     }
 
+    pub fn log_activity(
+        &self,
+        operation: &str,
+        file_count: i32,
+        summary: &str,
+        source_path: &str,
+        destination_path: Option<&str>,
+        errors: &[String],
+    ) -> Result<i64, String> {
+        self.log_activity_with_items(
+            operation,
+            file_count,
+            summary,
+            source_path,
+            destination_path,
+            errors,
+            &[],
+        )
+    }
+
+    pub fn log_activity_with_items(
+        &self,
+        operation: &str,
+        file_count: i32,
+        summary: &str,
+        source_path: &str,
+        destination_path: Option<&str>,
+        errors: &[String],
+        items: &[(PathBuf, Option<PathBuf>)],
+    ) -> Result<i64, String> {
+        let status = if errors.is_empty() {
+            "success"
+        } else {
+            "failed"
+        };
+        let error_detail: Option<&str> = errors.first().map(|s| s.as_str());
+        let now_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.conn
+            .execute(
+                "INSERT INTO activity_log
+                 (timestamp_ms, operation, file_count, summary, source_path,
+                  destination_path, status, error_detail)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    now_ms,
+                    operation,
+                    file_count,
+                    summary,
+                    source_path,
+                    destination_path,
+                    status,
+                    error_detail
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        let activity_id = self.conn.last_insert_rowid();
+        for (index, (source, destination)) in items.iter().enumerate() {
+            self.conn
+                .execute(
+                    "INSERT INTO activity_log_items
+                     (activity_id, item_index, source_path, destination_path, status, error_detail)
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                    params![
+                        activity_id,
+                        index as i64,
+                        normalize_path(source),
+                        destination.as_ref().map(|path| normalize_path(path)),
+                        status
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(activity_id)
+    }
+
+    pub fn list_recent_activity(&self, limit: usize) -> Vec<ActivityLogEntry> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT id, timestamp_ms, operation, file_count, summary,
+                    source_path, destination_path, status, error_detail
+             FROM activity_log
+             ORDER BY timestamp_ms DESC, id DESC
+             LIMIT ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut entries: Vec<ActivityLogEntry> = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok(ActivityLogEntry {
+                    id: row.get(0)?,
+                    timestamp_ms: row.get(1)?,
+                    operation: row.get(2)?,
+                    file_count: row.get(3)?,
+                    summary: row.get(4)?,
+                    source_path: row.get(5)?,
+                    destination_path: row.get(6)?,
+                    status: row.get(7)?,
+                    error_detail: row.get(8)?,
+                    items: Vec::new(),
+                })
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        for entry in &mut entries {
+            entry.items = self.list_activity_items(entry.id);
+        }
+        entries
+    }
+
+    fn list_activity_items(&self, activity_id: i64) -> Vec<ActivityLogItem> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT source_path, destination_path, status, error_detail
+             FROM activity_log_items
+             WHERE activity_id = ?1
+             ORDER BY item_index ASC, id ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map(params![activity_id], |row| {
+            Ok(ActivityLogItem {
+                source_path: row.get(0)?,
+                destination_path: row.get(1)?,
+                status: row.get(2)?,
+                error_detail: row.get(3)?,
+            })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
     fn initialize(&mut self) -> Result<(), String> {
         let version = self
             .conn
@@ -425,10 +780,39 @@ impl MetadataStore {
                     relative_path TEXT NOT NULL DEFAULT ''
                 );
 
+                CREATE TABLE IF NOT EXISTS places (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    folder_path TEXT NOT NULL UNIQUE,
+                    position INTEGER NOT NULL DEFAULT 0
+                );
+
                 CREATE TABLE IF NOT EXISTS recent_locations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     folder_path TEXT NOT NULL UNIQUE,
                     last_visited_unix INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_ms INTEGER NOT NULL,
+                    operation TEXT NOT NULL,
+                    file_count INTEGER NOT NULL DEFAULT 1,
+                    summary TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    destination_path TEXT,
+                    status TEXT NOT NULL DEFAULT 'success',
+                    error_detail TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS activity_log_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    activity_id INTEGER NOT NULL REFERENCES activity_log(id) ON DELETE CASCADE,
+                    item_index INTEGER NOT NULL,
+                    source_path TEXT NOT NULL,
+                    destination_path TEXT,
+                    status TEXT NOT NULL DEFAULT 'success',
+                    error_detail TEXT
                 );
                 ",
             )
@@ -451,6 +835,23 @@ impl MetadataStore {
                         name: row.get(1)?,
                         root_path: PathBuf::from(row.get::<_, String>(2)?),
                         accent: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    fn find_place_by_path(&self, path: &Path) -> Result<Option<PlaceRecord>, String> {
+        self.conn
+            .query_row(
+                "SELECT id, name, folder_path FROM places WHERE folder_path = ?1",
+                params![normalize_path(path)],
+                |row| {
+                    Ok(PlaceRecord {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        folder_path: PathBuf::from(row.get::<_, String>(2)?),
                     })
                 },
             )
@@ -645,5 +1046,58 @@ mod tests {
         let recent = store.list_recent_locations(10).unwrap();
         assert_eq!(recent[0], PathBuf::from("/tmp/one"));
         assert_eq!(recent.len(), 2);
+    }
+
+    #[test]
+    fn activity_log_preserves_item_history() {
+        let store = MetadataStore::open_in_memory().unwrap();
+        let items = vec![
+            (
+                PathBuf::from("/tmp/source/a.txt"),
+                Some(PathBuf::from("/tmp/dest/a.txt")),
+            ),
+            (
+                PathBuf::from("/tmp/source/b.txt"),
+                Some(PathBuf::from("/tmp/dest/b.txt")),
+            ),
+        ];
+
+        let activity_id = store
+            .log_activity_with_items(
+                "copy",
+                2,
+                "Copied 2 files",
+                "/tmp/source",
+                Some("/tmp/dest"),
+                &[],
+                &items,
+            )
+            .unwrap();
+
+        let entries = store.list_recent_activity(10);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, activity_id);
+        assert_eq!(entries[0].items.len(), 2);
+        assert_eq!(entries[0].items[0].source_path, "/tmp/source/a.txt");
+        assert_eq!(
+            entries[0].items[1].destination_path.as_deref(),
+            Some("/tmp/dest/b.txt")
+        );
+    }
+
+    #[test]
+    fn places_can_be_created_and_removed() {
+        let mut store = MetadataStore::open_in_memory().unwrap();
+        let place = store
+            .create_place("Downloads", Path::new("/tmp/downloads"))
+            .unwrap();
+
+        let places = store.list_places().unwrap();
+        assert_eq!(places.len(), 1);
+        assert_eq!(places[0].name, "Downloads");
+        assert_eq!(places[0].folder_path, PathBuf::from("/tmp/downloads"));
+
+        store.remove_place(place.id).unwrap();
+        assert!(store.list_places().unwrap().is_empty());
     }
 }

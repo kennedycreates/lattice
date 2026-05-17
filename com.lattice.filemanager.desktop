@@ -2,7 +2,7 @@
 Name=Lattice
 Comment=Mouse-first file manager for custom Linux desktops
 Exec=lattice %F
-Icon=system-file-manager
+Icon=lattice
 Terminal=false
 Type=Application
 Categories=System;FileManager;

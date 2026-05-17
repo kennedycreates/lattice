@@ -1,3 +1,4 @@
+mod action_plan;
 mod app;
 mod config;
 mod launch;
@@ -11,6 +12,7 @@ use gtk::Application;
 const APP_ID: &str = "com.lattice.filemanager";
 
 fn main() -> glib::ExitCode {
+    glib::set_application_name("Lattice");
     let launch = launch::LaunchConfig::from_env();
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(move |app| app::on_activate(app, &launch));

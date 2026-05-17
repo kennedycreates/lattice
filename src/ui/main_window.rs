@@ -1,18 +1,24 @@
+use crate::action_plan::ActionPlan as FileOpPlan;
 use crate::config::{AppConfig, CustomActionConfig};
-use crate::metadata::{MetadataStore, ProjectRecord, TagRecord};
+use crate::metadata::{ActivityLogEntry, MetadataStore, PlaceRecord, ProjectRecord, TagRecord};
 use crate::ui::{
-    bulk_rename,
-    file_grid::{FileGrid, FileItem, FileKind},
+    activity_log_panel::{ActivityLogAction, ActivityLogPanel},
+    project_landing_panel::ProjectLandingPanel,
+    bulk_rename, conflict_resolver,
+    file_grid::{FileGrid, FileItem, FileKind, ViewMode},
+    holding_tray::HoldingTray,
     modal_host::{
         build_modal_actions, build_modal_button, build_modal_prompt, ButtonKind, ModalHost,
     },
     ops_panel::{OpId, OpsPanel},
+    plan_queue_panel::{PlanQueuePanel, QueueAction},
     preview_pane::PreviewPane,
     search_panel::{SearchAgeFilter, SearchKindFilter, SearchPanel, SearchQuery, SearchSizeFilter},
     sidebar::{Sidebar, SidebarTarget},
     status_bar::StatusBar,
     tab_strip::TabStrip,
     tag_filter::{TagFilterPanel, TagFilterSpec},
+    tag_panel::TagManagerPanel,
     toolbar::Toolbar,
 };
 use gdk_pixbuf::Pixbuf;
@@ -22,13 +28,17 @@ use gtk::gdk;
 use gtk::prelude::*;
 use gtk::{
     Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, FlowBox, HeaderBar, Image,
-    Label, Orientation, Paned, Popover, Separator,
+    Label, ListBox, ListBoxRow, Orientation, Paned, Popover, Revealer, Separator,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 const DIRECTORY_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::content-type,standard::is-hidden,standard::size,time::modified";
 const TRASH_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::content-type,standard::is-hidden,standard::size,time::modified,trash::orig-path,standard::target-uri";
@@ -43,12 +53,68 @@ const TRIAGE_LARGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
 enum PaneSlot {
     Primary,
     Secondary,
+    Tertiary,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneLayout {
+    Single,
+    Two,
+    Three,
+}
+
+impl PaneLayout {
+    fn next(self) -> Self {
+        match self {
+            Self::Single => Self::Two,
+            Self::Two => Self::Three,
+            Self::Three => Self::Single,
+        }
+    }
+
+    fn pane_count(self) -> usize {
+        match self {
+            Self::Single => 1,
+            Self::Two => 2,
+            Self::Three => 3,
+        }
+    }
+
+    fn includes(self, slot: PaneSlot) -> bool {
+        match slot {
+            PaneSlot::Primary => true,
+            PaneSlot::Secondary => self.pane_count() >= 2,
+            PaneSlot::Tertiary => self.pane_count() >= 3,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProjectTransferKind {
     Copy,
     Move,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayProjectAction {
+    Copy,
+    Move,
+}
+
+impl TrayProjectAction {
+    fn transfer_kind(self) -> ProjectTransferKind {
+        match self {
+            Self::Copy => ProjectTransferKind::Copy,
+            Self::Move => ProjectTransferKind::Move,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Copy => "Copy Tray to Project",
+            Self::Move => "Move Tray to Project",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +154,7 @@ impl FileClipboardState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DownloadsTriageFilter {
+enum TriageFilter {
     All,
     Today,
     ThisWeek,
@@ -99,10 +165,14 @@ enum DownloadsTriageFilter {
     Archives,
     Documents,
     LargeFiles,
+    Audio,
+    Executables,
+    Empty,
+    Duplicates,
 }
 
-impl DownloadsTriageFilter {
-    const ALL: [Self; 10] = [
+impl TriageFilter {
+    const ALL: [Self; 14] = [
         Self::All,
         Self::Today,
         Self::ThisWeek,
@@ -113,6 +183,10 @@ impl DownloadsTriageFilter {
         Self::Archives,
         Self::Documents,
         Self::LargeFiles,
+        Self::Audio,
+        Self::Executables,
+        Self::Empty,
+        Self::Duplicates,
     ];
 
     fn label(&self) -> &'static str {
@@ -127,6 +201,10 @@ impl DownloadsTriageFilter {
             Self::Archives => "Archives",
             Self::Documents => "Documents",
             Self::LargeFiles => "Large Files",
+            Self::Audio => "Audio",
+            Self::Executables => "Executables",
+            Self::Empty => "Empty Files",
+            Self::Duplicates => "Duplicates",
         }
     }
 }
@@ -138,6 +216,7 @@ enum FocusedContext {
     EditableText,
     Sidebar,
     FileGrid,
+    HoldingTray,
     TabStrip,
     Window,
 }
@@ -168,15 +247,21 @@ enum WindowCommand {
     ToggleHidden,
     ToggleSidebar,
     TogglePreview,
+    ToggleHoldingTray,
     NewTab,
     CloseTab,
     ToggleSplit,
     PreviousTab,
     NextTab,
     GoBack,
+    GoForward,
     GoUp,
     CyclePane,
     Escape,
+    SetViewIcons,
+    SetViewList,
+    TogglePlanMode,
+    EmptyTrash,
     CustomAction(String),
 }
 
@@ -195,11 +280,30 @@ struct ActionAvailability {
 enum PaneView {
     Directory(PathBuf),
     Tag(TagRecord),
-    DownloadsTriage(DownloadsTriageFilter),
+    Triage { root: PathBuf, filter: TriageFilter },
     SystemDrives,
     Recent,
     Trash,
     Search(SearchQuery),
+    ActivityLog,
+    ProjectLanding(i64),
+    TagManager,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum SortField {
+    #[default]
+    Name,
+    Modified,
+    Size,
+    Kind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum SortDirection {
+    #[default]
+    Ascending,
+    Descending,
 }
 
 #[derive(Clone, Debug)]
@@ -207,19 +311,38 @@ struct TabState {
     title: String,
     primary_dir: PathBuf,
     primary_back_history: Vec<PathBuf>,
+    primary_forward_history: Vec<PathBuf>,
     primary_view: PaneView,
     secondary_dir: PathBuf,
     secondary_back_history: Vec<PathBuf>,
+    secondary_forward_history: Vec<PathBuf>,
     secondary_view: PaneView,
-    split_enabled: bool,
+    tertiary_dir: PathBuf,
+    tertiary_back_history: Vec<PathBuf>,
+    tertiary_forward_history: Vec<PathBuf>,
+    tertiary_view: PaneView,
+    pane_layout: PaneLayout,
     active_pane: PaneSlot,
+    primary_view_mode: ViewMode,
+    secondary_view_mode: ViewMode,
+    tertiary_view_mode: ViewMode,
+    primary_show_hidden: bool,
+    secondary_show_hidden: bool,
+    tertiary_show_hidden: bool,
+    primary_sort_field: SortField,
+    primary_sort_direction: SortDirection,
+    secondary_sort_field: SortField,
+    secondary_sort_direction: SortDirection,
+    tertiary_sort_field: SortField,
+    tertiary_sort_direction: SortDirection,
 }
 
 struct LaunchResolution {
     primary_dir: PathBuf,
     primary_view: PaneView,
     secondary_dir: PathBuf,
-    split_enabled: bool,
+    tertiary_dir: PathBuf,
+    pane_layout: PaneLayout,
     notice: Option<String>,
 }
 
@@ -227,17 +350,36 @@ impl TabState {
     fn new(path: PathBuf) -> Self {
         let primary_view = PaneView::Directory(path.clone());
         let secondary_view = PaneView::Directory(path.clone());
+        let tertiary_view = PaneView::Directory(path.clone());
         let title = tab_title_for_view(&primary_view, &path);
         Self {
             title,
             primary_dir: path.clone(),
             primary_back_history: Vec::new(),
+            primary_forward_history: Vec::new(),
             primary_view,
-            secondary_dir: path,
+            secondary_dir: path.clone(),
             secondary_back_history: Vec::new(),
+            secondary_forward_history: Vec::new(),
             secondary_view,
-            split_enabled: false,
+            tertiary_dir: path,
+            tertiary_back_history: Vec::new(),
+            tertiary_forward_history: Vec::new(),
+            tertiary_view,
+            pane_layout: PaneLayout::Single,
             active_pane: PaneSlot::Primary,
+            primary_view_mode: ViewMode::Icons,
+            secondary_view_mode: ViewMode::Icons,
+            tertiary_view_mode: ViewMode::Icons,
+            primary_show_hidden: false,
+            secondary_show_hidden: false,
+            tertiary_show_hidden: false,
+            primary_sort_field: SortField::Name,
+            primary_sort_direction: SortDirection::Ascending,
+            secondary_sort_field: SortField::Name,
+            secondary_sort_direction: SortDirection::Ascending,
+            tertiary_sort_field: SortField::Name,
+            tertiary_sort_direction: SortDirection::Ascending,
         }
     }
 
@@ -250,23 +392,43 @@ impl TabState {
             primary_dir,
             primary_view,
             secondary_dir,
-            split_enabled,
+            tertiary_dir,
+            pane_layout,
             notice,
         } = resolve_launch(launch, places, metadata);
 
         let secondary_view = PaneView::Directory(secondary_dir.clone());
+        let tertiary_view = PaneView::Directory(tertiary_dir.clone());
         let title = tab_title_for_view(&primary_view, &primary_dir);
         (
             Self {
                 title,
                 primary_dir,
                 primary_back_history: Vec::new(),
+                primary_forward_history: Vec::new(),
                 primary_view,
                 secondary_dir,
                 secondary_back_history: Vec::new(),
+                secondary_forward_history: Vec::new(),
                 secondary_view,
-                split_enabled,
+                tertiary_dir,
+                tertiary_back_history: Vec::new(),
+                tertiary_forward_history: Vec::new(),
+                tertiary_view,
+                pane_layout,
                 active_pane: PaneSlot::Primary,
+                primary_view_mode: ViewMode::Icons,
+                secondary_view_mode: ViewMode::Icons,
+                tertiary_view_mode: ViewMode::Icons,
+                primary_show_hidden: false,
+                secondary_show_hidden: false,
+                tertiary_show_hidden: false,
+                primary_sort_field: SortField::Name,
+                primary_sort_direction: SortDirection::Ascending,
+                secondary_sort_field: SortField::Name,
+                secondary_sort_direction: SortDirection::Ascending,
+                tertiary_sort_field: SortField::Name,
+                tertiary_sort_direction: SortDirection::Ascending,
             },
             notice,
         )
@@ -277,12 +439,24 @@ impl TabState {
 struct PaneWidgets {
     root: GtkBox,
     path_label: Label,
+    filter_toggle_btn: Button,
+    hidden_toggle_btn: Button,
+    hidden_toggle_icon: gtk::Image,
+    sort_btn: Button,
+    sort_icon: gtk::Image,
+    view_mode_btn: Button,
+    view_mode_icon: gtk::Image,
     view_strip: GtkBox,
     view_title: Label,
-    triage_filters: Vec<(DownloadsTriageFilter, Button)>,
+    triage_filters: Vec<(TriageFilter, Button)>,
     search_panel: SearchPanel,
+    search_revealer: Revealer,
     tag_filter: TagFilterPanel,
+    tag_filter_revealer: Revealer,
     file_grid: FileGrid,
+    activity_log_panel: ActivityLogPanel,
+    project_landing_panel: ProjectLandingPanel,
+    tag_manager_panel: TagManagerPanel,
 }
 
 impl PaneWidgets {
@@ -292,6 +466,7 @@ impl PaneWidgets {
         match slot {
             PaneSlot::Primary => root.add_css_class("browser-pane-primary"),
             PaneSlot::Secondary => root.add_css_class("browser-pane-secondary"),
+            PaneSlot::Tertiary => root.add_css_class("browser-pane-tertiary"),
         }
 
         let header = GtkBox::new(Orientation::Horizontal, 0);
@@ -307,6 +482,40 @@ impl PaneWidgets {
         path_label.set_margin_top(6);
         path_label.set_margin_bottom(6);
         header.append(&path_label);
+
+        let filter_toggle_icon = gtk::Image::from_icon_name("object-select-symbolic");
+        let filter_toggle_btn = Button::new();
+        filter_toggle_btn.set_child(Some(&filter_toggle_icon));
+        filter_toggle_btn.add_css_class("pane-view-btn");
+        filter_toggle_btn.add_css_class("pane-filter-btn");
+        filter_toggle_btn.set_valign(Align::Center);
+        crate::ui::attach_tooltip(&filter_toggle_btn, "Tag filter (Ctrl+G)");
+        header.append(&filter_toggle_btn);
+
+        let hidden_toggle_icon = gtk::Image::from_icon_name("view-reveal-symbolic");
+        let hidden_toggle_btn = Button::new();
+        hidden_toggle_btn.set_child(Some(&hidden_toggle_icon));
+        hidden_toggle_btn.add_css_class("pane-view-btn");
+        hidden_toggle_btn.add_css_class("pane-hidden-btn");
+        hidden_toggle_btn.set_valign(Align::Center);
+        crate::ui::attach_tooltip(&hidden_toggle_btn, "Hidden files (Ctrl+H)");
+        header.append(&hidden_toggle_btn);
+
+        let sort_icon = gtk::Image::from_icon_name("view-sort-ascending-symbolic");
+        let sort_btn = Button::new();
+        sort_btn.set_child(Some(&sort_icon));
+        sort_btn.add_css_class("pane-view-btn");
+        sort_btn.set_valign(Align::Center);
+        crate::ui::attach_tooltip(&sort_btn, "Sort order");
+        header.append(&sort_btn);
+
+        let view_mode_icon = gtk::Image::from_icon_name("view-grid-symbolic");
+        let view_mode_btn = Button::new();
+        view_mode_btn.set_child(Some(&view_mode_icon));
+        view_mode_btn.add_css_class("pane-view-btn");
+        view_mode_btn.set_valign(Align::Center);
+        crate::ui::attach_tooltip(&view_mode_btn, "Toggle icon/list view (Ctrl+1/Ctrl+2)");
+        header.append(&view_mode_btn);
 
         let view_strip = GtkBox::new(Orientation::Vertical, 8);
         view_strip.add_css_class("pane-view-strip");
@@ -328,8 +537,8 @@ impl PaneWidgets {
         filter_row.set_column_spacing(6);
         filter_row.set_row_spacing(6);
         filter_row.set_max_children_per_line(64);
-        let mut triage_filters = Vec::with_capacity(DownloadsTriageFilter::ALL.len());
-        for filter in DownloadsTriageFilter::ALL {
+        let mut triage_filters = Vec::with_capacity(TriageFilter::ALL.len());
+        for filter in TriageFilter::ALL {
             let button = Button::with_label(filter.label());
             button.add_css_class("pane-filter-button");
             filter_row.append(&button);
@@ -338,27 +547,59 @@ impl PaneWidgets {
         view_strip.append(&filter_row);
 
         let search_panel = SearchPanel::build();
+        let search_revealer = Revealer::new();
+        search_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+        search_revealer.set_transition_duration(180);
+        search_revealer.set_child(Some(&search_panel.root));
+        search_revealer.set_reveal_child(false);
+
         let tag_filter = TagFilterPanel::build();
+        let tag_filter_revealer = Revealer::new();
+        tag_filter_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+        tag_filter_revealer.set_transition_duration(180);
+        tag_filter_revealer.set_child(Some(&tag_filter.root));
+        tag_filter_revealer.set_reveal_child(false);
+        tag_filter_revealer.set_visible(false);
 
         let file_grid = FileGrid::build();
         file_grid.root.set_vexpand(true);
         file_grid.root.set_hexpand(true);
 
+        let activity_log_panel = ActivityLogPanel::build();
+        let project_landing_panel = ProjectLandingPanel::build();
+
+        let tag_manager_panel = TagManagerPanel::build();
+
         root.append(&header);
-        root.append(&tag_filter.root);
+        root.append(&tag_filter_revealer);
         root.append(&view_strip);
-        root.append(&search_panel.root);
+        root.append(&search_revealer);
         root.append(&file_grid.root);
+        root.append(&activity_log_panel.root);
+        root.append(&project_landing_panel.root);
+        root.append(&tag_manager_panel.root);
 
         Self {
             root,
             path_label,
+            filter_toggle_btn,
+            hidden_toggle_btn,
+            hidden_toggle_icon,
+            sort_btn,
+            sort_icon,
+            view_mode_btn,
+            view_mode_icon,
             view_strip,
             view_title,
             triage_filters,
             search_panel,
+            search_revealer,
             tag_filter,
+            tag_filter_revealer,
             file_grid,
+            activity_log_panel,
+            project_landing_panel,
+            tag_manager_panel,
         }
     }
 }
@@ -387,7 +628,10 @@ impl MainWindow {
         let tab_strip = TabStrip::build();
         let primary_pane = PaneWidgets::build(PaneSlot::Primary);
         let secondary_pane = PaneWidgets::build(PaneSlot::Secondary);
+        let tertiary_pane = PaneWidgets::build(PaneSlot::Tertiary);
         let preview = PreviewPane::build();
+        let holding_tray = HoldingTray::build();
+        let plan_queue_panel = PlanQueuePanel::build();
         let ops_panel = OpsPanel::build();
         let status = StatusBar::build();
 
@@ -399,10 +643,13 @@ impl MainWindow {
             &tab_strip,
             &primary_pane,
             &secondary_pane,
+            &tertiary_pane,
             &preview,
         );
         body.root.set_vexpand(true);
         root.append(&body.root);
+        root.append(&holding_tray.root);
+        root.append(&plan_queue_panel.root);
         root.append(&ops_panel.root);
         root.append(&status.root);
 
@@ -421,10 +668,16 @@ impl MainWindow {
             tab_strip.clone(),
             primary_pane.clone(),
             secondary_pane.clone(),
+            tertiary_pane.clone(),
             preview.clone(),
-            body.preview_host.clone(),
+            holding_tray.clone(),
+            plan_queue_panel,
             status.clone(),
             ops_panel,
+            body.sidebar_revealer.clone(),
+            body.preview_revealer.clone(),
+            body.split_paned.clone(),
+            body.right_paned.clone(),
             modal_host,
             config,
         );
@@ -452,7 +705,6 @@ fn build_titlebar() -> HeaderBar {
 struct Places {
     home: PathBuf,
     downloads: PathBuf,
-    documents: PathBuf,
 }
 
 impl Places {
@@ -460,26 +712,52 @@ impl Places {
         let home = glib::home_dir();
         let downloads = glib::user_special_dir(UserDirectory::Downloads)
             .unwrap_or_else(|| home.join("Downloads"));
-        let documents = glib::user_special_dir(UserDirectory::Documents)
-            .unwrap_or_else(|| home.join("Documents"));
-        Self {
-            home,
-            downloads,
-            documents,
-        }
+        Self { home, downloads }
     }
 }
 
 #[derive(Default)]
 struct BatchResult {
     success_count: usize,
+    successful_paths: Vec<PathBuf>,
     failures: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActionPlan {
+    title: String,
+    confirm_label: String,
+    destructive: bool,
+    lines: Vec<String>,
+}
+
+impl ActionPlan {
+    fn new(
+        title: impl Into<String>,
+        confirm_label: impl Into<String>,
+        destructive: bool,
+        lines: Vec<String>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            confirm_label: confirm_label.into(),
+            destructive,
+            lines,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TrayCompletion {
+    action: String,
+    clear_successful_paths: bool,
 }
 
 struct BrowserController {
     window: ApplicationWindow,
     places: Places,
     metadata: RefCell<MetadataStore>,
+    user_places: RefCell<Vec<PlaceRecord>>,
     projects: RefCell<Vec<ProjectRecord>>,
     tags: RefCell<Vec<TagRecord>>,
     terminal_command: Option<Vec<OsString>>,
@@ -488,48 +766,93 @@ struct BrowserController {
     tab_strip: TabStrip,
     primary_pane: PaneWidgets,
     secondary_pane: PaneWidgets,
+    tertiary_pane: PaneWidgets,
     preview: PreviewPane,
-    preview_host: GtkBox,
+    holding_tray: HoldingTray,
     status: StatusBar,
     context_popover: RefCell<Option<Popover>>,
     file_clipboard: RefCell<Option<FileClipboardState>>,
+    holding_tray_items: RefCell<Vec<FileItem>>,
+    holding_tray_selection: RefCell<Vec<PathBuf>>,
     tabs: RefCell<Vec<TabState>>,
     active_tab: Cell<usize>,
     active_pane: Cell<PaneSlot>,
     current_dir: RefCell<PathBuf>,
     current_view: RefCell<PaneView>,
     back_history: RefCell<Vec<PathBuf>>,
+    forward_history: RefCell<Vec<PathBuf>>,
     items: RefCell<Vec<FileItem>>,
     primary_all_items: RefCell<Vec<FileItem>>,
     secondary_current_dir: RefCell<PathBuf>,
     secondary_view: RefCell<PaneView>,
     secondary_back_history: RefCell<Vec<PathBuf>>,
+    secondary_forward_history: RefCell<Vec<PathBuf>>,
     secondary_items: RefCell<Vec<FileItem>>,
     secondary_all_items: RefCell<Vec<FileItem>>,
+    tertiary_current_dir: RefCell<PathBuf>,
+    tertiary_view: RefCell<PaneView>,
+    tertiary_back_history: RefCell<Vec<PathBuf>>,
+    tertiary_forward_history: RefCell<Vec<PathBuf>>,
+    tertiary_items: RefCell<Vec<FileItem>>,
+    tertiary_all_items: RefCell<Vec<FileItem>>,
     pending_reveal_path: RefCell<Option<PathBuf>>,
     secondary_pending_reveal_path: RefCell<Option<PathBuf>>,
+    tertiary_pending_reveal_path: RefCell<Option<PathBuf>>,
     pending_status_message: RefCell<Option<String>>,
-    show_hidden: Cell<bool>,
+    primary_show_hidden: Cell<bool>,
+    secondary_show_hidden: Cell<bool>,
+    tertiary_show_hidden: Cell<bool>,
     sidebar_visible: Cell<bool>,
     preview_visible: Cell<bool>,
     suppress_panel_toggle_handlers: Cell<bool>,
-    split_enabled: Cell<bool>,
+    pane_layout: Cell<PaneLayout>,
+    primary_view_mode: Cell<ViewMode>,
+    secondary_view_mode: Cell<ViewMode>,
+    tertiary_view_mode: Cell<ViewMode>,
+    primary_sort_field: Cell<SortField>,
+    primary_sort_direction: Cell<SortDirection>,
+    secondary_sort_field: Cell<SortField>,
+    secondary_sort_direction: Cell<SortDirection>,
+    tertiary_sort_field: Cell<SortField>,
+    tertiary_sort_direction: Cell<SortDirection>,
     load_generation: Cell<u64>,
     load_cancellable: RefCell<Option<gio::Cancellable>>,
     secondary_load_generation: Cell<u64>,
     secondary_load_cancellable: RefCell<Option<gio::Cancellable>>,
+    tertiary_load_generation: Cell<u64>,
+    tertiary_load_cancellable: RefCell<Option<gio::Cancellable>>,
     primary_keyboard_anchor: Cell<Option<i32>>,
     primary_keyboard_current: Cell<Option<i32>>,
     secondary_keyboard_anchor: Cell<Option<i32>>,
     secondary_keyboard_current: Cell<Option<i32>>,
+    tertiary_keyboard_anchor: Cell<Option<i32>>,
+    tertiary_keyboard_current: Cell<Option<i32>>,
     preview_generation: Cell<u64>,
     preview_cancellable: RefCell<Option<gio::Cancellable>>,
     primary_thumb_loader: crate::thumbnail::ThumbnailLoader,
     secondary_thumb_loader: crate::thumbnail::ThumbnailLoader,
+    tertiary_thumb_loader: crate::thumbnail::ThumbnailLoader,
+    holding_tray_thumb_loader: crate::thumbnail::ThumbnailLoader,
     search_debounce: RefCell<Option<glib::SourceId>>,
+    primary_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
+    secondary_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
+    tertiary_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
     ops_panel: OpsPanel,
+    plan_queue_panel: PlanQueuePanel,
+    plan_mode_active: Cell<bool>,
+    action_queue: RefCell<Vec<crate::action_plan::ActionPlan>>,
+    sidebar_revealer: Revealer,
+    preview_revealer: Revealer,
+    split_paned: Paned,
+    right_paned: Paned,
     modal_host: ModalHost,
     config: AppConfig,
+    primary_duplicate_set: RefCell<Option<std::collections::HashSet<PathBuf>>>,
+    secondary_duplicate_set: RefCell<Option<std::collections::HashSet<PathBuf>>>,
+    tertiary_duplicate_set: RefCell<Option<std::collections::HashSet<PathBuf>>>,
+    primary_duplicate_scan_pending: Cell<bool>,
+    secondary_duplicate_scan_pending: Cell<bool>,
+    tertiary_duplicate_scan_pending: Cell<bool>,
 }
 
 impl BrowserController {
@@ -542,10 +865,16 @@ impl BrowserController {
         tab_strip: TabStrip,
         primary_pane: PaneWidgets,
         secondary_pane: PaneWidgets,
+        tertiary_pane: PaneWidgets,
         preview: PreviewPane,
-        preview_host: GtkBox,
+        holding_tray: HoldingTray,
+        plan_queue_panel: PlanQueuePanel,
         status: StatusBar,
         ops_panel: OpsPanel,
+        sidebar_revealer: Revealer,
+        preview_revealer: Revealer,
+        split_paned: Paned,
+        right_paned: Paned,
         modal_host: ModalHost,
         config: AppConfig,
     ) -> Rc<Self> {
@@ -558,6 +887,7 @@ impl BrowserController {
         Rc::new(Self {
             window,
             metadata: RefCell::new(metadata),
+            user_places: RefCell::new(Vec::new()),
             projects: RefCell::new(Vec::new()),
             tags: RefCell::new(Vec::new()),
             tabs: RefCell::new(vec![initial_tab]),
@@ -567,6 +897,8 @@ impl BrowserController {
             current_view: RefCell::new(PaneView::Directory(places.home.clone())),
             secondary_current_dir: RefCell::new(places.home.clone()),
             secondary_view: RefCell::new(PaneView::Directory(places.home.clone())),
+            tertiary_current_dir: RefCell::new(places.home.clone()),
+            tertiary_view: RefCell::new(PaneView::Directory(places.home.clone())),
             terminal_command: detect_terminal_command(),
             places,
             toolbar,
@@ -574,41 +906,84 @@ impl BrowserController {
             tab_strip,
             primary_pane,
             secondary_pane,
+            tertiary_pane,
             preview,
-            preview_host,
+            holding_tray,
             status,
             context_popover: RefCell::new(None),
             file_clipboard: RefCell::new(None),
+            holding_tray_items: RefCell::new(Vec::new()),
+            holding_tray_selection: RefCell::new(Vec::new()),
             back_history: RefCell::new(Vec::new()),
+            forward_history: RefCell::new(Vec::new()),
             items: RefCell::new(Vec::new()),
             primary_all_items: RefCell::new(Vec::new()),
             secondary_back_history: RefCell::new(Vec::new()),
+            secondary_forward_history: RefCell::new(Vec::new()),
             secondary_items: RefCell::new(Vec::new()),
             secondary_all_items: RefCell::new(Vec::new()),
+            tertiary_back_history: RefCell::new(Vec::new()),
+            tertiary_forward_history: RefCell::new(Vec::new()),
+            tertiary_items: RefCell::new(Vec::new()),
+            tertiary_all_items: RefCell::new(Vec::new()),
             pending_reveal_path: RefCell::new(None),
             secondary_pending_reveal_path: RefCell::new(None),
+            tertiary_pending_reveal_path: RefCell::new(None),
             pending_status_message: RefCell::new(launch_notice),
-            show_hidden: Cell::new(false),
+            primary_show_hidden: Cell::new(false),
+            secondary_show_hidden: Cell::new(false),
+            tertiary_show_hidden: Cell::new(false),
             sidebar_visible: Cell::new(true),
             preview_visible: Cell::new(true),
             suppress_panel_toggle_handlers: Cell::new(false),
-            split_enabled: Cell::new(false),
+            pane_layout: Cell::new(PaneLayout::Single),
+            primary_view_mode: Cell::new(ViewMode::Icons),
+            secondary_view_mode: Cell::new(ViewMode::Icons),
+            tertiary_view_mode: Cell::new(ViewMode::Icons),
+            primary_sort_field: Cell::new(SortField::Name),
+            primary_sort_direction: Cell::new(SortDirection::Ascending),
+            secondary_sort_field: Cell::new(SortField::Name),
+            secondary_sort_direction: Cell::new(SortDirection::Ascending),
+            tertiary_sort_field: Cell::new(SortField::Name),
+            tertiary_sort_direction: Cell::new(SortDirection::Ascending),
             load_generation: Cell::new(0),
             load_cancellable: RefCell::new(None),
             secondary_load_generation: Cell::new(0),
             secondary_load_cancellable: RefCell::new(None),
+            tertiary_load_generation: Cell::new(0),
+            tertiary_load_cancellable: RefCell::new(None),
             primary_keyboard_anchor: Cell::new(None),
             primary_keyboard_current: Cell::new(None),
             secondary_keyboard_anchor: Cell::new(None),
             secondary_keyboard_current: Cell::new(None),
+            tertiary_keyboard_anchor: Cell::new(None),
+            tertiary_keyboard_current: Cell::new(None),
             preview_generation: Cell::new(0),
             preview_cancellable: RefCell::new(None),
             primary_thumb_loader: crate::thumbnail::ThumbnailLoader::new(),
             secondary_thumb_loader: crate::thumbnail::ThumbnailLoader::new(),
+            tertiary_thumb_loader: crate::thumbnail::ThumbnailLoader::new(),
+            holding_tray_thumb_loader: crate::thumbnail::ThumbnailLoader::new(),
             search_debounce: RefCell::new(None),
+            primary_search_cancel: RefCell::new(None),
+            secondary_search_cancel: RefCell::new(None),
+            tertiary_search_cancel: RefCell::new(None),
             ops_panel,
+            plan_queue_panel,
+            plan_mode_active: Cell::new(false),
+            action_queue: RefCell::new(Vec::new()),
+            sidebar_revealer,
+            preview_revealer,
+            split_paned,
+            right_paned,
             modal_host,
             config,
+            primary_duplicate_set: RefCell::new(None),
+            secondary_duplicate_set: RefCell::new(None),
+            tertiary_duplicate_set: RefCell::new(None),
+            primary_duplicate_scan_pending: Cell::new(false),
+            secondary_duplicate_scan_pending: Cell::new(false),
+            tertiary_duplicate_scan_pending: Cell::new(false),
         })
     }
 
@@ -618,17 +993,20 @@ impl BrowserController {
         self.connect_tab_strip();
         self.connect_panes();
         self.connect_preview_actions();
+        self.connect_holding_tray();
         self.connect_search_panels();
         self.connect_window_shortcuts();
         self.attach_pane_dnd(PaneSlot::Primary);
         self.attach_pane_dnd(PaneSlot::Secondary);
-        self.attach_sidebar_dnd();
+        self.attach_pane_dnd(PaneSlot::Tertiary);
+        self.attach_sidebar_place_dnd(self.sidebar.home_button.clone(), self.places.home.clone());
         self.wire_tag_filters();
         self.refresh_metadata_sidebar();
         self.update_action_state();
         self.rebuild_tab_strip();
-        self.sync_split_visibility();
+        self.sync_pane_layout_visibility();
         self.reload_active_tab();
+        self.refresh_holding_tray();
     }
 
     fn connect_navigation(self: &Rc<Self>) {
@@ -636,6 +1014,11 @@ impl BrowserController {
         self.toolbar
             .back_button
             .connect_clicked(move |_| controller.go_back());
+
+        let controller = Rc::clone(self);
+        self.toolbar
+            .forward_button
+            .connect_clicked(move |_| controller.go_forward());
 
         let controller = Rc::clone(self);
         self.toolbar
@@ -658,12 +1041,7 @@ impl BrowserController {
         let controller = Rc::clone(self);
         self.toolbar
             .split_toggle
-            .connect_toggled(move |toggle| controller.set_split_enabled(toggle.is_active()));
-
-        let controller = Rc::clone(self);
-        self.toolbar
-            .show_hidden_toggle
-            .connect_toggled(move |toggle| controller.set_show_hidden(toggle.is_active()));
+            .connect_clicked(move |_| controller.cycle_pane_layout());
 
         let controller = Rc::clone(self);
         self.toolbar.preview_toggle.connect_toggled(move |toggle| {
@@ -671,6 +1049,27 @@ impl BrowserController {
                 return;
             }
             controller.set_preview_visible(toggle.is_active());
+        });
+
+        let controller = Rc::clone(self);
+        self.toolbar
+            .holding_tray_toggle
+            .connect_toggled(move |toggle| controller.set_holding_tray_visible(toggle.is_active()));
+
+        let controller = Rc::clone(self);
+        self.toolbar
+            .plan_mode_toggle
+            .connect_toggled(move |toggle| controller.set_plan_mode(toggle.is_active()));
+
+        let controller = Rc::clone(self);
+        self.plan_queue_panel
+            .execute_btn
+            .connect_clicked(move |_| controller.execute_plan_queue());
+
+        let controller = Rc::clone(self);
+        self.plan_queue_panel.clear_btn.connect_clicked(move |_| {
+            controller.action_queue.borrow_mut().clear();
+            controller.refresh_plan_queue_panel();
         });
 
         let controller = Rc::clone(self);
@@ -695,6 +1094,11 @@ impl BrowserController {
 
         let controller = Rc::clone(self);
         self.toolbar
+            .empty_trash_button
+            .connect_clicked(move |_| controller.empty_trash());
+
+        let controller = Rc::clone(self);
+        self.toolbar
             .path_button
             .connect_clicked(move |_| controller.begin_path_entry_editing());
 
@@ -702,6 +1106,8 @@ impl BrowserController {
         self.toolbar
             .path_entry
             .connect_activate(move |_| controller.navigate_from_path_entry());
+
+        self.attach_path_completion();
 
         let controller = Rc::clone(self);
         let focus = gtk::EventControllerFocus::new();
@@ -727,16 +1133,47 @@ impl BrowserController {
             glib::Propagation::Proceed
         });
         self.toolbar.path_entry.add_controller(key_controller);
+    }
+
+    fn connect_holding_tray(self: &Rc<Self>) {
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .add_selection_button
+            .connect_clicked(move |_| {
+                controller.add_selection_to_holding_tray(controller.active_slot())
+            });
 
         let controller = Rc::clone(self);
-        self.toolbar
-            .search_button
-            .connect_clicked(move |_| controller.open_search_in_current_dir());
+        self.holding_tray
+            .move_to_project_button
+            .connect_clicked(move |_| controller.show_tray_project_dialog(TrayProjectAction::Move));
 
         let controller = Rc::clone(self);
-        self.toolbar
-            .filter_toggle
-            .connect_toggled(move |btn| controller.set_filter_panel_open(btn.is_active()));
+        self.holding_tray
+            .copy_to_project_button
+            .connect_clicked(move |_| controller.show_tray_project_dialog(TrayProjectAction::Copy));
+
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .tag_button
+            .connect_clicked(move |_| controller.show_tray_tag_preview());
+
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .trash_button
+            .connect_clicked(move |_| controller.show_tray_trash_preview());
+
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .copy_path_button
+            .connect_clicked(move |_| controller.copy_holding_tray_paths());
+
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .clear_button
+            .connect_clicked(move |_| controller.clear_holding_tray());
+
+        self.attach_holding_tray_dnd();
     }
 
     fn connect_window_shortcuts(self: &Rc<Self>) {
@@ -747,6 +1184,89 @@ impl BrowserController {
             controller.handle_window_key(key, modifiers)
         });
         self.window.add_controller(win_keys);
+    }
+
+    #[allow(deprecated)]
+    fn attach_path_completion(self: &Rc<Self>) {
+        let store = gtk::ListStore::new(&[String::static_type()]);
+        let completion = gtk::EntryCompletion::builder()
+            .model(&store)
+            .text_column(0)
+            .minimum_key_length(1)
+            .inline_completion(true)
+            .inline_selection(true)
+            .popup_completion(true)
+            .popup_set_width(true)
+            .popup_single_match(false)
+            .build();
+        completion.set_match_func(|_, _, _| true);
+
+        let entry = self.toolbar.path_entry.clone();
+        completion.connect_match_selected(move |_, model, iter| {
+            let value = model.get::<String>(iter, 0);
+            entry.set_text(&value);
+            entry.set_position(-1);
+            glib::Propagation::Stop
+        });
+
+        self.toolbar.path_entry.set_completion(Some(&completion));
+
+        let completer = gio::FilenameCompleter::new();
+        let latest_input = Rc::new(RefCell::new(String::new()));
+
+        let controller = Rc::clone(self);
+        let store_for_changed = store.clone();
+        let completer_for_changed = completer.clone();
+        let latest_for_changed = latest_input.clone();
+        self.toolbar.path_entry.connect_changed(move |entry| {
+            let input = entry.text().to_string();
+            latest_for_changed.replace(input.clone());
+            update_path_completion_model(
+                &store_for_changed,
+                &completer_for_changed,
+                &input,
+                &controller.current_dir_for(controller.active_slot()),
+                &controller.places.home,
+            );
+        });
+
+        let controller = Rc::clone(self);
+        let store_for_data = store.clone();
+        let latest_for_data = latest_input.clone();
+        completer.connect_got_completion_data(move |completer| {
+            let input = latest_for_data.borrow().clone();
+            update_path_completion_model(
+                &store_for_data,
+                completer,
+                &input,
+                &controller.current_dir_for(controller.active_slot()),
+                &controller.places.home,
+            );
+        });
+
+        let entry = self.toolbar.path_entry.clone();
+        let store_for_keys = store.clone();
+        let completion_for_keys = completion.clone();
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.connect_key_pressed(move |_, key, _, _| {
+            let accept_inline = key == gdk::Key::Tab
+                || (key == gdk::Key::Right && entry.position() == entry.text_length() as i32);
+            if !accept_inline {
+                return glib::Propagation::Proceed;
+            }
+
+            if let Some(first) = first_path_completion(&store_for_keys) {
+                if first != entry.text() {
+                    entry.set_text(&first);
+                    entry.set_position(-1);
+                    return glib::Propagation::Stop;
+                }
+            }
+
+            completion_for_keys.insert_prefix();
+            glib::Propagation::Stop
+        });
+        self.toolbar.path_entry.add_controller(key_controller);
     }
 
     fn handle_window_key(
@@ -768,7 +1288,8 @@ impl BrowserController {
             };
         }
 
-        if self.handle_sidebar_navigation(focus, key, modifiers)
+        if self.handle_holding_tray_key(focus, key, modifiers)
+            || self.handle_sidebar_navigation(focus, key, modifiers)
             || self.handle_file_grid_key(focus, key, modifiers)
         {
             return glib::Propagation::Stop;
@@ -812,6 +1333,10 @@ impl BrowserController {
             return FocusedContext::EditableText;
         }
 
+        if widget_or_ancestor_has_css(&focus, "holding-tray") {
+            return FocusedContext::HoldingTray;
+        }
+
         if focus.has_css_class("sidebar-button") {
             return FocusedContext::Sidebar;
         }
@@ -823,39 +1348,44 @@ impl BrowserController {
             return FocusedContext::TabStrip;
         }
 
-        if focus.is::<gtk::FlowBox>() || focus.is::<gtk::FlowBoxChild>() {
+        if focus.is::<gtk::FlowBox>()
+            || focus.is::<gtk::FlowBoxChild>()
+            || focus.is::<ListBox>()
+            || focus.is::<ListBoxRow>()
+        {
             return FocusedContext::FileGrid;
         }
 
         FocusedContext::Window
     }
 
-    fn search_entries(&self) -> [Entry; 2] {
+    fn search_entries(&self) -> [Entry; 3] {
         [
             self.primary_pane.search_panel.name_entry.clone(),
             self.secondary_pane.search_panel.name_entry.clone(),
+            self.tertiary_pane.search_panel.name_entry.clone(),
         ]
     }
 
     fn sidebar_buttons(&self) -> Vec<Button> {
         let mut buttons = vec![
             self.sidebar.home_button.clone(),
-            self.sidebar.downloads_button.clone(),
-            self.sidebar.documents_button.clone(),
-            self.sidebar.downloads_triage_button.clone(),
+            self.sidebar.triage_button.clone(),
+            self.sidebar.activity_log_button.clone(),
+            self.sidebar.tags_button.clone(),
             self.sidebar.drives_button.clone(),
             self.sidebar.recent_button.clone(),
             self.sidebar.trash_button.clone(),
         ];
         buttons.extend(
             self.sidebar
-                .project_buttons()
+                .place_buttons()
                 .into_iter()
                 .map(|(_, button)| button),
         );
         buttons.extend(
             self.sidebar
-                .tag_buttons()
+                .project_buttons()
                 .into_iter()
                 .map(|(_, button)| button),
         );
@@ -897,20 +1427,14 @@ impl BrowserController {
 
     fn connect_sidebar(self: &Rc<Self>) {
         connect_directory_button(self, &self.sidebar.home_button, self.places.home.clone());
-        connect_directory_button(
-            self,
-            &self.sidebar.downloads_button,
-            self.places.downloads.clone(),
-        );
-        connect_directory_button(
-            self,
-            &self.sidebar.documents_button,
-            self.places.documents.clone(),
-        );
         let controller = Rc::clone(self);
         self.sidebar
-            .downloads_triage_button
-            .connect_clicked(move |_| controller.open_downloads_triage(DownloadsTriageFilter::All));
+            .search_button
+            .connect_clicked(move |_| controller.open_search_in_current_dir());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .triage_button
+            .connect_clicked(move |_| controller.triage_active_folder());
         let controller = Rc::clone(self);
         self.sidebar
             .drives_button
@@ -923,51 +1447,1057 @@ impl BrowserController {
         self.sidebar
             .trash_button
             .connect_clicked(move |_| controller.open_trash());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .activity_log_button
+            .connect_clicked(move |_| controller.open_activity_log());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .tags_button
+            .connect_clicked(move |_| controller.open_tag_manager());
     }
 
-    fn refresh_metadata_sidebar(self: &Rc<Self>) {
-        let (projects, tags) = {
-            let metadata = self.metadata.borrow();
-            let projects = metadata.list_projects().unwrap_or_default();
-            let tags = metadata.list_tags().unwrap_or_default();
-            (projects, tags)
+    fn open_activity_log(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        self.current_view_cell(slot).replace(PaneView::ActivityLog);
+        self.sync_active_tab_state();
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_activity_log_view(slot);
+    }
+
+    fn open_tag_manager(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        if matches!(self.current_view_for(slot), PaneView::TagManager) {
+            return;
+        }
+        self.current_view_cell(slot).replace(PaneView::TagManager);
+        self.sync_active_tab_state();
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_tag_manager_view(slot);
+        self.update_navigation_state();
+    }
+
+    fn load_tag_manager_view(self: &Rc<Self>, slot: PaneSlot) {
+        self.cancel_active_load(slot);
+        if slot == self.active_slot() {
+            self.cancel_active_preview();
+        }
+        self.dismiss_context_menu();
+
+        let pane = self.pane_widgets(slot);
+        let display_label = self.display_label_for(slot);
+        pane.path_label.set_label(&display_label);
+        pane.file_grid.clear_selection();
+        self.reset_keyboard_state(slot);
+        self.items_cell(slot).borrow_mut().clear();
+
+        let (tags, counts) = {
+            let meta = self.metadata.borrow();
+            let tags = meta.list_tags().unwrap_or_default();
+            let counts = meta.count_files_per_tag().unwrap_or_default();
+            (tags, counts)
         };
+        let tag_count = tags.len();
+        pane.tag_manager_panel.set_tags(&tags, &counts);
 
-        self.projects.replace(projects.clone());
-        self.tags.replace(tags.clone());
-        self.sidebar.set_projects(&projects);
-        self.sidebar.set_tags(&tags);
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel.connect_tag_clicked(move |tag_id| {
+            controller.open_tag(tag_id);
+        });
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel.connect_tag_created(move |name, color| {
+            controller.handle_tag_created(name, color);
+        });
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel.connect_tag_renamed(move |id, name| {
+            controller.handle_tag_renamed(id, name);
+        });
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel
+            .connect_tag_recolored(move |id, color| {
+                controller.handle_tag_recolored(id, color);
+            });
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel.connect_tag_deleted(move |id| {
+            controller.handle_tag_deleted(id);
+        });
 
-        for (project_id, button) in self.sidebar.project_buttons() {
-            let controller = Rc::clone(self);
-            button.connect_clicked(move |_| controller.open_project(project_id));
+        self.update_view_strip(slot);
+
+        if slot == self.active_slot() {
+            self.toolbar.set_breadcrumb_path(&display_label);
+            self.toolbar.show_breadcrumb_mode();
+            self.status.set_path(&display_label);
+            self.status.clear_message();
+            self.status.set_counts(tag_count, 0);
+            self.update_sidebar_state();
+            self.update_navigation_state();
+            self.update_action_state();
         }
-
-        for (tag_id, button) in self.sidebar.tag_buttons() {
-            let controller = Rc::clone(self);
-            button.connect_clicked(move |_| controller.open_tag(tag_id));
-        }
-
-        self.refresh_search_tag_buttons(PaneSlot::Primary);
-        self.refresh_search_tag_buttons(PaneSlot::Secondary);
-        self.primary_pane.tag_filter.set_tags(&tags);
-        self.secondary_pane.tag_filter.set_tags(&tags);
-        self.update_sidebar_state();
     }
 
-    fn open_project(self: &Rc<Self>, project_id: i64) {
+    fn handle_tag_created(self: &Rc<Self>, name: String, color: String) {
+        let tag_result = self.metadata.borrow_mut().ensure_tag(&name);
+        let result = tag_result.and_then(|tag| {
+            self.metadata.borrow_mut().update_tag_color(tag.id, &color)
+        });
+        match result {
+            Ok(()) => {
+                self.refresh_metadata_sidebar();
+                self.reload_tag_manager_if_visible();
+                self.status
+                    .set_message(&format!("Tag \u{2018}{name}\u{2019} created."));
+            }
+            Err(e) => {
+                self.modal_host
+                    .show_error("Create Tag Failed", &e);
+            }
+        }
+    }
+
+    fn handle_tag_renamed(self: &Rc<Self>, id: i64, new_name: String) {
+        let result = self.metadata.borrow_mut().rename_tag(id, &new_name);
+        match result {
+            Ok(()) => {
+                self.refresh_metadata_sidebar();
+                self.reload_tag_manager_if_visible();
+            }
+            Err(e) => {
+                self.modal_host
+                    .show_error("Rename Tag Failed", &e);
+            }
+        }
+    }
+
+    fn handle_tag_recolored(self: &Rc<Self>, id: i64, color: String) {
+        let result = self.metadata.borrow_mut().update_tag_color(id, &color);
+        match result {
+            Ok(()) => {
+                self.refresh_metadata_sidebar();
+                self.reload_tag_manager_if_visible();
+            }
+            Err(e) => {
+                self.modal_host
+                    .show_error("Recolor Tag Failed", &e);
+            }
+        }
+    }
+
+    fn handle_tag_deleted(self: &Rc<Self>, id: i64) {
+        let count = self
+            .metadata
+            .borrow()
+            .count_files_per_tag()
+            .unwrap_or_default()
+            .get(&id)
+            .copied()
+            .unwrap_or(0);
+        let tag_name = self
+            .tags
+            .borrow()
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        let prompt = if count == 0 {
+            format!(
+                "Delete tag \u{2018}{tag_name}\u{2019}? This cannot be undone."
+            )
+        } else {
+            format!(
+                "Delete tag \u{2018}{tag_name}\u{2019}? It will be removed from {count} file(s). This cannot be undone."
+            )
+        };
+        let controller = Rc::clone(self);
+        self.modal_host.show_confirm(
+            "Delete Tag",
+            &prompt,
+            "Delete",
+            true,
+            false,
+            move || {
+                let result = controller.metadata.borrow_mut().delete_tag(id);
+                match result {
+                    Ok(()) => {
+                        controller.refresh_metadata_sidebar();
+                        controller.reload_tag_manager_if_visible();
+                        controller.status.set_message("Tag deleted.");
+                    }
+                    Err(e) => {
+                        controller
+                            .modal_host
+                            .show_error("Delete Tag Failed", &e);
+                    }
+                }
+            },
+        );
+    }
+
+    fn reload_tag_manager_if_visible(self: &Rc<Self>) {
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            if matches!(self.current_view_for(slot), PaneView::TagManager) {
+                self.load_tag_manager_view(slot);
+            }
+        }
+    }
+
+    fn load_activity_log_view(self: &Rc<Self>, slot: PaneSlot) {
+        self.cancel_active_load(slot);
+        if slot == self.active_slot() {
+            self.cancel_active_preview();
+        }
+        self.dismiss_context_menu();
+
+        let pane = self.pane_widgets(slot);
+        let display_label = self.display_label_for(slot);
+        pane.path_label.set_label(&display_label);
+        pane.file_grid.clear_selection();
+        self.reset_keyboard_state(slot);
+        self.items_cell(slot).borrow_mut().clear();
+
+        let entries = self.metadata.borrow().list_recent_activity(200);
+        let controller = Rc::clone(self);
+        pane.activity_log_panel
+            .populate(&entries, move |action, entry| {
+                controller.handle_activity_log_action(action, entry);
+            });
+        self.update_view_strip(slot);
+
+        if slot == self.active_slot() {
+            self.toolbar.set_breadcrumb_path(&display_label);
+            self.toolbar.show_breadcrumb_mode();
+            self.status.set_path(&display_label);
+            self.status.clear_message();
+            self.status.set_counts(entries.len(), 0);
+            self.update_sidebar_state();
+            self.update_navigation_state();
+            self.update_action_state();
+            self.show_empty_selection_preview(slot, &display_label, entries.len());
+        }
+    }
+
+    fn load_project_landing_view(self: &Rc<Self>, slot: PaneSlot, project_id: i64) {
+        self.cancel_active_load(slot);
+        if slot == self.active_slot() {
+            self.cancel_active_preview();
+        }
+        self.dismiss_context_menu();
+
         let Some(project) = self
             .projects
             .borrow()
             .iter()
-            .find(|project| project.id == project_id)
+            .find(|p| p.id == project_id)
             .cloned()
         else {
             self.status.set_message("Project not found.");
             return;
         };
 
-        self.navigate_to(self.active_slot(), project.root_path, true);
+        let destinations = self
+            .metadata
+            .borrow()
+            .list_project_destinations(project_id)
+            .unwrap_or_default();
+        let root_str = project.root_path.to_string_lossy().to_string();
+        let activity = self
+            .metadata
+            .borrow()
+            .list_project_activity(&root_str, 10);
+
+        let pane = self.pane_widgets(slot);
+        let display_label = project.name.clone();
+        pane.path_label.set_label(&display_label);
+        pane.file_grid.clear_selection();
+        self.reset_keyboard_state(slot);
+        self.items_cell(slot).borrow_mut().clear();
+
+        let controller = Rc::clone(self);
+        let on_navigate = move |path: PathBuf| {
+            controller.navigate_to(slot, path, true);
+        };
+
+        let controller = Rc::clone(self);
+        let on_remove_destination = move |dest_id: i64| {
+            controller.remove_project_destination(dest_id, project_id, slot);
+        };
+
+        let controller = Rc::clone(self);
+        let on_open_new_tab = move |path: PathBuf| {
+            controller.open_new_tab(Some(path));
+        };
+
+        let controller = Rc::clone(self);
+        let on_open_split = move |path: PathBuf| {
+            controller.open_in_split(slot, path);
+        };
+
+        let controller = Rc::clone(self);
+        let on_view_log = move || {
+            controller.open_activity_log();
+        };
+
+        let controller = Rc::clone(self);
+        let on_add_destination = move || {
+            controller.show_add_destination_dialog(project_id, slot);
+        };
+
+        let controller = Rc::clone(self);
+        let on_send_holding_tray = move || {
+            controller.send_holding_tray_to_project(project_id);
+        };
+
+        pane.project_landing_panel.populate(
+            &project,
+            &destinations,
+            &activity,
+            on_navigate,
+            on_remove_destination,
+            on_open_new_tab,
+            on_open_split,
+            on_view_log,
+            on_add_destination,
+            on_send_holding_tray,
+        );
+
+        self.update_view_strip(slot);
+
+        if slot == self.active_slot() {
+            self.toolbar.set_breadcrumb_path(&display_label);
+            self.toolbar.show_breadcrumb_mode();
+            self.update_navigation_state();
+            self.status.set_path(&display_label);
+            self.status.clear_message();
+            self.update_sidebar_state();
+            self.update_action_state();
+        }
+    }
+
+    fn show_add_destination_dialog(self: &Rc<Self>, project_id: i64, slot: PaneSlot) {
+        let content = GtkBox::new(Orientation::Vertical, 12);
+        content.append(&build_modal_prompt(
+            "Enter a name and relative path (e.g. \"Inbox\" and \"inbox\").",
+        ));
+
+        let name_entry = Entry::new();
+        name_entry.set_placeholder_text(Some("Destination name"));
+        content.append(&name_entry);
+
+        let path_entry = Entry::new();
+        path_entry.set_placeholder_text(Some("Relative path (e.g. inbox or docs/notes)"));
+        content.append(&path_entry);
+
+        let actions = build_modal_actions();
+        let host = self.modal_host.clone();
+        let cancel_btn =
+            build_modal_button("Cancel", ButtonKind::Secondary, move || host.hide());
+        actions.append(&cancel_btn);
+
+        let host = self.modal_host.clone();
+        let controller = Rc::clone(self);
+        let add_btn = build_modal_button("Add", ButtonKind::Primary, move || {
+            let name = name_entry.text().trim().to_string();
+            let rel_path = path_entry.text().trim().to_string();
+            if !name.is_empty() {
+                let _ = controller
+                    .metadata
+                    .borrow_mut()
+                    .add_project_destination(project_id, &name, &rel_path);
+                controller.load_project_landing_view(slot, project_id);
+            }
+            host.hide();
+        });
+        actions.append(&add_btn);
+
+        self.modal_host
+            .show_with_custom_ui("Add Destination", &content, &actions, false, None);
+    }
+
+    fn remove_project_destination(
+        self: &Rc<Self>,
+        destination_id: i64,
+        project_id: i64,
+        slot: PaneSlot,
+    ) {
+        let _ = self
+            .metadata
+            .borrow_mut()
+            .remove_project_destination(destination_id);
+        self.load_project_landing_view(slot, project_id);
+    }
+
+    fn send_holding_tray_to_project(self: &Rc<Self>, project_id: i64) {
+        let paths: Vec<PathBuf> = self
+            .holding_tray_items
+            .borrow()
+            .iter()
+            .map(|item| item.path.clone())
+            .collect();
+        if paths.is_empty() {
+            self.status
+                .set_message("No items in the holding tray to send.");
+            return;
+        }
+        self.send_paths_to_project(paths, project_id, ProjectTransferKind::Copy, None);
+    }
+
+    fn open_in_split(self: &Rc<Self>, requesting_slot: PaneSlot, path: PathBuf) {
+        let target_slot = if requesting_slot == PaneSlot::Primary {
+            PaneSlot::Secondary
+        } else {
+            PaneSlot::Primary
+        };
+        if !self.pane_layout.get().includes(target_slot) {
+            self.cycle_pane_layout();
+        }
+        self.navigate_to(target_slot, path, false);
+    }
+
+    fn handle_activity_log_action(
+        self: &Rc<Self>,
+        action: ActivityLogAction,
+        entry: ActivityLogEntry,
+    ) {
+        match action {
+            ActivityLogAction::Undo => self.undo_activity_entry(entry),
+            ActivityLogAction::Repeat => self.repeat_activity_entry(entry),
+            ActivityLogAction::Reveal => self.reveal_activity_entry(entry),
+            ActivityLogAction::CopyPath => self.copy_activity_entry_paths(entry),
+        }
+    }
+
+    fn show_place_context_menu(
+        self: &Rc<Self>,
+        place: PlaceRecord,
+        anchor: gtk::Widget,
+        x: f64,
+        y: f64,
+    ) {
+        self.dismiss_context_menu();
+
+        let popover = Popover::new();
+        popover.add_css_class("context-menu");
+        popover.set_has_arrow(true);
+        popover.set_autohide(true);
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.set_parent(&anchor);
+
+        let menu_box = GtkBox::new(Orientation::Vertical, 2);
+        menu_box.set_margin_top(6);
+        menu_box.set_margin_bottom(6);
+        menu_box.set_margin_start(6);
+        menu_box.set_margin_end(6);
+        menu_box.set_size_request(190, -1);
+
+        append_menu_button(&menu_box, "Open", Some("document-open-symbolic"), false, {
+            let controller = Rc::clone(self);
+            let path = place.folder_path.clone();
+            move || controller.navigate_to_active(path.clone())
+        });
+        append_menu_button(&menu_box, "Copy Path", Some("edit-copy-symbolic"), false, {
+            let controller = Rc::clone(self);
+            let path = place.folder_path.clone();
+            move || controller.copy_paths_to_clipboard(vec![path.clone()])
+        });
+        append_menu_sep(&menu_box);
+        append_menu_button(
+            &menu_box,
+            "Remove from Places",
+            Some("list-remove-symbolic"),
+            false,
+            {
+                let controller = Rc::clone(self);
+                move || controller.remove_place(place.id)
+            },
+        );
+
+        popover.set_child(Some(&menu_box));
+
+        let controller = Rc::clone(self);
+        let popover_for_signal = popover.clone();
+        popover.connect_closed(move |_| {
+            let should_clear = controller
+                .context_popover
+                .borrow()
+                .as_ref()
+                .map(|current| current == &popover_for_signal)
+                .unwrap_or(false);
+
+            if should_clear {
+                controller.context_popover.borrow_mut().take();
+            }
+            popover_for_signal.unparent();
+        });
+
+        self.context_popover.replace(Some(popover.clone()));
+        popover.popup();
+    }
+
+    fn show_project_context_menu(
+        self: &Rc<Self>,
+        project: ProjectRecord,
+        anchor: gtk::Widget,
+        x: f64,
+        y: f64,
+    ) {
+        self.dismiss_context_menu();
+
+        let popover = Popover::new();
+        popover.add_css_class("context-menu");
+        popover.set_has_arrow(true);
+        popover.set_autohide(true);
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.set_parent(&anchor);
+
+        let menu_box = GtkBox::new(Orientation::Vertical, 2);
+        menu_box.set_margin_top(6);
+        menu_box.set_margin_bottom(6);
+        menu_box.set_margin_start(6);
+        menu_box.set_margin_end(6);
+        menu_box.set_size_request(190, -1);
+
+        append_menu_button(&menu_box, "Open Project", Some("document-open-symbolic"), false, {
+            let controller = Rc::clone(self);
+            let project_id = project.id;
+            move || controller.open_project(project_id)
+        });
+        append_menu_button(
+            &menu_box,
+            "Open Root Folder",
+            Some("folder-symbolic"),
+            false,
+            {
+                let controller = Rc::clone(self);
+                let path = project.root_path.clone();
+                move || controller.navigate_to_active(path.clone())
+            },
+        );
+        append_menu_button(&menu_box, "Copy Path", Some("edit-copy-symbolic"), false, {
+            let controller = Rc::clone(self);
+            let path = project.root_path.clone();
+            move || controller.copy_paths_to_clipboard(vec![path.clone()])
+        });
+        append_menu_sep(&menu_box);
+        append_menu_button(
+            &menu_box,
+            "Remove Project",
+            Some("list-remove-symbolic"),
+            true,
+            {
+                let controller = Rc::clone(self);
+                let project_id = project.id;
+                move || controller.confirm_delete_project(project_id)
+            },
+        );
+
+        popover.set_child(Some(&menu_box));
+
+        let controller = Rc::clone(self);
+        let popover_for_signal = popover.clone();
+        popover.connect_closed(move |_| {
+            let should_clear = controller
+                .context_popover
+                .borrow()
+                .as_ref()
+                .map(|current| current == &popover_for_signal)
+                .unwrap_or(false);
+            if should_clear {
+                controller.context_popover.borrow_mut().take();
+            }
+            popover_for_signal.unparent();
+        });
+
+        self.context_popover.replace(Some(popover.clone()));
+        popover.popup();
+    }
+
+    fn confirm_delete_project(self: &Rc<Self>, project_id: i64) {
+        let Some(project) = self
+            .projects
+            .borrow()
+            .iter()
+            .find(|p| p.id == project_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let controller = Rc::clone(self);
+        self.modal_host.show_confirm(
+            "Remove Project",
+            &format!(
+                "Remove \u{201c}{}\u{201d} from Projects? The folder itself will not be deleted.",
+                project.name
+            ),
+            "Remove",
+            true,
+            false,
+            move || {
+                let _ = controller.metadata.borrow_mut().delete_project(project_id);
+                // Navigate away if currently viewing this project's landing page
+                for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+                    if matches!(controller.current_view_for(slot), PaneView::ProjectLanding(id) if id == project_id)
+                    {
+                        controller
+                            .current_view_cell(slot)
+                            .replace(PaneView::Directory(controller.places.home.clone()));
+                        controller.load_current_view(slot);
+                    }
+                }
+                controller.refresh_metadata_sidebar();
+            },
+        );
+    }
+
+    fn show_sort_popover(self: &Rc<Self>, slot: PaneSlot, anchor: gtk::Widget) {
+        self.dismiss_context_menu();
+
+        let current_field = self.sort_field_cell(slot).get();
+        let current_dir = self.sort_direction_cell(slot).get();
+
+        let popover = Popover::new();
+        popover.add_css_class("context-menu");
+        popover.set_has_arrow(false);
+        popover.set_autohide(true);
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.set_parent(&anchor);
+
+        let menu_box = GtkBox::new(Orientation::Vertical, 2);
+        menu_box.set_margin_top(6);
+        menu_box.set_margin_bottom(6);
+        menu_box.set_margin_start(6);
+        menu_box.set_margin_end(6);
+        menu_box.set_size_request(160, -1);
+
+        for (label, field) in [
+            ("Name", SortField::Name),
+            ("Date Modified", SortField::Modified),
+            ("Size", SortField::Size),
+            ("Kind", SortField::Kind),
+        ] {
+            let icon = if field == current_field {
+                Some("object-select-symbolic")
+            } else {
+                None
+            };
+            let controller = Rc::clone(self);
+            append_menu_button(&menu_box, label, icon, false, move || {
+                let new_field = field;
+                let new_dir = if controller.sort_field_cell(slot).get() == new_field {
+                    match controller.sort_direction_cell(slot).get() {
+                        SortDirection::Ascending => SortDirection::Descending,
+                        SortDirection::Descending => SortDirection::Ascending,
+                    }
+                } else {
+                    SortDirection::Ascending
+                };
+                controller.sort_field_cell(slot).set(new_field);
+                controller.sort_direction_cell(slot).set(new_dir);
+                controller.apply_sort(slot);
+            });
+        }
+
+        append_menu_sep(&menu_box);
+
+        for (label, dir) in [
+            ("↑  Ascending", SortDirection::Ascending),
+            ("↓  Descending", SortDirection::Descending),
+        ] {
+            let icon = if dir == current_dir {
+                Some("object-select-symbolic")
+            } else {
+                None
+            };
+            let controller = Rc::clone(self);
+            append_menu_button(&menu_box, label, icon, false, move || {
+                controller.sort_direction_cell(slot).set(dir);
+                controller.apply_sort(slot);
+            });
+        }
+
+        popover.set_child(Some(&menu_box));
+
+        let controller = Rc::clone(self);
+        let popover_for_signal = popover.clone();
+        popover.connect_closed(move |_| {
+            let should_clear = controller
+                .context_popover
+                .borrow()
+                .as_ref()
+                .map(|current| current == &popover_for_signal)
+                .unwrap_or(false);
+            if should_clear {
+                controller.context_popover.borrow_mut().take();
+            }
+            popover_for_signal.unparent();
+        });
+
+        self.context_popover.replace(Some(popover.clone()));
+        popover.popup();
+    }
+
+    fn apply_sort(self: &Rc<Self>, slot: PaneSlot) {
+        let field = self.sort_field_cell(slot).get();
+        let direction = self.sort_direction_cell(slot).get();
+
+        let icon_name = match direction {
+            SortDirection::Ascending => "view-sort-ascending-symbolic",
+            SortDirection::Descending => "view-sort-descending-symbolic",
+        };
+        self.pane_widgets(slot)
+            .sort_icon
+            .set_icon_name(Some(icon_name));
+
+        let mut items = self.all_items_cell(slot).borrow().clone();
+        if items.is_empty() {
+            return;
+        }
+
+        if let PaneView::Triage { filter, .. } = self.current_view_for(slot) {
+            let dup_set = self.duplicate_set_cell(slot).borrow();
+            items = filter_triage_items(items, filter, dup_set.as_ref());
+        }
+
+        let spec = self.pane_widgets(slot).tag_filter.spec();
+        if !spec.is_empty() && matches!(self.current_view_for(slot), PaneView::Directory(_)) {
+            items.retain(|item| spec.matches(item));
+        }
+
+        sort_items_with(&mut items, field, direction);
+        self.items_cell(slot).replace(items.clone());
+        self.pane_widgets(slot).file_grid.set_items(&items);
+        self.sync_active_tab_state();
+    }
+
+    fn repeat_activity_entry(self: &Rc<Self>, entry: ActivityLogEntry) {
+        if entry.status != "success" || entry.items.is_empty() {
+            self.status
+                .set_message("This activity entry cannot be repeated.");
+            return;
+        }
+
+        let sources = activity_sources(&entry);
+        match entry.operation.as_str() {
+            "copy" => {
+                let Some(dest_dir) = common_activity_destination_parent(&entry) else {
+                    self.status
+                        .set_message("This copy entry has no destination to repeat.");
+                    return;
+                };
+                self.start_copy_move_with_conflict_check(
+                    sources,
+                    dest_dir,
+                    true,
+                    "Repeat copy".to_string(),
+                    None,
+                );
+            }
+            "move" => {
+                let Some(dest_dir) = common_activity_destination_parent(&entry) else {
+                    self.status
+                        .set_message("This move entry has no destination to repeat.");
+                    return;
+                };
+                self.start_copy_move_with_conflict_check(
+                    sources,
+                    dest_dir,
+                    false,
+                    "Repeat move".to_string(),
+                    None,
+                );
+            }
+            "duplicate" => self.do_duplicate_files(sources),
+            "rename" | "bulk_rename" => {
+                let renames = activity_renames(&entry);
+                if renames.is_empty() {
+                    self.status
+                        .set_message("This rename entry has no names to repeat.");
+                } else if renames.len() == 1 {
+                    let (path, name) = renames.into_iter().next().unwrap();
+                    self.rename_path(path, name);
+                } else {
+                    self.apply_bulk_rename(renames);
+                }
+            }
+            "new_folder" => {
+                if let Some((parent, name)) = activity_created_parent_and_name(&entry) {
+                    self.exec_create_folder(parent, name);
+                } else {
+                    self.status
+                        .set_message("This folder creation entry cannot be repeated.");
+                }
+            }
+            "new_file" => {
+                if let Some((parent, name)) = activity_created_parent_and_name(&entry) {
+                    self.exec_create_text_document(self.active_slot(), parent, name);
+                } else {
+                    self.status
+                        .set_message("This file creation entry cannot be repeated.");
+                }
+            }
+            _ => self
+                .status
+                .set_message("Repeat is not available for this activity entry."),
+        }
+    }
+
+    fn undo_activity_entry(self: &Rc<Self>, entry: ActivityLogEntry) {
+        if entry.status != "success" || entry.items.is_empty() {
+            self.status
+                .set_message("This activity entry cannot be undone.");
+            return;
+        }
+
+        match entry.operation.as_str() {
+            "copy" | "duplicate" | "new_folder" | "new_file" => {
+                let created = activity_destinations(&entry);
+                if created.is_empty() {
+                    self.status
+                        .set_message("This entry has no created paths to undo.");
+                    return;
+                }
+                self.move_paths_to_trash(created);
+            }
+            "move" | "rename" | "bulk_rename" => {
+                let undo_items: Vec<_> = entry
+                    .items
+                    .iter()
+                    .filter_map(|item| {
+                        let source = PathBuf::from(&item.source_path);
+                        let destination = item.destination_path.as_ref().map(PathBuf::from)?;
+                        Some((destination, source, gio::FileCopyFlags::NONE))
+                    })
+                    .collect();
+                if undo_items.is_empty() {
+                    self.status
+                        .set_message("This entry has no move history to undo.");
+                    return;
+                }
+                if let Some(conflict) = undo_items
+                    .iter()
+                    .map(|(_, destination, _)| destination)
+                    .find(|path| path.exists())
+                {
+                    self.show_error_dialog(
+                        "Undo Blocked",
+                        &format!(
+                            "Undo would overwrite an existing item.\n\nTarget: {}",
+                            conflict.display()
+                        ),
+                    );
+                    return;
+                }
+                self.start_copy_move_op(undo_items, false, "Undo operation", None, None);
+            }
+            "trash" => self.restore_activity_trash_entry(entry),
+            _ => self
+                .status
+                .set_message("Undo is not available for this activity entry."),
+        }
+    }
+
+    fn reveal_activity_entry(self: &Rc<Self>, entry: ActivityLogEntry) {
+        let Some(path) = activity_relevant_path(&entry) else {
+            self.status
+                .set_message("This activity entry has no path to reveal.");
+            return;
+        };
+        let folder = if path.is_dir() {
+            path
+        } else {
+            path.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.current_dir_for(self.active_slot()))
+        };
+        self.navigate_to(self.active_slot(), folder, true);
+    }
+
+    fn copy_activity_entry_paths(self: &Rc<Self>, entry: ActivityLogEntry) {
+        let paths = if entry.items.is_empty() {
+            activity_relevant_path(&entry).into_iter().collect()
+        } else {
+            entry
+                .items
+                .iter()
+                .map(|item| {
+                    item.destination_path
+                        .as_ref()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from(&item.source_path))
+                })
+                .collect()
+        };
+        self.copy_paths_to_clipboard(paths);
+    }
+
+    fn restore_activity_trash_entry(self: &Rc<Self>, entry: ActivityLogEntry) {
+        let wanted: HashSet<PathBuf> = entry
+            .items
+            .iter()
+            .map(|item| PathBuf::from(&item.source_path))
+            .collect();
+        if wanted.is_empty() {
+            self.status
+                .set_message("This trash entry has no original paths to restore.");
+            return;
+        }
+
+        let trash = gio::File::for_uri("trash:///");
+        let enumerator = match trash.enumerate_children(
+            TRASH_ATTRIBUTES,
+            gio::FileQueryInfoFlags::NONE,
+            None::<&gio::Cancellable>,
+        ) {
+            Ok(enumerator) => enumerator,
+            Err(error) => {
+                self.show_error_dialog("Undo Failed", &friendly_error_detail(&error));
+                return;
+            }
+        };
+
+        let mut matches = Vec::new();
+        loop {
+            let info = match enumerator.next_file(None::<&gio::Cancellable>) {
+                Ok(Some(info)) => info,
+                Ok(None) => break,
+                Err(error) => {
+                    self.show_error_dialog("Undo Failed", &friendly_error_detail(&error));
+                    return;
+                }
+            };
+            let Some(orig_path) = info
+                .attribute_byte_string("trash::orig-path")
+                .map(|value| PathBuf::from(value.to_string()))
+            else {
+                continue;
+            };
+            if !wanted.contains(&orig_path) {
+                continue;
+            }
+            let trash_path = info
+                .attribute_string("standard::target-uri")
+                .and_then(|uri| gio::File::for_uri(&uri).path())
+                .unwrap_or_else(|| {
+                    glib::home_dir()
+                        .join(".local/share/Trash/files")
+                        .join(info.name())
+                });
+            let kind = FileKind::from_path(
+                &trash_path,
+                info.file_type(),
+                info.content_type().as_deref(),
+            );
+            matches.push(FileItem {
+                name: info.display_name().to_string(),
+                path: trash_path,
+                kind,
+                is_dir: info.file_type() == gio::FileType::Directory,
+                size_bytes: (info.size() >= 0).then_some(info.size() as u64),
+                modified_unix: info.modification_date_time().map(|value| value.to_unix()),
+                tags: Vec::new(),
+                original_path: Some(orig_path),
+            });
+        }
+
+        if matches.is_empty() {
+            self.show_error_dialog(
+                "Undo Unavailable",
+                "Lattice could not find matching Trash items for this activity entry.",
+            );
+            return;
+        }
+        self.restore_items_from_trash(matches);
+    }
+
+    fn refresh_metadata_sidebar(self: &Rc<Self>) {
+        let (places, projects, tags) = {
+            let metadata = self.metadata.borrow();
+            let places = metadata.list_places().unwrap_or_default();
+            let projects = metadata.list_projects().unwrap_or_default();
+            let tags = metadata.list_tags().unwrap_or_default();
+            (places, projects, tags)
+        };
+
+        self.user_places.replace(places.clone());
+        self.projects.replace(projects.clone());
+        self.tags.replace(tags.clone());
+        self.sidebar.set_places(&places);
+        self.sidebar.set_projects(&projects);
+
+        for (place, button) in self.sidebar.place_buttons() {
+            let controller = Rc::clone(self);
+            let path = place.folder_path.clone();
+            button.connect_clicked(move |_| controller.navigate_to_active(path.clone()));
+            self.attach_sidebar_place_dnd(button.clone(), place.folder_path.clone());
+            let controller = Rc::clone(self);
+            let place_for_menu = place.clone();
+            let gesture = gtk::GestureClick::new();
+            gesture.set_button(3);
+            gesture.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(widget) = gesture.widget() else {
+                    return;
+                };
+                controller.show_place_context_menu(place_for_menu.clone(), widget, x, y);
+            });
+            button.add_controller(gesture);
+        }
+
+        for (project_id, button) in self.sidebar.project_buttons() {
+            let controller = Rc::clone(self);
+            button.connect_clicked(move |_| controller.open_project(project_id));
+
+            let Some(project) = projects.iter().find(|p| p.id == project_id).cloned() else {
+                continue;
+            };
+            let controller = Rc::clone(self);
+            let gesture = gtk::GestureClick::new();
+            gesture.set_button(3);
+            gesture.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(widget) = gesture.widget() else {
+                    return;
+                };
+                controller.show_project_context_menu(project.clone(), widget, x, y);
+            });
+            button.add_controller(gesture);
+        }
+
+        self.refresh_search_tag_buttons(PaneSlot::Primary);
+        self.refresh_search_tag_buttons(PaneSlot::Secondary);
+        self.refresh_search_tag_buttons(PaneSlot::Tertiary);
+        self.primary_pane.tag_filter.set_tags(&tags);
+        self.secondary_pane.tag_filter.set_tags(&tags);
+        self.tertiary_pane.tag_filter.set_tags(&tags);
+        self.update_sidebar_state();
+    }
+
+    fn open_project(self: &Rc<Self>, project_id: i64) {
+        let slot = self.active_slot();
+        if matches!(self.current_view_for(slot), PaneView::ProjectLanding(id) if id == project_id)
+        {
+            return;
+        }
+        let current = self.current_view_for(slot);
+        if let PaneView::Directory(path) = current {
+            self.back_history_cell(slot).borrow_mut().push(path);
+            self.forward_history_cell(slot).borrow_mut().clear();
+        }
+        self.current_view_cell(slot)
+            .replace(PaneView::ProjectLanding(project_id));
+        self.sync_active_tab_state();
+        self.update_view_strip(slot);
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_project_landing_view(slot, project_id);
+        self.update_navigation_state();
     }
 
     fn open_tag(self: &Rc<Self>, tag_id: i64) {
@@ -993,39 +2523,109 @@ impl BrowserController {
         self.load_tag_view(slot, tag);
     }
 
-    fn open_downloads_triage(self: &Rc<Self>, filter: DownloadsTriageFilter) {
+    fn open_triage(self: &Rc<Self>, root: PathBuf, filter: TriageFilter) {
         let slot = self.active_slot();
-        self.current_dir_cell(slot)
-            .replace(self.places.downloads.clone());
-        self.current_view_cell(slot)
-            .replace(PaneView::DownloadsTriage(filter));
+        // Reset duplicate scan state when changing triage root
+        let current_root =
+            if let PaneView::Triage { root: ref cur, .. } = self.current_view_for(slot) {
+                Some(cur.clone())
+            } else {
+                None
+            };
+        if current_root.as_ref() != Some(&root) {
+            self.duplicate_set_cell(slot).replace(None);
+            self.set_duplicate_scan_pending(slot, false);
+        }
+        self.current_dir_cell(slot).replace(root.clone());
+        self.current_view_cell(slot).replace(PaneView::Triage {
+            root: root.clone(),
+            filter,
+        });
         self.sync_active_tab_state();
         self.update_view_strip(slot);
         if slot == PaneSlot::Primary {
             self.rebuild_tab_strip();
         }
-        self.load_downloads_triage(slot);
+        self.load_triage(slot, &root);
     }
 
-    fn set_triage_filter(self: &Rc<Self>, slot: PaneSlot, filter: DownloadsTriageFilter) {
-        if !matches!(self.current_view_for(slot), PaneView::DownloadsTriage(_)) {
-            return;
-        }
-
-        self.current_view_cell(slot)
-            .replace(PaneView::DownloadsTriage(filter));
+    fn set_triage_filter(self: &Rc<Self>, slot: PaneSlot, filter: TriageFilter) {
+        let root = match self.current_view_for(slot) {
+            PaneView::Triage { root, .. } => root,
+            _ => return,
+        };
+        self.current_view_cell(slot).replace(PaneView::Triage {
+            root: root.clone(),
+            filter,
+        });
         self.sync_active_tab_state();
         self.update_view_strip(slot);
         if slot == PaneSlot::Primary {
             self.rebuild_tab_strip();
         }
-        self.load_downloads_triage(slot);
+        self.load_triage(slot, &root);
+    }
+
+    fn triage_active_folder(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        let Some(root) = self.tool_scope_dir_for(slot) else {
+            self.status
+                .set_message("Navigate to a folder first, then click Triage.");
+            return;
+        };
+        self.open_triage(root, TriageFilter::All);
+    }
+
+    fn start_duplicate_scan(self: &Rc<Self>, slot: PaneSlot, root: PathBuf) {
+        self.set_duplicate_scan_pending(slot, true);
+        self.update_view_strip(slot);
+
+        let controller = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let set = gio::spawn_blocking(move || compute_duplicate_set_from_dir(&root))
+                .await
+                .unwrap_or_default();
+            controller.duplicate_set_cell(slot).replace(Some(set));
+            controller.set_duplicate_scan_pending(slot, false);
+            if matches!(
+                controller.current_view_for(slot),
+                PaneView::Triage {
+                    filter: TriageFilter::Duplicates,
+                    ..
+                }
+            ) {
+                let all_items = controller.all_items_cell(slot).borrow().clone();
+                let dup_set = controller.duplicate_set_cell(slot).borrow();
+                let filtered =
+                    filter_triage_items(all_items, TriageFilter::Duplicates, dup_set.as_ref());
+                drop(dup_set);
+                controller.items_cell(slot).replace(filtered.clone());
+                controller.pane_widgets(slot).file_grid.set_items(&filtered);
+                controller.update_view_strip(slot);
+                if slot == controller.active_slot() {
+                    controller.status.set_counts(filtered.len(), 0);
+                    controller.update_action_state();
+                }
+            }
+        });
     }
 
     fn update_view_strip(&self, slot: PaneSlot) {
         let pane = self.pane_widgets(slot);
         let is_search = matches!(self.current_view_for(slot), PaneView::Search(_));
         pane.search_panel.root.set_visible(is_search);
+        pane.search_revealer.set_reveal_child(is_search);
+
+        let is_activity_log = matches!(self.current_view_for(slot), PaneView::ActivityLog);
+        let is_project_landing =
+            matches!(self.current_view_for(slot), PaneView::ProjectLanding(_));
+        let is_tag_manager = matches!(self.current_view_for(slot), PaneView::TagManager);
+        pane.file_grid
+            .root
+            .set_visible(!is_activity_log && !is_project_landing && !is_tag_manager);
+        pane.activity_log_panel.root.set_visible(is_activity_log);
+        pane.project_landing_panel.root.set_visible(is_project_landing);
+        pane.tag_manager_panel.root.set_visible(is_tag_manager);
 
         match self.current_view_for(slot) {
             PaneView::Search(query) => {
@@ -1048,9 +2648,22 @@ impl BrowserController {
                     button.set_visible(false);
                 }
             }
-            PaneView::DownloadsTriage(active_filter) => {
+            PaneView::Triage {
+                filter: active_filter,
+                ..
+            } => {
                 pane.view_strip.set_visible(true);
-                pane.view_title.set_visible(false);
+                let scanning = self.duplicate_scan_pending_for(slot)
+                    && active_filter == TriageFilter::Duplicates;
+                if scanning {
+                    pane.view_title.set_visible(true);
+                    pane.view_title
+                        .set_label("🔍 Scanning for duplicates\u{2026}");
+                    pane.view_title.add_css_class("pane-filter-scanning");
+                } else {
+                    pane.view_title.set_visible(false);
+                    pane.view_title.remove_css_class("pane-filter-scanning");
+                }
                 for (filter, button) in &pane.triage_filters {
                     button.set_visible(true);
                     if *filter == active_filter {
@@ -1061,20 +2674,28 @@ impl BrowserController {
                 }
             }
             PaneView::SystemDrives => {
-                pane.view_strip.set_visible(true);
-                pane.view_title.set_visible(true);
-                pane.view_title.set_label("Mounted Volumes");
-                for (_, button) in &pane.triage_filters {
-                    button.set_visible(false);
-                }
+                pane.view_strip.set_visible(false);
             }
             PaneView::Recent => {
-                pane.view_strip.set_visible(true);
-                pane.view_title.set_visible(true);
-                pane.view_title.set_label("Recent Folders");
-                for (_, button) in &pane.triage_filters {
-                    button.set_visible(false);
-                }
+                pane.view_strip.set_visible(false);
+            }
+            PaneView::ActivityLog => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
+            }
+            PaneView::ProjectLanding(_) => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
+            }
+            PaneView::TagManager => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
             }
         }
     }
@@ -1083,11 +2704,16 @@ impl BrowserController {
         match self.current_view_for(slot) {
             PaneView::Directory(path) => self.load_directory(slot, path),
             PaneView::Tag(tag) => self.load_tag_view(slot, tag),
-            PaneView::DownloadsTriage(_) => self.load_downloads_triage(slot),
+            PaneView::Triage { root, .. } => self.load_triage(slot, &root),
             PaneView::SystemDrives => self.load_system_drives_view(slot),
             PaneView::Recent => self.load_recent_view(slot),
             PaneView::Trash => self.load_trash_view(slot),
             PaneView::Search(query) => self.load_search_view(slot, query),
+            PaneView::ActivityLog => self.load_activity_log_view(slot),
+            PaneView::ProjectLanding(project_id) => {
+                self.load_project_landing_view(slot, project_id)
+            }
+            PaneView::TagManager => self.load_tag_manager_view(slot),
         }
     }
 
@@ -1118,6 +2744,7 @@ impl BrowserController {
     fn connect_panes(self: &Rc<Self>) {
         self.connect_pane(PaneSlot::Primary);
         self.connect_pane(PaneSlot::Secondary);
+        self.connect_pane(PaneSlot::Tertiary);
     }
 
     fn connect_pane(self: &Rc<Self>, slot: PaneSlot) {
@@ -1139,9 +2766,14 @@ impl BrowserController {
         let flow = pane.file_grid.flow.clone();
         let gesture = gtk::GestureClick::new();
         gesture.set_button(3);
-        gesture.connect_pressed(move |_, _, x, y| {
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        gesture.connect_pressed(move |gesture, _, x, y| {
             controller.set_active_pane(slot);
-            if flow.child_at_pos(x as i32, y as i32).is_none() {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(child) = flow.child_at_pos(x as i32, y as i32) {
+                let anchor: gtk::Widget = flow.clone().upcast();
+                controller.show_context_menu(slot, child.index(), anchor, x, y);
+            } else {
                 controller.show_current_folder_menu(slot, x, y);
             }
         });
@@ -1152,6 +2784,43 @@ impl BrowserController {
         flow_click.set_button(0);
         flow_click.connect_pressed(move |_, _, _, _| controller.set_active_pane(slot));
         pane.file_grid.flow.add_controller(flow_click);
+
+        // List-mode selection signals
+        let controller = Rc::clone(self);
+        pane.file_grid
+            .list_box
+            .connect_selected_rows_changed(move |_| controller.update_selection_for(slot));
+
+        let controller = Rc::clone(self);
+        pane.file_grid
+            .list_box
+            .connect_row_activated(move |_, row| {
+                controller.set_active_pane(slot);
+                controller.activate_index(slot, row.index())
+            });
+
+        let controller = Rc::clone(self);
+        let list_box = pane.file_grid.list_box.clone();
+        let list_rclick = gtk::GestureClick::new();
+        list_rclick.set_button(3);
+        list_rclick.set_propagation_phase(gtk::PropagationPhase::Capture);
+        list_rclick.connect_pressed(move |gesture, _, x, y| {
+            controller.set_active_pane(slot);
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(row) = list_box.row_at_y(y as i32) {
+                let anchor: gtk::Widget = list_box.clone().upcast();
+                controller.show_context_menu(slot, row.index(), anchor, x, y);
+            } else {
+                controller.show_current_folder_menu(slot, x, y);
+            }
+        });
+        pane.file_grid.list_box.add_controller(list_rclick);
+
+        let controller = Rc::clone(self);
+        let list_click = gtk::GestureClick::new();
+        list_click.set_button(0);
+        list_click.connect_pressed(move |_, _, _, _| controller.set_active_pane(slot));
+        pane.file_grid.list_box.add_controller(list_click);
 
         let controller = Rc::clone(self);
         let click = gtk::GestureClick::new();
@@ -1164,6 +2833,40 @@ impl BrowserController {
             let filter = *filter;
             button.connect_clicked(move |_| controller.set_triage_filter(slot, filter));
         }
+
+        let controller = Rc::clone(self);
+        pane.filter_toggle_btn.connect_clicked(move |_| {
+            controller.set_active_pane(slot);
+            let is_open = controller
+                .pane_widgets(slot)
+                .tag_filter_revealer
+                .reveals_child();
+            controller.set_filter_panel_open_for_slot(slot, !is_open);
+        });
+
+        let controller = Rc::clone(self);
+        pane.hidden_toggle_btn.connect_clicked(move |_| {
+            controller.set_active_pane(slot);
+            controller.set_show_hidden_for_slot(slot, !controller.show_hidden_cell(slot).get());
+        });
+
+        let controller = Rc::clone(self);
+        pane.view_mode_btn.connect_clicked(move |_| {
+            controller.set_active_pane(slot);
+            let next = match controller.view_mode_cell(slot).get() {
+                ViewMode::Icons => ViewMode::List,
+                ViewMode::List => ViewMode::Icons,
+            };
+            controller.set_view_mode(slot, next);
+        });
+
+        let controller = Rc::clone(self);
+        let sort_btn_clone = pane.sort_btn.clone();
+        pane.sort_btn.connect_clicked(move |_| {
+            controller.set_active_pane(slot);
+            let widget: gtk::Widget = sort_btn_clone.clone().upcast();
+            controller.show_sort_popover(slot, widget);
+        });
     }
 
     fn handle_window_command(self: &Rc<Self>, command: WindowCommand) -> bool {
@@ -1207,9 +2910,8 @@ impl BrowserController {
             WindowCommand::ToggleFilter => {
                 let is_open = self
                     .pane_widgets(self.active_slot())
-                    .tag_filter
-                    .root
-                    .is_visible();
+                    .tag_filter_revealer
+                    .reveals_child();
                 self.set_filter_panel_open(!is_open);
                 true
             }
@@ -1222,7 +2924,8 @@ impl BrowserController {
                 true
             }
             WindowCommand::ToggleHidden => {
-                self.set_show_hidden(!self.show_hidden.get());
+                let slot = self.active_slot();
+                self.set_show_hidden_for_slot(slot, !self.show_hidden_cell(slot).get());
                 true
             }
             WindowCommand::ToggleSidebar => {
@@ -1231,6 +2934,12 @@ impl BrowserController {
             }
             WindowCommand::TogglePreview => {
                 self.set_preview_visible(!self.preview_visible.get());
+                true
+            }
+            WindowCommand::ToggleHoldingTray => {
+                self.toolbar
+                    .holding_tray_toggle
+                    .set_active(!self.holding_tray.root.reveals_child());
                 true
             }
             WindowCommand::NewTab => {
@@ -1242,7 +2951,7 @@ impl BrowserController {
                 true
             }
             WindowCommand::ToggleSplit => {
-                self.set_split_enabled(!self.split_enabled.get());
+                self.cycle_pane_layout();
                 true
             }
             WindowCommand::PreviousTab => {
@@ -1257,6 +2966,10 @@ impl BrowserController {
                 self.go_back();
                 true
             }
+            WindowCommand::GoForward => {
+                self.go_forward();
+                true
+            }
             WindowCommand::GoUp => {
                 self.go_up();
                 true
@@ -1266,6 +2979,22 @@ impl BrowserController {
                 true
             }
             WindowCommand::Escape => self.handle_escape(self.focused_context()),
+            WindowCommand::SetViewIcons => {
+                self.set_view_mode(self.active_slot(), ViewMode::Icons);
+                true
+            }
+            WindowCommand::SetViewList => {
+                self.set_view_mode(self.active_slot(), ViewMode::List);
+                true
+            }
+            WindowCommand::TogglePlanMode => {
+                self.set_plan_mode(!self.plan_mode_active.get());
+                true
+            }
+            WindowCommand::EmptyTrash => {
+                self.empty_trash();
+                true
+            }
             WindowCommand::CustomAction(id) => {
                 self.run_custom_action_by_id(&id);
                 true
@@ -1285,11 +3014,15 @@ impl BrowserController {
                 if self.dismiss_context_menu() {
                     return true;
                 }
+                if !self.holding_tray_selection.borrow().is_empty() {
+                    self.clear_holding_tray_selection();
+                    return true;
+                }
                 if self.exit_search_if_empty(self.active_slot()) {
                     return true;
                 }
                 let slot = self.active_slot();
-                if self.pane_widgets(slot).tag_filter.root.is_visible()
+                if self.pane_widgets(slot).tag_filter_revealer.reveals_child()
                     && !self.pane_widgets(slot).tag_filter.is_filtering()
                 {
                     self.set_filter_panel_open(false);
@@ -1301,6 +3034,44 @@ impl BrowserController {
                 }
                 false
             }
+        }
+    }
+
+    fn handle_holding_tray_key(
+        self: &Rc<Self>,
+        focus: FocusedContext,
+        key: gdk::Key,
+        modifiers: gdk::ModifierType,
+    ) -> bool {
+        if focus != FocusedContext::HoldingTray {
+            return false;
+        }
+
+        let modifiers = relevant_modifiers(modifiers);
+        if modifiers.contains(gdk::ModifierType::CONTROL_MASK) && key_char(key) == Some('c') {
+            self.copy_holding_tray_paths();
+            return true;
+        }
+
+        if modifiers.contains(gdk::ModifierType::CONTROL_MASK) && key_char(key) == Some('v') {
+            self.paste_file_clipboard_into_holding_tray();
+            return true;
+        }
+
+        match key {
+            gdk::Key::Delete | gdk::Key::BackSpace => {
+                self.remove_selected_holding_tray_items();
+                true
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                self.open_selected_holding_tray_item();
+                true
+            }
+            gdk::Key::Escape => {
+                self.clear_holding_tray_selection();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1508,7 +3279,7 @@ impl BrowserController {
         self.pane_widgets(slot).file_grid.clear_selection();
         self.reset_keyboard_state(slot);
         self.update_selection();
-        self.pane_widgets(slot).file_grid.flow.grab_focus();
+        self.pane_widgets(slot).file_grid.grab_focus_on_active();
     }
 
     fn reset_keyboard_state(&self, slot: PaneSlot) {
@@ -1531,17 +3302,19 @@ impl BrowserController {
     }
 
     fn cycle_active_pane(self: &Rc<Self>) {
-        if !self.split_enabled.get() {
+        let visible = self.visible_slots();
+        if visible.len() <= 1 {
             return;
         }
 
-        let next = if self.active_slot() == PaneSlot::Primary {
-            PaneSlot::Secondary
-        } else {
-            PaneSlot::Primary
-        };
+        let current = self.active_slot();
+        let current_index = visible
+            .iter()
+            .position(|slot| *slot == current)
+            .unwrap_or(0);
+        let next = visible[(current_index + 1) % visible.len()];
         self.set_active_pane(next);
-        self.pane_widgets(next).file_grid.flow.grab_focus();
+        self.pane_widgets(next).file_grid.grab_focus_on_active();
     }
 
     fn switch_tab_relative(self: &Rc<Self>, offset: i32) {
@@ -1559,6 +3332,34 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.primary_pane,
             PaneSlot::Secondary => &self.secondary_pane,
+            PaneSlot::Tertiary => &self.tertiary_pane,
+        }
+    }
+
+    fn duplicate_set_cell(
+        &self,
+        slot: PaneSlot,
+    ) -> &RefCell<Option<std::collections::HashSet<PathBuf>>> {
+        match slot {
+            PaneSlot::Primary => &self.primary_duplicate_set,
+            PaneSlot::Secondary => &self.secondary_duplicate_set,
+            PaneSlot::Tertiary => &self.tertiary_duplicate_set,
+        }
+    }
+
+    fn duplicate_scan_pending_for(&self, slot: PaneSlot) -> bool {
+        match slot {
+            PaneSlot::Primary => self.primary_duplicate_scan_pending.get(),
+            PaneSlot::Secondary => self.secondary_duplicate_scan_pending.get(),
+            PaneSlot::Tertiary => self.tertiary_duplicate_scan_pending.get(),
+        }
+    }
+
+    fn set_duplicate_scan_pending(&self, slot: PaneSlot, pending: bool) {
+        match slot {
+            PaneSlot::Primary => self.primary_duplicate_scan_pending.set(pending),
+            PaneSlot::Secondary => self.secondary_duplicate_scan_pending.set(pending),
+            PaneSlot::Tertiary => self.tertiary_duplicate_scan_pending.set(pending),
         }
     }
 
@@ -1566,6 +3367,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.current_dir,
             PaneSlot::Secondary => &self.secondary_current_dir,
+            PaneSlot::Tertiary => &self.tertiary_current_dir,
         }
     }
 
@@ -1573,6 +3375,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.current_view,
             PaneSlot::Secondary => &self.secondary_view,
+            PaneSlot::Tertiary => &self.tertiary_view,
         }
     }
 
@@ -1580,6 +3383,15 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.back_history,
             PaneSlot::Secondary => &self.secondary_back_history,
+            PaneSlot::Tertiary => &self.tertiary_back_history,
+        }
+    }
+
+    fn forward_history_cell(&self, slot: PaneSlot) -> &RefCell<Vec<PathBuf>> {
+        match slot {
+            PaneSlot::Primary => &self.forward_history,
+            PaneSlot::Secondary => &self.secondary_forward_history,
+            PaneSlot::Tertiary => &self.tertiary_forward_history,
         }
     }
 
@@ -1587,6 +3399,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.items,
             PaneSlot::Secondary => &self.secondary_items,
+            PaneSlot::Tertiary => &self.tertiary_items,
         }
     }
 
@@ -1594,6 +3407,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.primary_all_items,
             PaneSlot::Secondary => &self.secondary_all_items,
+            PaneSlot::Tertiary => &self.tertiary_all_items,
         }
     }
 
@@ -1601,6 +3415,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.pending_reveal_path,
             PaneSlot::Secondary => &self.secondary_pending_reveal_path,
+            PaneSlot::Tertiary => &self.tertiary_pending_reveal_path,
         }
     }
 
@@ -1608,6 +3423,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.load_generation,
             PaneSlot::Secondary => &self.secondary_load_generation,
+            PaneSlot::Tertiary => &self.tertiary_load_generation,
         }
     }
 
@@ -1615,6 +3431,15 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.load_cancellable,
             PaneSlot::Secondary => &self.secondary_load_cancellable,
+            PaneSlot::Tertiary => &self.tertiary_load_cancellable,
+        }
+    }
+
+    fn search_cancel_cell(&self, slot: PaneSlot) -> &RefCell<Option<Arc<AtomicBool>>> {
+        match slot {
+            PaneSlot::Primary => &self.primary_search_cancel,
+            PaneSlot::Secondary => &self.secondary_search_cancel,
+            PaneSlot::Tertiary => &self.tertiary_search_cancel,
         }
     }
 
@@ -1622,6 +3447,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.primary_keyboard_anchor,
             PaneSlot::Secondary => &self.secondary_keyboard_anchor,
+            PaneSlot::Tertiary => &self.tertiary_keyboard_anchor,
         }
     }
 
@@ -1629,6 +3455,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.primary_keyboard_current,
             PaneSlot::Secondary => &self.secondary_keyboard_current,
+            PaneSlot::Tertiary => &self.tertiary_keyboard_current,
         }
     }
 
@@ -1638,6 +3465,16 @@ impl BrowserController {
 
     fn current_view_for(&self, slot: PaneSlot) -> PaneView {
         self.current_view_cell(slot).borrow().clone()
+    }
+
+    fn tool_scope_dir_for(&self, slot: PaneSlot) -> Option<PathBuf> {
+        match self.current_view_for(slot) {
+            PaneView::Directory(path) => Some(path),
+            PaneView::Triage { root, .. } => Some(root),
+            PaneView::Search(query) => Some(query.scope_dir),
+            PaneView::ActivityLog => Some(self.current_dir_for(slot)),
+            _ => None,
+        }
     }
 
     fn is_directory_view(&self, slot: PaneSlot) -> bool {
@@ -1656,11 +3493,89 @@ impl BrowserController {
         self.active_pane.get()
     }
 
-    fn other_slot(slot: PaneSlot) -> PaneSlot {
+    fn view_mode_cell(&self, slot: PaneSlot) -> &Cell<ViewMode> {
         match slot {
-            PaneSlot::Primary => PaneSlot::Secondary,
-            PaneSlot::Secondary => PaneSlot::Primary,
+            PaneSlot::Primary => &self.primary_view_mode,
+            PaneSlot::Secondary => &self.secondary_view_mode,
+            PaneSlot::Tertiary => &self.tertiary_view_mode,
         }
+    }
+
+    fn show_hidden_cell(&self, slot: PaneSlot) -> &Cell<bool> {
+        match slot {
+            PaneSlot::Primary => &self.primary_show_hidden,
+            PaneSlot::Secondary => &self.secondary_show_hidden,
+            PaneSlot::Tertiary => &self.tertiary_show_hidden,
+        }
+    }
+
+    fn sort_field_cell(&self, slot: PaneSlot) -> &Cell<SortField> {
+        match slot {
+            PaneSlot::Primary => &self.primary_sort_field,
+            PaneSlot::Secondary => &self.secondary_sort_field,
+            PaneSlot::Tertiary => &self.tertiary_sort_field,
+        }
+    }
+
+    fn sort_direction_cell(&self, slot: PaneSlot) -> &Cell<SortDirection> {
+        match slot {
+            PaneSlot::Primary => &self.primary_sort_direction,
+            PaneSlot::Secondary => &self.secondary_sort_direction,
+            PaneSlot::Tertiary => &self.tertiary_sort_direction,
+        }
+    }
+
+    fn set_view_mode(self: &Rc<Self>, slot: PaneSlot, mode: ViewMode) {
+        self.view_mode_cell(slot).set(mode);
+        let pane = self.pane_widgets(slot);
+        pane.file_grid.set_view_mode(mode);
+        let icon_name = match mode {
+            ViewMode::Icons => "view-grid-symbolic",
+            ViewMode::List => "view-list-compact-symbolic",
+        };
+        pane.view_mode_icon.set_icon_name(Some(icon_name));
+    }
+
+    fn set_show_hidden_for_slot(self: &Rc<Self>, slot: PaneSlot, show_hidden: bool) {
+        if self.show_hidden_cell(slot).get() == show_hidden {
+            self.sync_show_hidden_button_state(slot);
+            return;
+        }
+        self.show_hidden_cell(slot).set(show_hidden);
+        self.sync_show_hidden_button_state(slot);
+        self.sync_active_tab_state();
+        self.load_current_view(slot);
+    }
+
+    fn sync_show_hidden_button_state(&self, slot: PaneSlot) {
+        let pane = self.pane_widgets(slot);
+        let show_hidden = self.show_hidden_cell(slot).get();
+        if show_hidden {
+            pane.hidden_toggle_btn.add_css_class("pane-control-active");
+            pane.hidden_toggle_icon
+                .set_icon_name(Some("view-reveal-symbolic"));
+        } else {
+            pane.hidden_toggle_btn
+                .remove_css_class("pane-control-active");
+            pane.hidden_toggle_icon
+                .set_icon_name(Some("view-reveal-symbolic"));
+        }
+    }
+
+    fn visible_slots(&self) -> Vec<PaneSlot> {
+        [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary]
+            .into_iter()
+            .filter(|slot| self.pane_layout.get().includes(*slot))
+            .collect()
+    }
+
+    fn next_visible_slot(&self, slot: PaneSlot) -> PaneSlot {
+        let visible = self.visible_slots();
+        let current_index = visible
+            .iter()
+            .position(|candidate| *candidate == slot)
+            .unwrap_or(0);
+        visible[(current_index + 1) % visible.len()]
     }
 
     fn sync_active_tab_state(&self) {
@@ -1668,12 +3583,30 @@ impl BrowserController {
         if let Some(tab) = self.tabs.borrow_mut().get_mut(active_index) {
             tab.primary_dir = self.current_dir.borrow().clone();
             tab.primary_back_history = self.back_history.borrow().clone();
+            tab.primary_forward_history = self.forward_history.borrow().clone();
             tab.primary_view = self.current_view.borrow().clone();
             tab.secondary_dir = self.secondary_current_dir.borrow().clone();
             tab.secondary_back_history = self.secondary_back_history.borrow().clone();
+            tab.secondary_forward_history = self.secondary_forward_history.borrow().clone();
             tab.secondary_view = self.secondary_view.borrow().clone();
-            tab.split_enabled = self.split_enabled.get();
+            tab.tertiary_dir = self.tertiary_current_dir.borrow().clone();
+            tab.tertiary_back_history = self.tertiary_back_history.borrow().clone();
+            tab.tertiary_forward_history = self.tertiary_forward_history.borrow().clone();
+            tab.tertiary_view = self.tertiary_view.borrow().clone();
+            tab.pane_layout = self.pane_layout.get();
             tab.active_pane = self.active_pane.get();
+            tab.primary_view_mode = self.primary_view_mode.get();
+            tab.secondary_view_mode = self.secondary_view_mode.get();
+            tab.tertiary_view_mode = self.tertiary_view_mode.get();
+            tab.primary_show_hidden = self.primary_show_hidden.get();
+            tab.secondary_show_hidden = self.secondary_show_hidden.get();
+            tab.tertiary_show_hidden = self.tertiary_show_hidden.get();
+            tab.primary_sort_field = self.primary_sort_field.get();
+            tab.primary_sort_direction = self.primary_sort_direction.get();
+            tab.secondary_sort_field = self.secondary_sort_field.get();
+            tab.secondary_sort_direction = self.secondary_sort_direction.get();
+            tab.tertiary_sort_field = self.tertiary_sort_field.get();
+            tab.tertiary_sort_direction = self.tertiary_sort_direction.get();
             tab.title = tab_title_for_view(&tab.primary_view, &tab.primary_dir);
         }
     }
@@ -1771,42 +3704,72 @@ impl BrowserController {
 
         self.current_dir.replace(tab.primary_dir.clone());
         self.back_history.replace(tab.primary_back_history.clone());
+        self.forward_history
+            .replace(tab.primary_forward_history.clone());
         self.current_view.replace(tab.primary_view.clone());
         self.secondary_current_dir
             .replace(tab.secondary_dir.clone());
         self.secondary_back_history
             .replace(tab.secondary_back_history.clone());
+        self.secondary_forward_history
+            .replace(tab.secondary_forward_history.clone());
         self.secondary_view.replace(tab.secondary_view.clone());
-        self.split_enabled.set(tab.split_enabled);
-        self.active_pane.set(if tab.split_enabled {
-            tab.active_pane
-        } else {
-            PaneSlot::Primary
-        });
+        self.tertiary_current_dir.replace(tab.tertiary_dir.clone());
+        self.tertiary_back_history
+            .replace(tab.tertiary_back_history.clone());
+        self.tertiary_forward_history
+            .replace(tab.tertiary_forward_history.clone());
+        self.tertiary_view.replace(tab.tertiary_view.clone());
+        self.pane_layout.set(tab.pane_layout);
+        self.active_pane
+            .set(if tab.pane_layout.includes(tab.active_pane) {
+                tab.active_pane
+            } else {
+                PaneSlot::Primary
+            });
 
-        if self.toolbar.split_toggle.is_active() != self.split_enabled.get() {
-            self.toolbar
-                .split_toggle
-                .set_active(self.split_enabled.get());
+        // Restore per-pane view modes
+        self.primary_view_mode.set(tab.primary_view_mode);
+        self.secondary_view_mode.set(tab.secondary_view_mode);
+        self.tertiary_view_mode.set(tab.tertiary_view_mode);
+        self.primary_show_hidden.set(tab.primary_show_hidden);
+        self.secondary_show_hidden.set(tab.secondary_show_hidden);
+        self.tertiary_show_hidden.set(tab.tertiary_show_hidden);
+        self.primary_sort_field.set(tab.primary_sort_field);
+        self.primary_sort_direction.set(tab.primary_sort_direction);
+        self.secondary_sort_field.set(tab.secondary_sort_field);
+        self.secondary_sort_direction.set(tab.secondary_sort_direction);
+        self.tertiary_sort_field.set(tab.tertiary_sort_field);
+        self.tertiary_sort_direction.set(tab.tertiary_sort_direction);
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            self.set_view_mode(slot, self.view_mode_cell(slot).get());
+            self.sync_show_hidden_button_state(slot);
+            let icon = match self.sort_direction_cell(slot).get() {
+                SortDirection::Ascending => "view-sort-ascending-symbolic",
+                SortDirection::Descending => "view-sort-descending-symbolic",
+            };
+            self.pane_widgets(slot).sort_icon.set_icon_name(Some(icon));
         }
 
         self.rebuild_tab_strip();
-        self.sync_split_visibility();
+        self.sync_pane_layout_visibility();
         self.update_active_pane_visuals();
         self.update_view_strip(PaneSlot::Primary);
         self.load_current_view(PaneSlot::Primary);
-        if self.split_enabled.get() {
-            self.update_view_strip(PaneSlot::Secondary);
-            self.load_current_view(PaneSlot::Secondary);
-        } else {
-            self.secondary_pane.file_grid.clear_selection();
-            self.reset_keyboard_state(PaneSlot::Secondary);
+        for slot in [PaneSlot::Secondary, PaneSlot::Tertiary] {
+            if self.pane_layout.get().includes(slot) {
+                self.update_view_strip(slot);
+                self.load_current_view(slot);
+            } else {
+                self.pane_widgets(slot).file_grid.clear_selection();
+                self.reset_keyboard_state(slot);
+            }
         }
     }
 
     fn update_active_pane_visuals(&self) {
         let active = self.active_slot();
-        for slot in [PaneSlot::Primary, PaneSlot::Secondary] {
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
             let pane = self.pane_widgets(slot);
             if slot == active {
                 pane.root.add_css_class("active");
@@ -1818,36 +3781,98 @@ impl BrowserController {
         }
     }
 
-    fn sync_split_visibility(&self) {
-        let enabled = self.split_enabled.get();
-        self.secondary_pane.root.set_visible(enabled);
-        self.secondary_pane.path_label.set_visible(enabled);
-        self.secondary_pane
-            .view_strip
-            .set_visible(enabled && self.secondary_pane.view_strip.is_visible());
+    fn sync_pane_layout_visibility(&self) {
+        let layout = self.pane_layout.get();
+
+        // Snapshot old state BEFORE changing anything so we can detect transitions.
+        let was_single = !self.right_paned.get_visible();
+        let was_two = self.right_paned.get_visible() && !self.tertiary_pane.root.get_visible();
+
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            let pane = self.pane_widgets(slot);
+            let visible = layout.includes(slot);
+            pane.root.set_visible(visible);
+            pane.path_label.set_visible(visible);
+            pane.view_strip
+                .set_visible(visible && pane.view_strip.is_visible());
+        }
+
+        let now_split = layout != PaneLayout::Single;
+        self.right_paned.set_visible(now_split);
+
+        // After the next layout cycle the Paned's allocated width is known.
+        // We use it to set an explicit equal-halves divider so the new pane
+        // actually gets space instead of inheriting a stale collapsed position.
+        if was_single && now_split {
+            let sp = self.split_paned.clone();
+            glib::idle_add_local_once(move || {
+                let w = sp.width();
+                if w > 0 {
+                    sp.set_position(w / 2);
+                }
+            });
+        }
+        if was_two && layout == PaneLayout::Three {
+            let rp = self.right_paned.clone();
+            glib::idle_add_local_once(move || {
+                let w = rp.width();
+                if w > 0 {
+                    rp.set_position(w / 2);
+                }
+            });
+        }
+
+        self.update_split_button_state();
     }
 
-    fn set_split_enabled(self: &Rc<Self>, enabled: bool) {
-        if self.split_enabled.get() == enabled {
+    fn update_split_button_state(&self) {
+        let (icon, tooltip) = match self.pane_layout.get() {
+            PaneLayout::Single => ("view-list-symbolic", "Switch to 2 panels (Ctrl+\\)"),
+            PaneLayout::Two => ("view-dual-symbolic", "Switch to 3 panels (Ctrl+\\)"),
+            PaneLayout::Three => ("view-grid-symbolic", "Switch to 1 panel (Ctrl+\\)"),
+        };
+        self.toolbar.set_split_icon_state(icon);
+        self.toolbar.split_tooltip_label.set_label(tooltip);
+    }
+
+    fn cycle_pane_layout(self: &Rc<Self>) {
+        let next = self.pane_layout.get().next();
+        self.set_pane_layout(next);
+    }
+
+    fn set_pane_layout(self: &Rc<Self>, layout: PaneLayout) {
+        if self.pane_layout.get() == layout {
             return;
         }
 
-        self.split_enabled.set(enabled);
-        if self.toolbar.split_toggle.is_active() != enabled {
-            self.toolbar.split_toggle.set_active(enabled);
+        let previous = self.pane_layout.get();
+        if previous == PaneLayout::Two && layout == PaneLayout::Three {
+            let source = self.active_slot();
+            self.tertiary_current_dir
+                .replace(self.current_dir_for(source));
+            self.tertiary_view.replace(self.current_view_for(source));
+            self.tertiary_back_history
+                .replace(self.back_history_cell(source).borrow().clone());
         }
-        if !enabled && self.active_slot() == PaneSlot::Secondary {
+
+        self.pane_layout.set(layout);
+        if !layout.includes(self.active_slot()) {
             self.active_pane.set(PaneSlot::Primary);
         }
 
         self.sync_active_tab_state();
         self.rebuild_tab_strip();
-        self.sync_split_visibility();
+        self.sync_pane_layout_visibility();
         self.update_active_pane_visuals();
 
-        if enabled {
-            self.update_view_strip(PaneSlot::Secondary);
-            self.load_current_view(PaneSlot::Secondary);
+        for slot in [PaneSlot::Secondary, PaneSlot::Tertiary] {
+            if layout.includes(slot) {
+                self.update_view_strip(slot);
+                self.load_current_view(slot);
+            } else {
+                self.pane_widgets(slot).file_grid.clear_selection();
+                self.reset_keyboard_state(slot);
+            }
         }
 
         self.update_navigation_state();
@@ -1857,10 +3882,10 @@ impl BrowserController {
     }
 
     fn set_active_pane(self: &Rc<Self>, slot: PaneSlot) {
-        let target = if slot == PaneSlot::Secondary && !self.split_enabled.get() {
-            PaneSlot::Primary
-        } else {
+        let target = if self.pane_layout.get().includes(slot) {
             slot
+        } else {
+            PaneSlot::Primary
         };
 
         if self.active_slot() == target {
@@ -1889,6 +3914,7 @@ impl BrowserController {
             let current = self.current_dir_for(slot);
             if current != path {
                 self.back_history_cell(slot).borrow_mut().push(current);
+                self.forward_history_cell(slot).borrow_mut().clear();
             }
         }
 
@@ -1903,6 +3929,10 @@ impl BrowserController {
         self.load_directory(slot, path);
     }
 
+    fn navigate_to_active(self: &Rc<Self>, path: PathBuf) {
+        self.navigate_to(self.active_slot(), path, true);
+    }
+
     fn go_back(self: &Rc<Self>) {
         let slot = self.active_slot();
         if !self.is_directory_view(slot) {
@@ -1912,6 +3942,8 @@ impl BrowserController {
         }
         let previous = self.back_history_cell(slot).borrow_mut().pop();
         if let Some(path) = previous {
+            let current = self.current_dir_for(slot);
+            self.forward_history_cell(slot).borrow_mut().push(current);
             self.current_dir_cell(slot).replace(path.clone());
             self.current_view_cell(slot)
                 .replace(PaneView::Directory(path.clone()));
@@ -1921,6 +3953,31 @@ impl BrowserController {
                 self.rebuild_tab_strip();
             }
             self.load_directory(slot, path);
+            self.update_navigation_state();
+        }
+    }
+
+    fn go_forward(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        if !self.is_directory_view(slot) {
+            self.status
+                .set_message("Forward is only available in directory views.");
+            return;
+        }
+        let next = self.forward_history_cell(slot).borrow_mut().pop();
+        if let Some(path) = next {
+            let current = self.current_dir_for(slot);
+            self.back_history_cell(slot).borrow_mut().push(current);
+            self.current_dir_cell(slot).replace(path.clone());
+            self.current_view_cell(slot)
+                .replace(PaneView::Directory(path.clone()));
+            self.sync_active_tab_state();
+            self.update_view_strip(slot);
+            if slot == PaneSlot::Primary {
+                self.rebuild_tab_strip();
+            }
+            self.load_directory(slot, path);
+            self.update_navigation_state();
         }
     }
 
@@ -1938,23 +3995,13 @@ impl BrowserController {
     }
 
     fn refresh(self: &Rc<Self>) {
-        let slot = self.active_slot();
-        self.load_current_view(slot);
-        if self.split_enabled.get() {
-            let other = Self::other_slot(slot);
-            self.load_current_view(other);
-        }
+        self.reload_visible_panes();
     }
 
-    fn set_show_hidden(self: &Rc<Self>, show_hidden: bool) {
-        if self.toolbar.show_hidden_toggle.is_active() != show_hidden {
-            self.toolbar.show_hidden_toggle.set_active(show_hidden);
+    fn reload_visible_panes(self: &Rc<Self>) {
+        for slot in self.visible_slots() {
+            self.load_current_view(slot);
         }
-        if self.show_hidden.get() == show_hidden {
-            return;
-        }
-        self.show_hidden.set(show_hidden);
-        self.reload_active_tab();
     }
 
     fn navigate_from_path_entry(self: &Rc<Self>) {
@@ -2075,7 +4122,18 @@ impl BrowserController {
             return;
         }
         self.sidebar_visible.set(visible);
-        self.sidebar.root.set_visible(visible);
+        if visible {
+            self.sidebar_revealer.set_visible(true);
+            self.sidebar_revealer.set_reveal_child(true);
+        } else {
+            self.sidebar_revealer.set_reveal_child(false);
+            let revealer = self.sidebar_revealer.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(230), move || {
+                if !revealer.reveals_child() {
+                    revealer.set_visible(false);
+                }
+            });
+        }
     }
 
     fn set_sidebar_visible(self: &Rc<Self>, visible: bool) {
@@ -2092,16 +4150,188 @@ impl BrowserController {
             return;
         }
         self.preview_visible.set(visible);
-        self.preview_host.set_visible(visible);
-        self.cancel_active_preview();
-
         if visible {
+            self.preview_revealer.set_visible(true);
+            self.preview_revealer.set_reveal_child(true);
             self.refresh_preview();
+        } else {
+            self.cancel_active_preview();
+            self.preview_revealer.set_reveal_child(false);
+            let revealer = self.preview_revealer.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(230), move || {
+                if !revealer.reveals_child() {
+                    revealer.set_visible(false);
+                }
+            });
         }
     }
 
     fn set_preview_visible(self: &Rc<Self>, visible: bool) {
         self.apply_preview_visibility(visible);
+    }
+
+    fn set_holding_tray_visible(self: &Rc<Self>, visible: bool) {
+        if visible {
+            self.holding_tray.root.set_visible(true);
+            self.holding_tray.root.set_reveal_child(true);
+        } else {
+            self.holding_tray.root.set_reveal_child(false);
+            let revealer = self.holding_tray.root.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(210), move || {
+                if !revealer.reveals_child() {
+                    revealer.set_visible(false);
+                }
+            });
+        }
+    }
+
+    // ── Action Planning Mode ─────────────────────────────────────────────────
+
+    fn set_plan_mode(self: &Rc<Self>, active: bool) {
+        self.plan_mode_active.set(active);
+        if self.toolbar.plan_mode_toggle.is_active() != active {
+            self.toolbar.plan_mode_toggle.set_active(active);
+        }
+        self.refresh_plan_queue_panel();
+        if active {
+            self.status
+                .set_message("Plan mode ON — operations will queue instead of executing.");
+        } else if self.action_queue.borrow().is_empty() {
+            self.status.set_message("Plan mode OFF.");
+        }
+    }
+
+    fn queue_plan(self: &Rc<Self>, plan: crate::action_plan::ActionPlan) {
+        self.action_queue.borrow_mut().push(plan);
+        self.refresh_plan_queue_panel();
+        let n = self.action_queue.borrow().len();
+        self.status.set_message(&format!(
+            "{n} action{} queued — execute or clear in the plan queue panel.",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+
+    fn refresh_plan_queue_panel(self: &Rc<Self>) {
+        let items = self.action_queue.borrow().clone();
+        let show = self.plan_mode_active.get() || !items.is_empty();
+
+        let controller = Rc::clone(self);
+        self.plan_queue_panel
+            .set_items(&items, move |action| match action {
+                QueueAction::MoveUp(i) => {
+                    let mut q = controller.action_queue.borrow_mut();
+                    if i > 0 {
+                        q.swap(i - 1, i);
+                    }
+                    drop(q);
+                    controller.refresh_plan_queue_panel();
+                }
+                QueueAction::MoveDown(i) => {
+                    let mut q = controller.action_queue.borrow_mut();
+                    if i + 1 < q.len() {
+                        q.swap(i, i + 1);
+                    }
+                    drop(q);
+                    controller.refresh_plan_queue_panel();
+                }
+                QueueAction::Remove(i) => {
+                    controller.action_queue.borrow_mut().remove(i);
+                    controller.refresh_plan_queue_panel();
+                }
+            });
+
+        if show {
+            self.plan_queue_panel.root.set_visible(true);
+            self.plan_queue_panel.root.set_reveal_child(true);
+        } else {
+            self.plan_queue_panel.root.set_reveal_child(false);
+            let revealer = self.plan_queue_panel.root.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(230), move || {
+                if !revealer.reveals_child() {
+                    revealer.set_visible(false);
+                }
+            });
+        }
+    }
+
+    fn execute_plan_queue(self: &Rc<Self>) {
+        let queue: Vec<_> = self.action_queue.borrow_mut().drain(..).collect();
+        self.refresh_plan_queue_panel();
+        if queue.is_empty() {
+            return;
+        }
+        self.status
+            .set_message(&format!("Executing {} queued action(s)…", queue.len()));
+        for plan in queue {
+            match plan.kind {
+                crate::action_plan::OpKind::Trash => {
+                    self.move_paths_to_trash(plan.sources);
+                }
+                crate::action_plan::OpKind::Move => {
+                    if let Some(dest) = plan.destination {
+                        self.start_copy_move_with_conflict_check(
+                            plan.sources,
+                            dest,
+                            false,
+                            plan.summary,
+                            None,
+                        );
+                    }
+                }
+                crate::action_plan::OpKind::Copy => {
+                    if let Some(dest) = plan.destination {
+                        self.start_copy_move_with_conflict_check(
+                            plan.sources,
+                            dest,
+                            true,
+                            plan.summary,
+                            None,
+                        );
+                    }
+                }
+                crate::action_plan::OpKind::Rename => {
+                    if let (Some(src), Some(new_name)) =
+                        (plan.sources.first(), plan.file_list.first())
+                    {
+                        self.rename_path(src.clone(), new_name.clone());
+                    }
+                }
+                crate::action_plan::OpKind::BulkRename => {
+                    let renames: Vec<(PathBuf, String)> = plan
+                        .sources
+                        .into_iter()
+                        .zip(plan.file_list.into_iter())
+                        .collect();
+                    if !renames.is_empty() {
+                        self.apply_bulk_rename(renames);
+                    }
+                }
+                crate::action_plan::OpKind::Duplicate => {
+                    self.do_duplicate_files(plan.sources);
+                }
+                crate::action_plan::OpKind::PermanentDelete => {
+                    self.delete_items_permanently(plan.sources);
+                }
+                crate::action_plan::OpKind::NewFolder => {
+                    if let (Some(parent), Some(name)) = (plan.destination, plan.file_list.first()) {
+                        self.exec_create_folder(parent, name.clone());
+                    }
+                }
+                crate::action_plan::OpKind::NewFile => {
+                    if let (Some(parent), Some(name)) = (plan.destination, plan.file_list.first()) {
+                        self.exec_create_text_document(self.active_slot(), parent, name.clone());
+                    }
+                }
+                crate::action_plan::OpKind::SendToProject { is_copy } => {
+                    if let Some(dest) = plan.destination {
+                        let items = plan_copy_move_items(&plan.sources, &dest);
+                        if !items.is_empty() {
+                            self.start_copy_move_op(items, is_copy, &plan.summary, None, None);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn load_directory(self: &Rc<Self>, slot: PaneSlot, path: PathBuf) {
@@ -2214,12 +4444,11 @@ impl BrowserController {
 
                 match result {
                     Ok(batch) if batch.is_empty() => {
-                        let mut items = collected.borrow().clone();
-                        sort_items(&mut items);
+                        let items = collected.borrow().clone();
                         controller.finish_load(slot, generation, &path, items);
                     }
                     Ok(batch) => {
-                        let show_hidden = controller.show_hidden.get();
+                        let show_hidden = controller.show_hidden_cell(slot).get();
                         {
                             let mut collected_ref = collected.borrow_mut();
                             for info in batch {
@@ -2262,16 +4491,30 @@ impl BrowserController {
 
         self.load_cancellable_cell(slot).borrow_mut().take();
         let mut items = self.enrich_items_with_tags(items);
-        if let PaneView::DownloadsTriage(filter) = self.current_view_for(slot) {
-            items = filter_triage_items(items, filter);
+        sort_items_with(
+            &mut items,
+            self.sort_field_cell(slot).get(),
+            self.sort_direction_cell(slot).get(),
+        );
+        // Store full item list before any view-specific filtering so filters can re-apply
+        self.all_items_cell(slot).replace(items.clone());
+        if let PaneView::Triage { filter, .. } = self.current_view_for(slot) {
+            {
+                let dup_set = self.duplicate_set_cell(slot).borrow();
+                items = filter_triage_items(items, filter, dup_set.as_ref());
+            }
+            if filter == TriageFilter::Duplicates
+                && self.duplicate_set_cell(slot).borrow().is_none()
+                && !self.duplicate_scan_pending_for(slot)
+            {
+                self.start_duplicate_scan(slot, path.to_path_buf());
+            }
         }
         if matches!(self.current_view_for(slot), PaneView::Directory(_)) {
             if let Err(error) = self.metadata.borrow_mut().record_recent_location(path) {
                 eprintln!("Lattice recent-location update failed: {error}");
             }
         }
-        // Store the full (unfiltered) item list so tag filter can re-apply
-        self.all_items_cell(slot).replace(items.clone());
         // Apply tag filter for directory views
         let spec = self.pane_widgets(slot).tag_filter.spec();
         let displayed =
@@ -2335,11 +4578,13 @@ impl BrowserController {
             .set_empty_message(match self.current_view_for(slot) {
                 PaneView::Directory(_) => "Unable to read this folder.",
                 PaneView::Tag(_) => "Unable to read tagged files.",
-                PaneView::DownloadsTriage(_) => "Unable to read Downloads.",
+                PaneView::Triage { .. } => "Unable to read this folder.",
                 PaneView::SystemDrives => "Unable to read mounted volumes.",
                 PaneView::Recent => "Unable to read recent folders.",
                 PaneView::Trash => "Unable to read Trash.",
                 PaneView::Search(_) => "Search failed.",
+                PaneView::ActivityLog => "Unable to load activity log.",
+                PaneView::ProjectLanding(_) | PaneView::TagManager => "",
             });
 
         let display_path = match self.current_view_for(slot) {
@@ -2361,10 +4606,9 @@ impl BrowserController {
         }
     }
 
-    fn load_downloads_triage(self: &Rc<Self>, slot: PaneSlot) {
-        self.current_dir_cell(slot)
-            .replace(self.places.downloads.clone());
-        self.load_directory(slot, self.places.downloads.clone());
+    fn load_triage(self: &Rc<Self>, slot: PaneSlot, root: &Path) {
+        self.current_dir_cell(slot).replace(root.to_path_buf());
+        self.load_directory(slot, root.to_path_buf());
     }
 
     fn open_system_drives(self: &Rc<Self>) {
@@ -2663,8 +4907,7 @@ impl BrowserController {
 
                 match result {
                     Ok(batch) if batch.is_empty() => {
-                        let mut items = collected.borrow().clone();
-                        sort_items(&mut items);
+                        let items = collected.borrow().clone();
                         controller.finish_trash_load(slot, generation, items);
                     }
                     Ok(batch) => {
@@ -2726,12 +4969,17 @@ impl BrowserController {
         );
     }
 
-    fn finish_trash_load(self: &Rc<Self>, slot: PaneSlot, generation: u64, items: Vec<FileItem>) {
+    fn finish_trash_load(self: &Rc<Self>, slot: PaneSlot, generation: u64, mut items: Vec<FileItem>) {
         if !self.is_current_load(slot, generation) {
             return;
         }
 
         self.load_cancellable_cell(slot).borrow_mut().take();
+        sort_items_with(
+            &mut items,
+            self.sort_field_cell(slot).get(),
+            self.sort_direction_cell(slot).get(),
+        );
         self.items_cell(slot).replace(items.clone());
 
         if items.is_empty() {
@@ -2823,10 +5071,7 @@ impl BrowserController {
         if index >= total {
             let errs = errors.borrow().clone();
             self.ops_panel.finish_op(op_id, &errs);
-            self.load_current_view(PaneSlot::Primary);
-            if self.split_enabled.get() {
-                self.load_current_view(PaneSlot::Secondary);
-            }
+            self.reload_visible_panes();
             return;
         }
 
@@ -2916,6 +5161,164 @@ impl BrowserController {
         );
     }
 
+    fn empty_trash(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        if !matches!(self.current_view_for(slot), PaneView::Trash) {
+            return;
+        }
+        let item_count = self.items_cell(slot).borrow().len();
+        if item_count == 0 {
+            return;
+        }
+        let prompt = if item_count == 1 {
+            "Permanently delete 1 item from Trash? This cannot be undone.".to_string()
+        } else {
+            format!("Permanently delete {item_count} items from Trash? This cannot be undone.")
+        };
+        let controller = Rc::clone(self);
+        self.modal_host.show_confirm(
+            "Empty Trash",
+            &prompt,
+            "Empty Trash",
+            true,
+            false,
+            move || controller.do_empty_trash(),
+        );
+    }
+
+    fn do_empty_trash(self: &Rc<Self>) {
+        let cancellable = gio::Cancellable::new();
+        let op_id = self
+            .ops_panel
+            .add_op("Empty Trash", Some(cancellable.clone()));
+        let trash = gio::File::for_uri("trash:///");
+        let controller = Rc::clone(self);
+        let cancellable_clone = cancellable.clone();
+        let trash_for_cb = trash.clone();
+        trash.enumerate_children_async(
+            "standard::name",
+            gio::FileQueryInfoFlags::NONE,
+            glib::Priority::DEFAULT,
+            Some(&cancellable),
+            move |result| match result {
+                Ok(enumerator) => {
+                    controller.collect_trash_children_then_delete(
+                        op_id,
+                        trash_for_cb,
+                        enumerator,
+                        cancellable_clone,
+                        Rc::new(RefCell::new(Vec::new())),
+                    );
+                }
+                Err(e) => {
+                    controller
+                        .ops_panel
+                        .finish_op(op_id, &[e.message().to_string()]);
+                    controller.reload_visible_panes();
+                }
+            },
+        );
+    }
+
+    fn collect_trash_children_then_delete(
+        self: &Rc<Self>,
+        op_id: OpId,
+        trash: gio::File,
+        enumerator: gio::FileEnumerator,
+        cancellable: gio::Cancellable,
+        children: Rc<RefCell<Vec<gio::File>>>,
+    ) {
+        let controller = Rc::clone(self);
+        let trash_clone = trash.clone();
+        let enumerator_clone = enumerator.clone();
+        let cancellable_clone = cancellable.clone();
+        let children_clone = Rc::clone(&children);
+        enumerator.next_files_async(
+            64,
+            glib::Priority::DEFAULT,
+            Some(&cancellable),
+            move |result| match result {
+                Ok(batch) if batch.is_empty() => {
+                    controller.delete_trash_batch(
+                        op_id,
+                        children_clone,
+                        0,
+                        cancellable_clone,
+                        Rc::new(RefCell::new(Vec::new())),
+                    );
+                }
+                Ok(batch) => {
+                    {
+                        let mut c = children_clone.borrow_mut();
+                        for info in &batch {
+                            c.push(trash_clone.child(info.name()));
+                        }
+                    }
+                    controller.collect_trash_children_then_delete(
+                        op_id,
+                        trash_clone,
+                        enumerator_clone,
+                        cancellable_clone,
+                        children_clone,
+                    );
+                }
+                Err(e) => {
+                    if e.kind::<gio::IOErrorEnum>() != Some(gio::IOErrorEnum::Cancelled) {
+                        controller
+                            .ops_panel
+                            .finish_op(op_id, &[e.message().to_string()]);
+                    } else {
+                        controller.ops_panel.finish_op(op_id, &[]);
+                    }
+                    controller.reload_visible_panes();
+                }
+            },
+        );
+    }
+
+    fn delete_trash_batch(
+        self: &Rc<Self>,
+        op_id: OpId,
+        files: Rc<RefCell<Vec<gio::File>>>,
+        index: usize,
+        cancellable: gio::Cancellable,
+        errors: Rc<RefCell<Vec<String>>>,
+    ) {
+        let total = files.borrow().len();
+        if index >= total {
+            let errs = errors.borrow().clone();
+            self.ops_panel.finish_op(op_id, &errs);
+            self.reload_visible_panes();
+            return;
+        }
+        if cancellable.is_cancelled() {
+            self.ops_panel.finish_op(op_id, &[]);
+            self.reload_visible_panes();
+            return;
+        }
+        self.ops_panel
+            .update_progress(op_id, index as f64 / total as f64, "");
+        let file = files.borrow()[index].clone();
+        let controller = Rc::clone(self);
+        let files_clone = Rc::clone(&files);
+        let errors_clone = Rc::clone(&errors);
+        let cancellable_clone = cancellable.clone();
+        file.delete_async(glib::Priority::DEFAULT, Some(&cancellable), move |result| {
+            if let Err(ref e) = result {
+                if e.kind::<gio::IOErrorEnum>() != Some(gio::IOErrorEnum::Cancelled) {
+                    errors_clone.borrow_mut().push(e.message().to_string());
+                }
+            }
+            controller.delete_trash_batch(
+                op_id,
+                files_clone,
+                index + 1,
+                cancellable_clone,
+                errors_clone,
+            );
+        });
+    }
+
     // ── Search ───────────────────────────────────────────────────────────
 
     fn exit_search_if_empty(self: &Rc<Self>, slot: PaneSlot) -> bool {
@@ -2935,7 +5338,7 @@ impl BrowserController {
             self.rebuild_tab_strip();
         }
         self.load_directory(slot, query.scope_dir);
-        self.pane_widgets(slot).file_grid.flow.grab_focus();
+        self.pane_widgets(slot).file_grid.grab_focus_on_active();
         true
     }
 
@@ -2949,15 +5352,11 @@ impl BrowserController {
             });
             return;
         }
-        if !matches!(
-            self.current_view_for(slot),
-            PaneView::Directory(_) | PaneView::DownloadsTriage(_)
-        ) {
+        let Some(scope) = self.tool_scope_dir_for(slot) else {
             self.status
                 .set_message("Search is only available in folder views.");
             return;
-        }
-        let scope = self.current_dir_for(slot);
+        };
         let query = SearchQuery::new(scope);
         self.open_search(slot, query);
     }
@@ -3055,11 +5454,25 @@ impl BrowserController {
             self.preview.set_action_state(false, false, false);
         }
 
+        if query.is_unconstrained() {
+            pane.file_grid
+                .set_empty_message("Type a name or choose filters to search.");
+            if slot == self.active_slot() {
+                self.show_empty_selection_preview(slot, &display_label, 0);
+                self.status.set_counts(0, 0);
+                self.refresh_preview();
+            }
+            return;
+        }
+
         let generation = self.load_generation_cell(slot).get() + 1;
         self.load_generation_cell(slot).set(generation);
+        let search_cancel = Arc::new(AtomicBool::new(false));
+        self.search_cancel_cell(slot)
+            .replace(Some(Arc::clone(&search_cancel)));
 
         let controller = Rc::clone(self);
-        let show_hidden = self.show_hidden.get();
+        let show_hidden = self.show_hidden_cell(slot).get();
         glib::MainContext::default().spawn_local(async move {
             let query_clone = query.clone();
             let raw = gio::spawn_blocking(move || {
@@ -3070,6 +5483,7 @@ impl BrowserController {
                     show_hidden,
                     0,
                     &mut results,
+                    &search_cancel,
                 );
                 results
             })
@@ -3107,6 +5521,7 @@ impl BrowserController {
         }
 
         self.load_cancellable_cell(slot).borrow_mut().take();
+        self.search_cancel_cell(slot).borrow_mut().take();
         self.items_cell(slot).replace(items.clone());
 
         if items.is_empty() {
@@ -3144,6 +5559,7 @@ impl BrowserController {
     fn connect_search_panels(self: &Rc<Self>) {
         self.connect_search_panel(PaneSlot::Primary);
         self.connect_search_panel(PaneSlot::Secondary);
+        self.connect_search_panel(PaneSlot::Tertiary);
     }
 
     fn connect_search_panel(self: &Rc<Self>, slot: PaneSlot) {
@@ -3350,8 +5766,7 @@ impl BrowserController {
         }
 
         if index >= paths.len() {
-            let mut items = collected.borrow().clone();
-            sort_items(&mut items);
+            let items = collected.borrow().clone();
             self.finish_virtual_load(
                 slot,
                 generation,
@@ -3379,7 +5794,7 @@ impl BrowserController {
                 }
 
                 if let Ok(info) = result {
-                    if controller.show_hidden.get() || !info.is_hidden() {
+                    if controller.show_hidden_cell(slot).get() || !info.is_hidden() {
                         if let Some(path) = file_for_callback.path() {
                             collected.borrow_mut().push(FileItem {
                                 name: info.display_name().to_string(),
@@ -3428,7 +5843,13 @@ impl BrowserController {
         }
 
         self.load_cancellable_cell(slot).borrow_mut().take();
-        let items = self.enrich_items_with_tags(items);
+        let mut items = self.enrich_items_with_tags(items);
+        sort_items_with(
+            &mut items,
+            self.sort_field_cell(slot).get(),
+            self.sort_direction_cell(slot).get(),
+        );
+        self.all_items_cell(slot).replace(items.clone());
         self.items_cell(slot).replace(items.clone());
         if items.is_empty() {
             self.pane_widgets(slot)
@@ -3487,13 +5908,17 @@ impl BrowserController {
                 );
                 self.preview.set_action_state(false, false, false);
             }
-            PaneView::DownloadsTriage(filter) => {
+            PaneView::Triage { root, filter } => {
+                let folder_name = root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| root.display().to_string());
                 self.preview.show_folder(
-                    filter.label(),
+                    &format!("{} — {}", folder_name, filter.label()),
                     display_label,
                     None,
                     Some(item_count),
-                    "Downloads Triage",
+                    "Triage",
                 );
                 self.preview.set_action_state(false, false, false);
             }
@@ -3532,26 +5957,29 @@ impl BrowserController {
                     .show_folder(&title, display_label, None, Some(item_count), "Search");
                 self.preview.set_action_state(false, false, false);
             }
+            PaneView::ActivityLog => {
+                self.preview
+                    .show_folder("Activity Log", display_label, None, None, "File History");
+                self.preview.set_action_state(false, false, false);
+            }
+            PaneView::ProjectLanding(_) => {
+                self.preview
+                    .show_folder("Project", display_label, None, None, "Project");
+                self.preview.set_action_state(false, false, false);
+            }
+            PaneView::TagManager => {
+                self.preview
+                    .show_folder("Tags", display_label, None, None, "Tag Manager");
+                self.preview.set_action_state(false, false, false);
+            }
         }
     }
 
     fn attach_context_handlers(self: &Rc<Self>, slot: PaneSlot) {
-        let pane = self.pane_widgets(slot).clone();
-        for index in 0..self.items_cell(slot).borrow().len() {
-            if let Some(child) = pane.file_grid.flow.child_at_index(index as i32) {
-                let gesture = gtk::GestureClick::new();
-                gesture.set_button(3);
-
-                let controller = Rc::clone(self);
-                let anchor: gtk::Widget = child.clone().upcast();
-                gesture.connect_pressed(move |_, _, x, y| {
-                    controller.set_active_pane(slot);
-                    controller.show_context_menu(slot, index as i32, anchor.clone(), x, y);
-                });
-
-                child.add_controller(gesture);
-            }
-        }
+        let _ = slot;
+        // Right-click is handled once at the FlowBox/ListBox container level in
+        // `connect_pane()`. Keeping it there avoids GTK selection/focus races
+        // between row wrappers and child widgets.
     }
 
     fn show_context_menu(
@@ -3638,7 +6066,7 @@ impl BrowserController {
                     move || controller.open_new_tab(Some(item.path.clone()))
                 },
             );
-            if self.split_enabled.get() {
+            if self.pane_layout.get() != PaneLayout::Single {
                 append_menu_button(
                     &menu_box,
                     "Open in Other Pane",
@@ -3723,7 +6151,7 @@ impl BrowserController {
     fn show_current_folder_menu(self: &Rc<Self>, slot: PaneSlot, x: f64, y: f64) {
         if !matches!(
             self.current_view_for(slot),
-            PaneView::Directory(_) | PaneView::DownloadsTriage(_)
+            PaneView::Directory(_) | PaneView::Triage { .. }
         ) {
             return;
         }
@@ -3785,11 +6213,17 @@ impl BrowserController {
                     "open",
                     "open_new_tab",
                     "open_in_pane",
+                    "triage_folder",
+                    "separator",
+                    "add_to_holding_tray",
                     "separator",
                     "rename",
+                    "bulk_rename",
+                    "duplicate",
                     "copy_path",
                     "terminal_here",
                     "separator",
+                    "pin_place",
                     "pin_project",
                     "send_to_project",
                     "add_tag",
@@ -3803,7 +6237,11 @@ impl BrowserController {
                     "open",
                     "open_with",
                     "separator",
+                    "add_to_holding_tray",
+                    "separator",
                     "rename",
+                    "bulk_rename",
+                    "duplicate",
                     "copy_path",
                     "terminal_here",
                     "separator",
@@ -3831,6 +6269,7 @@ impl BrowserController {
                     "new_folder",
                     "new_text_document",
                     "separator",
+                    "pin_place",
                     "pin_project",
                     "terminal_here",
                     "copy_path",
@@ -3880,17 +6319,19 @@ impl BrowserController {
                         move || controller.open_new_tab(Some(item.path.clone()))
                     },
                 ),
-                "open_in_pane" if item.is_dir && self.split_enabled.get() => append_menu_button(
-                    menu_box,
-                    "Open in Other Pane",
-                    Some("window-new-symbolic"),
-                    false,
-                    {
-                        let controller = Rc::clone(self);
-                        let item = item.clone();
-                        move || controller.open_folder_in_other_pane(slot, item.path.clone())
-                    },
-                ),
+                "open_in_pane" if item.is_dir && self.pane_layout.get() != PaneLayout::Single => {
+                    append_menu_button(
+                        menu_box,
+                        "Open in Other Pane",
+                        Some("window-new-symbolic"),
+                        false,
+                        {
+                            let controller = Rc::clone(self);
+                            let item = item.clone();
+                            move || controller.open_folder_in_other_pane(slot, item.path.clone())
+                        },
+                    )
+                }
                 "open_in_pane" if item.is_dir => append_menu_button(
                     menu_box,
                     "Open in Split Pane",
@@ -3902,11 +6343,39 @@ impl BrowserController {
                         move || controller.open_folder_in_split(item.path.clone())
                     },
                 ),
+                "triage_folder" if item.is_dir => {
+                    append_menu_button(menu_box, "🧹 Triage This Folder", None, false, {
+                        let controller = Rc::clone(self);
+                        let item = item.clone();
+                        move || controller.open_triage(item.path.clone(), TriageFilter::All)
+                    })
+                }
                 "rename" => {
                     append_menu_button(menu_box, "Rename", Some("document-edit-symbolic"), false, {
                         let controller = Rc::clone(self);
                         let item = item.clone();
                         move || controller.show_rename_dialog(item.path.clone(), item.name.clone())
+                    })
+                }
+                "bulk_rename" => {
+                    let selected = self.selected_items_for(slot);
+                    if selected.len() >= 2 {
+                        append_menu_button(
+                            menu_box,
+                            "Bulk Rename\u{2026}",
+                            Some("document-edit-symbolic"),
+                            false,
+                            {
+                                let controller = Rc::clone(self);
+                                move || controller.show_bulk_rename_dialog(selected.clone())
+                            },
+                        )
+                    }
+                }
+                "duplicate" => {
+                    append_menu_button(menu_box, "Duplicate", Some("edit-copy-symbolic"), false, {
+                        let controller = Rc::clone(self);
+                        move || controller.duplicate_selected()
                     })
                 }
                 "copy_path" => {
@@ -3916,6 +6385,16 @@ impl BrowserController {
                         move || controller.copy_paths_to_clipboard(vec![item.path.clone()])
                     })
                 }
+                "add_to_holding_tray" => append_menu_button(
+                    menu_box,
+                    "Add to Holding Tray",
+                    Some("mail-attachment-symbolic"),
+                    false,
+                    {
+                        let controller = Rc::clone(self);
+                        move || controller.add_selection_to_holding_tray(slot)
+                    },
+                ),
                 "terminal_here" => append_menu_button(
                     menu_box,
                     "Terminal Here",
@@ -3936,6 +6415,17 @@ impl BrowserController {
                         let controller = Rc::clone(self);
                         let item = item.clone();
                         move || controller.show_pin_project_dialog(item.path.clone())
+                    },
+                ),
+                "pin_place" if item.is_dir => append_menu_button(
+                    menu_box,
+                    "Pin to Places",
+                    Some("bookmark-new-symbolic"),
+                    false,
+                    {
+                        let controller = Rc::clone(self);
+                        let item = item.clone();
+                        move || controller.pin_place(item.path.clone())
                     },
                 ),
                 "send_to_project" => append_menu_button(
@@ -4043,6 +6533,16 @@ impl BrowserController {
                         move || controller.show_pin_project_dialog(controller.current_dir_for(slot))
                     },
                 ),
+                "pin_place" => append_menu_button(
+                    menu_box,
+                    "Pin to Places",
+                    Some("bookmark-new-symbolic"),
+                    false,
+                    {
+                        let controller = Rc::clone(self);
+                        move || controller.pin_place(controller.current_dir_for(slot))
+                    },
+                ),
                 "terminal_here" => append_menu_button(
                     menu_box,
                     "Terminal Here",
@@ -4129,6 +6629,430 @@ impl BrowserController {
         false
     }
 
+    fn add_selection_to_holding_tray(self: &Rc<Self>, slot: PaneSlot) {
+        let items = self.selected_items_for(slot);
+        if items.is_empty() {
+            self.status
+                .set_message("Select one or more items before adding to the Holding Tray.");
+            return;
+        }
+
+        let added = add_unique_tray_items(&mut self.holding_tray_items.borrow_mut(), items);
+        self.refresh_holding_tray();
+        self.toolbar.holding_tray_toggle.set_active(true);
+        self.status.set_message(&format!(
+            "Added {added} item{} to the Holding Tray.",
+            if added == 1 { "" } else { "s" }
+        ));
+    }
+
+    fn add_paths_to_holding_tray(self: &Rc<Self>, paths: Vec<PathBuf>) {
+        let items = paths
+            .into_iter()
+            .filter_map(|path| self.file_item_for_known_or_local_path(&path))
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            self.status
+                .set_message("No readable local files were available to stage.");
+            return;
+        }
+
+        let added = add_unique_tray_items(&mut self.holding_tray_items.borrow_mut(), items);
+        self.refresh_holding_tray();
+        self.toolbar.holding_tray_toggle.set_active(true);
+        self.status.set_message(&format!(
+            "Added {added} item{} to the Holding Tray.",
+            if added == 1 { "" } else { "s" }
+        ));
+    }
+
+    fn paste_file_clipboard_into_holding_tray(self: &Rc<Self>) {
+        let Some(clipboard) = self.file_clipboard.borrow().clone() else {
+            self.status
+                .set_message("Nothing is waiting to be added to the Holding Tray.");
+            return;
+        };
+        self.add_paths_to_holding_tray(clipboard.paths);
+    }
+
+    fn file_item_for_known_or_local_path(&self, path: &Path) -> Option<FileItem> {
+        for cell in [&self.items, &self.secondary_items, &self.tertiary_items] {
+            if let Some(item) = cell.borrow().iter().find(|item| item.path == path).cloned() {
+                return Some(item);
+            }
+        }
+
+        let file = gio::File::for_path(path);
+        let info = file
+            .query_info(
+                DIRECTORY_ATTRIBUTES,
+                gio::FileQueryInfoFlags::NONE,
+                None::<&gio::Cancellable>,
+            )
+            .ok()?;
+        FileItem::from_info(
+            &path.parent().map(gio::File::for_path)?,
+            &info,
+            self.show_hidden_cell(self.active_slot()).get(),
+        )
+    }
+
+    fn refresh_holding_tray(self: &Rc<Self>) {
+        let items = self.holding_tray_items.borrow().clone();
+        let controller = Rc::clone(self);
+        let selected = self.holding_tray_selection.borrow().clone();
+        let select_controller = Rc::clone(self);
+        let open_controller = Rc::clone(self);
+        self.holding_tray.set_items(
+            &items,
+            &selected,
+            move |path| controller.remove_holding_tray_path(&path),
+            move |path| select_controller.select_holding_tray_path(path),
+            move |path| open_controller.open_holding_tray_path(path),
+        );
+        self.holding_tray_thumb_loader.cancel();
+        self.holding_tray_thumb_loader
+            .submit(self.holding_tray.drain_thumb_targets());
+    }
+
+    fn remove_holding_tray_path(self: &Rc<Self>, path: &Path) {
+        self.holding_tray_items
+            .borrow_mut()
+            .retain(|item| item.path != path);
+        self.holding_tray_selection
+            .borrow_mut()
+            .retain(|selected| selected != path);
+        self.refresh_holding_tray();
+        self.status
+            .set_message("Removed item from the Holding Tray. The file was not deleted.");
+    }
+
+    fn remove_holding_tray_paths(self: &Rc<Self>, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        self.holding_tray_items
+            .borrow_mut()
+            .retain(|item| !paths.iter().any(|path| path == &item.path));
+        self.holding_tray_selection
+            .borrow_mut()
+            .retain(|item| !paths.iter().any(|path| path == item));
+        self.refresh_holding_tray();
+    }
+
+    fn clear_holding_tray(self: &Rc<Self>) {
+        self.holding_tray_items.borrow_mut().clear();
+        self.holding_tray_selection.borrow_mut().clear();
+        self.refresh_holding_tray();
+        self.status
+            .set_message("Holding Tray cleared. No files were deleted.");
+    }
+
+    fn holding_tray_paths(&self) -> Vec<PathBuf> {
+        self.holding_tray_items
+            .borrow()
+            .iter()
+            .map(|item| item.path.clone())
+            .collect()
+    }
+
+    fn selected_holding_tray_paths(&self) -> Vec<PathBuf> {
+        let selection = self.holding_tray_selection.borrow();
+        if selection.is_empty() {
+            return self.holding_tray_paths();
+        }
+        let items = self.holding_tray_items.borrow();
+        selection
+            .iter()
+            .filter(|path| items.iter().any(|item| &item.path == *path))
+            .cloned()
+            .collect()
+    }
+
+    fn select_holding_tray_path(self: &Rc<Self>, path: PathBuf) {
+        self.holding_tray_selection.replace(vec![path]);
+        self.refresh_holding_tray();
+    }
+
+    fn clear_holding_tray_selection(self: &Rc<Self>) {
+        if self.holding_tray_selection.borrow().is_empty() {
+            return;
+        }
+        self.holding_tray_selection.borrow_mut().clear();
+        self.refresh_holding_tray();
+        self.status.set_message("Holding Tray selection cleared.");
+    }
+
+    fn remove_selected_holding_tray_items(self: &Rc<Self>) {
+        let paths = self.holding_tray_selection.borrow().clone();
+        if paths.is_empty() {
+            self.status
+                .set_message("Select a staged item before removing it from the tray.");
+            return;
+        }
+        self.remove_holding_tray_paths(&paths);
+        self.status.set_message(&format!(
+            "Removed {} staged item{} from the Holding Tray. No files were deleted.",
+            paths.len(),
+            if paths.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    fn open_selected_holding_tray_item(self: &Rc<Self>) {
+        let Some(path) = self.holding_tray_selection.borrow().first().cloned() else {
+            self.status
+                .set_message("Select a staged item before opening it.");
+            return;
+        };
+        self.open_holding_tray_path(path);
+    }
+
+    fn open_holding_tray_path(self: &Rc<Self>, path: PathBuf) {
+        if let Some(item) = self
+            .holding_tray_items
+            .borrow()
+            .iter()
+            .find(|item| item.path == path)
+            .cloned()
+        {
+            self.open_item(&item);
+        }
+    }
+
+    fn show_tray_project_dialog(self: &Rc<Self>, action: TrayProjectAction) {
+        let paths = self.holding_tray_paths();
+        if paths.is_empty() {
+            self.status.set_message("The Holding Tray is empty.");
+            return;
+        }
+
+        let projects = self.projects.borrow().clone();
+        if projects.is_empty() {
+            self.modal_host.show_error(
+                "No Projects Yet",
+                "Pin a folder as a project first, then send tray items to it.",
+            );
+            return;
+        }
+
+        let content = GtkBox::new(Orientation::Vertical, 12);
+        content.append(&build_modal_prompt(
+            "Choose the project that should receive the staged tray items.",
+        ));
+
+        let project_box = GtkBox::new(Orientation::Vertical, 8);
+        project_box.set_halign(Align::Fill);
+        project_box.set_hexpand(true);
+        content.append(&project_box);
+
+        let mut first_project_button: Option<gtk::CheckButton> = None;
+        let project_buttons = projects
+            .iter()
+            .map(|project| {
+                let button = gtk::CheckButton::with_label(&format!(
+                    "{}  {}",
+                    format_path(&project.root_path, &self.places.home),
+                    project.name
+                ));
+                button.set_halign(Align::Start);
+                if let Some(first) = &first_project_button {
+                    button.set_group(Some(first));
+                } else {
+                    button.set_active(true);
+                    first_project_button = Some(button.clone());
+                }
+                project_box.append(&button);
+                (
+                    project.id,
+                    project.name.clone(),
+                    project.root_path.clone(),
+                    button,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let actions = build_modal_actions();
+        let host = self.modal_host.clone();
+        let cancel_btn = build_modal_button("Cancel", ButtonKind::Secondary, move || host.hide());
+        actions.append(&cancel_btn);
+
+        let host = self.modal_host.clone();
+        let controller = Rc::clone(self);
+        let plan_btn = build_modal_button("Preview", ButtonKind::Primary, move || {
+            if let Some((project_id, project_name, project_root, _)) = project_buttons
+                .iter()
+                .find(|(_, _, _, button)| button.is_active())
+            {
+                let plan = project_action_plan(action, &paths, project_name, project_root);
+                let project_id = *project_id;
+                let controller_for_plan = Rc::clone(&controller);
+                let paths_for_plan = paths.clone();
+                controller.show_action_plan(plan, move || {
+                    controller_for_plan.send_paths_to_project(
+                        paths_for_plan.clone(),
+                        project_id,
+                        action.transfer_kind(),
+                        Some(TrayCompletion {
+                            action: action.title().to_string(),
+                            clear_successful_paths: action == TrayProjectAction::Move,
+                        }),
+                    );
+                });
+            }
+            host.hide();
+        });
+        actions.append(&plan_btn);
+
+        self.modal_host
+            .show_with_custom_ui(action.title(), &content, &actions, false, None);
+    }
+
+    fn show_tray_tag_preview(self: &Rc<Self>) {
+        let paths = self.holding_tray_paths();
+        if paths.is_empty() {
+            self.status.set_message("The Holding Tray is empty.");
+            return;
+        }
+
+        let controller = Rc::clone(self);
+        self.modal_host.show_input(
+            "Tag Holding Tray",
+            "Type a tag name to apply to all staged items. Existing names will be reused.",
+            "",
+            "Preview",
+            move |tag_name| {
+                let tag_name = tag_name.trim().to_string();
+                if tag_name.is_empty() {
+                    controller.status.set_message("Tag name cannot be empty.");
+                    return;
+                }
+                let plan = tag_action_plan(&paths, &tag_name);
+                let controller_for_plan = Rc::clone(&controller);
+                let paths_for_plan = paths.clone();
+                controller.show_action_plan(plan, move || {
+                    controller_for_plan
+                        .apply_tag_to_tray_paths(paths_for_plan.clone(), tag_name.clone());
+                });
+            },
+        );
+    }
+
+    fn show_tray_trash_preview(self: &Rc<Self>) {
+        let paths = self.holding_tray_paths();
+        if paths.is_empty() {
+            self.status.set_message("The Holding Tray is empty.");
+            return;
+        }
+        let plan = trash_action_plan(&paths);
+        let controller = Rc::clone(self);
+        self.show_action_plan(plan, move || {
+            controller.move_tray_paths_to_trash(paths.clone());
+        });
+    }
+
+    fn copy_holding_tray_paths(self: &Rc<Self>) {
+        let paths = self.selected_holding_tray_paths();
+        if paths.is_empty() {
+            self.status.set_message("The Holding Tray is empty.");
+            return;
+        }
+        let plan = copy_path_action_plan(&paths);
+        let controller = Rc::clone(self);
+        self.show_action_plan(plan, move || {
+            controller.copy_paths_to_clipboard(paths.clone());
+            controller.record_tray_receipt("Copy Tray Paths", paths.len(), 0);
+        });
+    }
+
+    fn show_action_plan<F>(self: &Rc<Self>, plan: ActionPlan, on_accept: F)
+    where
+        F: Fn() + 'static,
+    {
+        let content = GtkBox::new(Orientation::Vertical, 8);
+        for line in &plan.lines {
+            let label = Label::new(Some(line));
+            label.add_css_class("dialog-prompt");
+            label.set_halign(Align::Start);
+            label.set_wrap(true);
+            label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            content.append(&label);
+        }
+
+        let actions = build_modal_actions();
+        let host = self.modal_host.clone();
+        let cancel_btn = build_modal_button("Cancel", ButtonKind::Secondary, move || host.hide());
+        actions.append(&cancel_btn);
+
+        let host = self.modal_host.clone();
+        let kind = if plan.destructive {
+            ButtonKind::Danger
+        } else {
+            ButtonKind::Primary
+        };
+        let accept_btn = build_modal_button(&plan.confirm_label, kind, move || {
+            on_accept();
+            host.hide();
+        });
+        actions.append(&accept_btn);
+
+        self.modal_host
+            .show_with_custom_ui(&plan.title, &content, &actions, false, None);
+    }
+
+    fn apply_tag_to_tray_paths(self: &Rc<Self>, paths: Vec<PathBuf>, tag_name: String) {
+        let result = {
+            let mut metadata = self.metadata.borrow_mut();
+            let tag = metadata.ensure_tag(&tag_name);
+            tag.and_then(|tag| {
+                metadata.add_tag_to_paths(tag.id, &paths)?;
+                Ok(tag)
+            })
+        };
+
+        match result {
+            Ok(tag) => {
+                self.refresh_metadata_sidebar();
+                self.status
+                    .set_message(&format!("Applied tag #{} to tray items.", tag.name));
+                self.record_tray_receipt("Tag Holding Tray", paths.len(), 0);
+                self.refresh();
+            }
+            Err(error) => {
+                self.record_tray_receipt("Tag Holding Tray", 0, paths.len());
+                self.show_error_dialog("Tag Failed", &error);
+            }
+        }
+    }
+
+    fn move_tray_paths_to_trash(self: &Rc<Self>, paths: Vec<PathBuf>) {
+        self.move_paths_to_trash_with_completion(
+            paths,
+            Some(TrayCompletion {
+                action: "Move Tray to Trash".to_string(),
+                clear_successful_paths: true,
+            }),
+        );
+    }
+
+    fn record_tray_receipt(&self, action: &str, success_count: usize, failure_count: usize) {
+        let detail = format!("{} succeeded · {} failed", success_count, failure_count);
+        self.ops_panel
+            .add_receipt(action, &detail, failure_count > 0);
+        let errors = if failure_count > 0 {
+            vec![format!("{failure_count} staged item(s) failed.")]
+        } else {
+            Vec::new()
+        };
+        let _ = self.metadata.borrow().log_activity(
+            "holding_tray",
+            success_count as i32,
+            action,
+            "Holding Tray",
+            None,
+            &errors,
+        );
+    }
+
     fn update_selection(self: &Rc<Self>) {
         let slot = self.active_slot();
         let selected_items = self.selected_items_for(slot);
@@ -4157,6 +7081,13 @@ impl BrowserController {
         self.toolbar
             .new_text_document_button
             .set_sensitive(actions.can_new_folder);
+
+        let in_trash = matches!(self.current_view_for(slot), PaneView::Trash);
+        self.toolbar.empty_trash_host.set_visible(in_trash);
+        if in_trash {
+            let has_items = !self.items_cell(slot).borrow().is_empty();
+            self.toolbar.empty_trash_button.set_sensitive(has_items);
+        }
     }
 
     fn refresh_preview(self: &Rc<Self>) {
@@ -4482,18 +7413,18 @@ impl BrowserController {
     }
 
     fn open_folder_in_split(self: &Rc<Self>, path: PathBuf) {
-        self.set_split_enabled(true);
+        self.set_pane_layout(PaneLayout::Two);
         self.set_active_pane(PaneSlot::Secondary);
         self.navigate_to(PaneSlot::Secondary, path, true);
     }
 
     fn open_folder_in_other_pane(self: &Rc<Self>, slot: PaneSlot, path: PathBuf) {
-        let target = Self::other_slot(slot);
-        if !self.split_enabled.get() {
+        if self.pane_layout.get() == PaneLayout::Single {
             self.open_folder_in_split(path);
             return;
         }
 
+        let target = self.next_visible_slot(slot);
         self.set_active_pane(target);
         self.navigate_to(target, path, true);
     }
@@ -4608,6 +7539,7 @@ impl BrowserController {
     fn wire_tag_filters(self: &Rc<Self>) {
         self.wire_tag_filter_for_slot(PaneSlot::Primary);
         self.wire_tag_filter_for_slot(PaneSlot::Secondary);
+        self.wire_tag_filter_for_slot(PaneSlot::Tertiary);
     }
 
     fn wire_tag_filter_for_slot(self: &Rc<Self>, slot: PaneSlot) {
@@ -4622,22 +7554,34 @@ impl BrowserController {
 
     fn set_filter_panel_open(self: &Rc<Self>, open: bool) {
         let slot = self.active_slot();
-        self.pane_widgets(slot).tag_filter.root.set_visible(open);
-        self.toolbar.filter_toggle.set_active(open);
+        self.set_filter_panel_open_for_slot(slot, open);
+    }
+
+    fn set_filter_panel_open_for_slot(self: &Rc<Self>, slot: PaneSlot, open: bool) {
+        let revealer = self.pane_widgets(slot).tag_filter_revealer.clone();
+        if open {
+            revealer.set_visible(true);
+            revealer.set_reveal_child(true);
+        } else {
+            revealer.set_reveal_child(false);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(190), move || {
+                if !revealer.reveals_child() {
+                    revealer.set_visible(false);
+                }
+            });
+        }
         self.sync_filter_button_state(slot);
     }
 
     fn sync_filter_button_state(&self, slot: PaneSlot) {
         let pane = self.pane_widgets(slot);
         let count = pane.tag_filter.active_count();
-        if count > 0 {
-            self.toolbar
-                .filter_toggle
-                .add_css_class("toolbar-filter-active");
+        let open = pane.tag_filter_revealer.reveals_child();
+        if count > 0 || open {
+            pane.filter_toggle_btn.add_css_class("pane-control-active");
         } else {
-            self.toolbar
-                .filter_toggle
-                .remove_css_class("toolbar-filter-active");
+            pane.filter_toggle_btn
+                .remove_css_class("pane-control-active");
         }
     }
 
@@ -4716,6 +7660,10 @@ impl BrowserController {
         if renames.is_empty() {
             return;
         }
+        if self.plan_mode_active.get() {
+            self.queue_plan(FileOpPlan::for_bulk_rename(&renames));
+            return;
+        }
         let label = format!(
             "Renaming {} file{}…",
             renames.len(),
@@ -4741,6 +7689,34 @@ impl BrowserController {
             let failures = result.borrow().failures.clone();
             self.ops_panel.finish_op(op_id, &failures);
             let n = result.borrow().success_count;
+            let activity_items: Vec<(PathBuf, Option<PathBuf>)> = renames
+                .iter()
+                .map(|(old_path, new_name)| {
+                    let new_path = old_path
+                        .parent()
+                        .map(|parent| parent.join(new_name))
+                        .unwrap_or_else(|| PathBuf::from(new_name));
+                    (old_path.clone(), Some(new_path))
+                })
+                .collect();
+            let source = renames
+                .first()
+                .and_then(|(path, _)| path.parent())
+                .and_then(|path| path.to_str())
+                .unwrap_or("");
+            let _ = self.metadata.borrow().log_activity_with_items(
+                "bulk_rename",
+                renames.len() as i32,
+                &format!(
+                    "Renamed {} file{}",
+                    renames.len(),
+                    if renames.len() == 1 { "" } else { "s" }
+                ),
+                source,
+                None,
+                &failures,
+                &activity_items,
+            );
             if n > 0 {
                 self.pending_status_message.replace(Some(format!(
                     "Renamed {} file{}.",
@@ -4824,6 +7800,12 @@ impl BrowserController {
             return;
         }
 
+        if self.plan_mode_active.get() {
+            let plan = FileOpPlan::for_rename(&path, &new_name);
+            self.queue_plan(plan);
+            return;
+        }
+
         self.status.set_message("Renaming item…");
         let controller = Rc::clone(self);
         let file = gio::File::for_path(&path);
@@ -4848,6 +7830,19 @@ impl BrowserController {
                     controller
                         .pending_status_message
                         .replace(Some("Rename complete.".to_string()));
+                    let source = path
+                        .parent()
+                        .and_then(|parent| parent.to_str())
+                        .unwrap_or("");
+                    let _ = controller.metadata.borrow().log_activity_with_items(
+                        "rename",
+                        1,
+                        "Renamed item",
+                        source,
+                        new_path.parent().and_then(|parent| parent.to_str()),
+                        &[],
+                        &[(path.clone(), Some(new_path.clone()))],
+                    );
                     controller.refresh();
                 }
                 Err(error) => {
@@ -4859,6 +7854,42 @@ impl BrowserController {
                 }
             },
         );
+    }
+
+    // ── Duplicate ─────────────────────────────────────────────────────────────
+
+    fn duplicate_selected(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        let paths = self.selected_paths_for(slot);
+        if paths.is_empty() {
+            self.status.set_message("Select files to duplicate.");
+            return;
+        }
+        if self.plan_mode_active.get() {
+            self.queue_plan(FileOpPlan::for_duplicate(&paths));
+            return;
+        }
+        self.do_duplicate_files(paths);
+    }
+
+    fn do_duplicate_files(self: &Rc<Self>, sources: Vec<PathBuf>) {
+        if sources.is_empty() {
+            return;
+        }
+        let items: Vec<(PathBuf, PathBuf, gio::FileCopyFlags)> = sources
+            .iter()
+            .filter_map(|src| {
+                let parent = src.parent()?;
+                let dest = duplicate_dest_name(src, parent);
+                Some((src.clone(), dest, gio::FileCopyFlags::ALL_METADATA))
+            })
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let n = items.len();
+        let summary = format!("Duplicate {} item{}", n, if n == 1 { "" } else { "s" });
+        self.start_copy_move_op(items, true, &summary, None, Some("duplicate"));
     }
 
     fn create_new_folder(self: &Rc<Self>) {
@@ -4926,11 +7957,17 @@ impl BrowserController {
             self.show_error_dialog("Invalid Name", "Folder names cannot be empty.");
             return;
         }
-
         let current_dir = self.current_dir_for(self.active_slot());
-        let folder_path = current_dir.join(&folder_name);
-        let file = gio::File::for_path(&folder_path);
+        if self.plan_mode_active.get() {
+            self.queue_plan(FileOpPlan::for_new_folder(&current_dir, &folder_name));
+            return;
+        }
+        self.exec_create_folder(current_dir, folder_name);
+    }
 
+    fn exec_create_folder(self: &Rc<Self>, parent: PathBuf, folder_name: String) {
+        let folder_path = parent.join(&folder_name);
+        let file = gio::File::for_path(&folder_path);
         self.status.set_message("Creating folder…");
         let controller = Rc::clone(self);
         file.make_directory_async(
@@ -4941,6 +7978,15 @@ impl BrowserController {
                     controller
                         .pending_status_message
                         .replace(Some("Folder created.".to_string()));
+                    let _ = controller.metadata.borrow().log_activity_with_items(
+                        "new_folder",
+                        1,
+                        "Created folder",
+                        parent.to_str().unwrap_or(""),
+                        Some(parent.to_str().unwrap_or("")),
+                        &[],
+                        &[(parent.clone(), Some(folder_path.clone()))],
+                    );
                     controller.refresh();
                 }
                 Err(error) => {
@@ -4959,12 +8005,23 @@ impl BrowserController {
             self.show_error_dialog("Invalid Name", "Document names cannot be empty.");
             return;
         }
-
         let slot = self.active_slot();
         let current_dir = self.current_dir_for(slot);
-        let document_path = current_dir.join(&document_name);
-        let file = gio::File::for_path(&document_path);
+        if self.plan_mode_active.get() {
+            self.queue_plan(FileOpPlan::for_new_file(&current_dir, &document_name));
+            return;
+        }
+        self.exec_create_text_document(slot, current_dir, document_name);
+    }
 
+    fn exec_create_text_document(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        parent: PathBuf,
+        document_name: String,
+    ) {
+        let document_path = parent.join(&document_name);
+        let file = gio::File::for_path(&document_path);
         self.status.set_message("Creating text document…");
         let controller = Rc::clone(self);
         file.create_async(
@@ -4987,6 +8044,15 @@ impl BrowserController {
                                 controller
                                     .pending_status_message
                                     .replace(Some("Text document created.".to_string()));
+                                let _ = controller.metadata.borrow().log_activity_with_items(
+                                    "new_file",
+                                    1,
+                                    "Created text document",
+                                    parent.to_str().unwrap_or(""),
+                                    Some(parent.to_str().unwrap_or("")),
+                                    &[],
+                                    &[(parent.clone(), Some(document_path_for_close.clone()))],
+                                );
                                 controller.refresh();
                                 controller
                                     .open_created_text_document(document_path_for_close.clone());
@@ -5039,13 +8105,54 @@ impl BrowserController {
             return;
         }
 
-        match self.metadata.borrow_mut().create_project(&name, &path) {
+        let result = self.metadata.borrow_mut().create_project(&name, &path);
+        match result {
             Ok(project) => {
                 self.refresh_metadata_sidebar();
                 self.status
                     .set_message(&format!("Pinned project: {}.", project.name));
             }
             Err(error) => self.show_error_dialog("Project Save Failed", &error),
+        }
+    }
+
+    fn pin_place(self: &Rc<Self>, path: PathBuf) {
+        if path == self.places.home {
+            self.status.set_message("Home is already fixed in Places.");
+            return;
+        }
+        if !path.is_dir() {
+            self.show_error_dialog("Pin Place Failed", "Only folders can be pinned to Places.");
+            return;
+        }
+
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("Folder")
+            .to_string();
+        let result = self.metadata.borrow_mut().create_place(&name, &path);
+        match result {
+            Ok(place) => {
+                self.refresh_metadata_sidebar();
+                self.update_sidebar_state();
+                self.status
+                    .set_message(&format!("Pinned {} to Places.", place.name));
+            }
+            Err(error) => self.show_error_dialog("Pin Place Failed", &error),
+        }
+    }
+
+    fn remove_place(self: &Rc<Self>, place_id: i64) {
+        let result = self.metadata.borrow_mut().remove_place(place_id);
+        match result {
+            Ok(()) => {
+                self.refresh_metadata_sidebar();
+                self.update_sidebar_state();
+                self.status.set_message("Removed folder from Places.");
+            }
+            Err(error) => self.show_error_dialog("Remove Place Failed", &error),
         }
     }
 
@@ -5252,7 +8359,7 @@ impl BrowserController {
                 } else {
                     ProjectTransferKind::Copy
                 };
-                controller.send_paths_to_project(paths.clone(), project_id, kind);
+                controller.send_paths_to_project(paths.clone(), project_id, kind, None);
             }
             host.hide();
         });
@@ -5267,6 +8374,7 @@ impl BrowserController {
         paths: Vec<PathBuf>,
         project_id: i64,
         kind: ProjectTransferKind,
+        completion: Option<TrayCompletion>,
     ) {
         let Some(project) = self
             .projects
@@ -5293,6 +8401,17 @@ impl BrowserController {
             None => project.root_path.clone(),
         };
 
+        if self.plan_mode_active.get() && completion.is_none() {
+            let is_copy = matches!(kind, ProjectTransferKind::Copy);
+            self.queue_plan(FileOpPlan::for_send_to_project(
+                &paths,
+                &project.name,
+                &destination_root,
+                is_copy,
+            ));
+            return;
+        }
+
         let verb = match kind {
             ProjectTransferKind::Copy => "Copy",
             ProjectTransferKind::Move => "Move",
@@ -5310,6 +8429,7 @@ impl BrowserController {
             kind,
             op_id,
             Rc::new(RefCell::new(BatchResult::default())),
+            completion,
         );
     }
 
@@ -5321,10 +8441,22 @@ impl BrowserController {
         kind: ProjectTransferKind,
         op_id: OpId,
         result: Rc<RefCell<BatchResult>>,
+        completion: Option<TrayCompletion>,
     ) {
         if index >= paths.len() {
-            let errs: Vec<String> = result.borrow().failures.clone();
+            let result_snapshot = result.borrow();
+            let errs: Vec<String> = result_snapshot.failures.clone();
             self.ops_panel.finish_op(op_id, &errs);
+            if let Some(completion) = completion {
+                self.record_tray_receipt(
+                    &completion.action,
+                    result_snapshot.success_count,
+                    errs.len(),
+                );
+                if completion.clear_successful_paths {
+                    self.remove_holding_tray_paths(&result_snapshot.successful_paths);
+                }
+            }
             self.refresh();
             return;
         }
@@ -5344,7 +8476,15 @@ impl BrowserController {
                 .borrow_mut()
                 .failures
                 .push(format!("{}: Missing file name.", source_path.display()));
-            self.run_project_transfer(paths, index + 1, destination_root, kind, op_id, result);
+            self.run_project_transfer(
+                paths,
+                index + 1,
+                destination_root,
+                kind,
+                op_id,
+                result,
+                completion,
+            );
             return;
         };
 
@@ -5354,7 +8494,15 @@ impl BrowserController {
                 "{}: Source and destination are the same.",
                 source_path.display()
             ));
-            self.run_project_transfer(paths, index + 1, destination_root, kind, op_id, result);
+            self.run_project_transfer(
+                paths,
+                index + 1,
+                destination_root,
+                kind,
+                op_id,
+                result,
+                completion,
+            );
             return;
         }
 
@@ -5368,6 +8516,7 @@ impl BrowserController {
                 result,
                 source_path,
                 destination_path,
+                completion,
             );
             return;
         }
@@ -5382,6 +8531,7 @@ impl BrowserController {
             source_path,
             destination_path,
             false,
+            completion,
         );
     }
 
@@ -5395,6 +8545,7 @@ impl BrowserController {
         result: Rc<RefCell<BatchResult>>,
         source_path: PathBuf,
         destination_path: PathBuf,
+        completion: Option<TrayCompletion>,
     ) {
         let prompt_text = format!(
             "A project item already exists named:\n{}\n\nChoose how to continue.",
@@ -5410,9 +8561,17 @@ impl BrowserController {
         let host = self.modal_host.clone();
         let ctrl = Rc::clone(self);
         let result_cancel = Rc::clone(&result);
+        let completion_cancel = completion.clone();
         let cancel_btn = build_modal_button("Cancel", ButtonKind::Secondary, move || {
             let errs: Vec<String> = result_cancel.borrow().failures.clone();
             ctrl.ops_panel.finish_op(op_id, &errs);
+            if let Some(completion) = completion_cancel.clone() {
+                let snapshot = result_cancel.borrow();
+                ctrl.record_tray_receipt(&completion.action, snapshot.success_count, errs.len());
+                if completion.clear_successful_paths {
+                    ctrl.remove_holding_tray_paths(&snapshot.successful_paths);
+                }
+            }
             ctrl.refresh();
             host.hide();
         });
@@ -5425,6 +8584,7 @@ impl BrowserController {
         let dest_root_rename = destination_root.clone();
         let src_rename = source_path.clone();
         let result_rename = Rc::clone(&result);
+        let completion_rename = completion.clone();
         let rename_btn = build_modal_button("Rename Copy", ButtonKind::Primary, move || {
             ctrl.perform_project_transfer(
                 paths_rename.clone(),
@@ -5436,6 +8596,7 @@ impl BrowserController {
                 src_rename.clone(),
                 next_dest.clone(),
                 false,
+                completion_rename.clone(),
             );
             host.hide();
         });
@@ -5449,6 +8610,7 @@ impl BrowserController {
         let src_replace = source_path.clone();
         let dest_replace = destination_path.clone();
         let result_replace = Rc::clone(&result);
+        let completion_replace = completion.clone();
         let replace_btn = build_modal_button("Replace", ButtonKind::Danger, move || {
             ctrl.perform_project_transfer(
                 paths_replace.clone(),
@@ -5460,6 +8622,7 @@ impl BrowserController {
                 src_replace.clone(),
                 dest_replace.clone(),
                 true,
+                completion_replace.clone(),
             );
             host.hide();
         });
@@ -5481,6 +8644,7 @@ impl BrowserController {
         source_path: PathBuf,
         destination_path: PathBuf,
         overwrite: bool,
+        completion: Option<TrayCompletion>,
     ) {
         let source = gio::File::for_path(&source_path);
         let destination = gio::File::for_path(&destination_path);
@@ -5500,7 +8664,11 @@ impl BrowserController {
                     .query_file_type(gio::FileQueryInfoFlags::NONE, None::<&gio::Cancellable>);
                 if source_type == gio::FileType::Directory {
                     match copy_path_recursively(&source, &destination, overwrite) {
-                        Ok(()) => result.borrow_mut().success_count += 1,
+                        Ok(()) => {
+                            let mut result = result.borrow_mut();
+                            result.success_count += 1;
+                            result.successful_paths.push(source_path.clone());
+                        }
                         Err(error) => result.borrow_mut().failures.push(format!(
                             "{src_disp} → {dst_disp}: {}",
                             friendly_error_detail(&error)
@@ -5513,6 +8681,7 @@ impl BrowserController {
                         kind,
                         op_id,
                         result,
+                        completion,
                     );
                 } else {
                     let ops_panel = self.ops_panel.clone();
@@ -5551,7 +8720,11 @@ impl BrowserController {
                         Some(progress_cb),
                         move |operation| {
                             match operation {
-                                Ok(_) => result.borrow_mut().success_count += 1,
+                                Ok(_) => {
+                                    let mut result = result.borrow_mut();
+                                    result.success_count += 1;
+                                    result.successful_paths.push(source_path.clone());
+                                }
                                 Err(error) => result.borrow_mut().failures.push(format!(
                                     "{src_disp} → {dst_disp}: {}",
                                     friendly_error_detail(&error)
@@ -5564,6 +8737,7 @@ impl BrowserController {
                                 kind,
                                 op_id,
                                 result,
+                                completion,
                             );
                         },
                     );
@@ -5579,7 +8753,9 @@ impl BrowserController {
                     move |operation| {
                         match operation {
                             Ok(()) => {
-                                result.borrow_mut().success_count += 1;
+                                let mut result = result.borrow_mut();
+                                result.success_count += 1;
+                                result.successful_paths.push(source_path.clone());
                                 let _ = controller
                                     .metadata
                                     .borrow_mut()
@@ -5597,6 +8773,7 @@ impl BrowserController {
                             kind,
                             op_id,
                             result,
+                            completion,
                         );
                     },
                 );
@@ -5653,28 +8830,31 @@ impl BrowserController {
         };
 
         let is_copy = clipboard.is_copy();
-        let controller = Rc::clone(self);
-        glib::MainContext::default().spawn_local(async move {
-            controller
-                .handle_dnd_drop(
-                    clipboard.paths.clone(),
-                    destination,
-                    is_copy,
-                    Some(clipboard),
-                )
-                .await;
-        });
+        if self.plan_mode_active.get() {
+            let plan = FileOpPlan::for_paste(&clipboard.paths, &destination, is_copy);
+            self.queue_plan(plan);
+            return;
+        }
+        self.handle_dnd_drop(
+            clipboard.paths.clone(),
+            destination,
+            is_copy,
+            Some(clipboard),
+        );
     }
 
     fn paste_destination_for_slot(&self, slot: PaneSlot) -> Option<PathBuf> {
         match self.current_view_for(slot) {
             PaneView::Directory(path) => Some(path),
-            PaneView::DownloadsTriage(_) => Some(self.current_dir_for(slot)),
+            PaneView::Triage { .. } => Some(self.current_dir_for(slot)),
             PaneView::Tag(_)
             | PaneView::Trash
             | PaneView::SystemDrives
             | PaneView::Recent
-            | PaneView::Search(_) => None,
+            | PaneView::Search(_)
+            | PaneView::ActivityLog
+            | PaneView::ProjectLanding(_)
+            | PaneView::TagManager => None,
         }
     }
 
@@ -5715,10 +8895,23 @@ impl BrowserController {
             return;
         }
 
+        if self.plan_mode_active.get() {
+            let plan = FileOpPlan::for_trash(&paths);
+            self.queue_plan(plan);
+            return;
+        }
         self.move_paths_to_trash(paths);
     }
 
     fn move_paths_to_trash(self: &Rc<Self>, paths: Vec<PathBuf>) {
+        self.move_paths_to_trash_with_completion(paths, None);
+    }
+
+    fn move_paths_to_trash_with_completion(
+        self: &Rc<Self>,
+        paths: Vec<PathBuf>,
+        completion: Option<TrayCompletion>,
+    ) {
         if paths.is_empty() {
             return;
         }
@@ -5741,6 +8934,8 @@ impl BrowserController {
             0,
             cancellable,
             Rc::new(RefCell::new(Vec::new())),
+            Rc::new(RefCell::new(Vec::new())),
+            completion,
         );
     }
 
@@ -5751,18 +8946,62 @@ impl BrowserController {
         index: usize,
         cancellable: gio::Cancellable,
         errors: Rc<RefCell<Vec<String>>>,
+        successes: Rc<RefCell<Vec<PathBuf>>>,
+        completion: Option<TrayCompletion>,
     ) {
         let total = paths.len();
 
         if index >= total {
             let errs = errors.borrow().clone();
             self.ops_panel.finish_op(op_id, &errs);
+            // Activity log receipt
+            let n = paths.len() as i32;
+            let summary = if n == 1 {
+                let name = paths[0]
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or("item");
+                format!("Trashed \"{name}\"")
+            } else {
+                format!("Trashed {n} files")
+            };
+            let source = paths[0]
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or("")
+                .to_string();
+            let _ = self.metadata.borrow().log_activity_with_items(
+                "trash",
+                n,
+                &summary,
+                &source,
+                None,
+                &errs,
+                &paths
+                    .iter()
+                    .map(|path| (path.clone(), None))
+                    .collect::<Vec<_>>(),
+            );
+            if let Some(completion) = completion {
+                let successful_paths = successes.borrow().clone();
+                self.record_tray_receipt(&completion.action, successful_paths.len(), errs.len());
+                if completion.clear_successful_paths {
+                    self.remove_holding_tray_paths(&successful_paths);
+                }
+            }
             self.refresh();
             return;
         }
 
         if cancellable.is_cancelled() {
             self.ops_panel.finish_op(op_id, &["Cancelled.".to_string()]);
+            if let Some(completion) = completion {
+                let successful_paths = successes.borrow().clone();
+                self.record_tray_receipt(&completion.action, successful_paths.len(), 1);
+                if completion.clear_successful_paths {
+                    self.remove_holding_tray_paths(&successful_paths);
+                }
+            }
             self.refresh();
             return;
         }
@@ -5778,6 +9017,7 @@ impl BrowserController {
 
         let controller = Rc::clone(self);
         let errors_clone = Rc::clone(&errors);
+        let successes_clone = Rc::clone(&successes);
         let paths_clone = Rc::clone(&paths);
         let cancellable_clone = cancellable.clone();
 
@@ -5787,6 +9027,7 @@ impl BrowserController {
             move |result| {
                 match result {
                     Ok(_) => {
+                        successes_clone.borrow_mut().push(current_path.clone());
                         let _ = controller
                             .metadata
                             .borrow_mut()
@@ -5809,6 +9050,8 @@ impl BrowserController {
                     index + 1,
                     cancellable_clone,
                     errors_clone,
+                    successes_clone,
+                    completion,
                 );
             },
         );
@@ -5836,7 +9079,13 @@ impl BrowserController {
             "Delete Forever",
             true,
             true,
-            move || controller.delete_items_permanently(paths.clone()),
+            move || {
+                if controller.plan_mode_active.get() {
+                    controller.queue_plan(FileOpPlan::for_permanent_delete(&paths));
+                } else {
+                    controller.delete_items_permanently(paths.clone());
+                }
+            },
         );
     }
 
@@ -5879,6 +9128,27 @@ impl BrowserController {
         if index >= total {
             let errs = errors.borrow().clone();
             self.ops_panel.finish_op(op_id, &errs);
+            let source = paths
+                .first()
+                .and_then(|path| path.parent())
+                .and_then(|path| path.to_str())
+                .unwrap_or("");
+            let activity_items: Vec<(PathBuf, Option<PathBuf>)> =
+                paths.iter().map(|path| (path.clone(), None)).collect();
+            let summary = if total == 1 {
+                "Permanently deleted item".to_string()
+            } else {
+                format!("Permanently deleted {total} items")
+            };
+            let _ = self.metadata.borrow().log_activity_with_items(
+                "permanent_delete",
+                total as i32,
+                &summary,
+                source,
+                None,
+                &errs,
+                &activity_items,
+            );
             self.refresh();
             return;
         }
@@ -5961,7 +9231,7 @@ impl BrowserController {
             if selected.is_empty() {
                 match self.current_view_for(slot) {
                     PaneView::Directory(path) => vec![path],
-                    PaneView::DownloadsTriage(_) => vec![self.current_dir_for(slot)],
+                    PaneView::Triage { .. } => vec![self.current_dir_for(slot)],
                     PaneView::Search(query) => vec![query.scope_dir],
                     _ => {
                         self.status
@@ -6142,6 +9412,13 @@ impl BrowserController {
                     .borrow()
                     .is_empty(),
         );
+        self.toolbar.forward_button.set_sensitive(
+            is_directory
+                && !self
+                    .forward_history_cell(self.active_slot())
+                    .borrow()
+                    .is_empty(),
+        );
         self.toolbar.up_button.set_sensitive(
             is_directory
                 && self
@@ -6155,28 +9432,28 @@ impl BrowserController {
 
     fn update_sidebar_state(&self) {
         let active = match self.current_view_for(self.active_slot()) {
-            PaneView::Tag(tag) => Some(SidebarTarget::Tag(tag.id)),
-            PaneView::DownloadsTriage(_) => Some(SidebarTarget::DownloadsTriage),
+            PaneView::Tag(_) => Some(SidebarTarget::Tags),
+            PaneView::TagManager => Some(SidebarTarget::Tags),
+            PaneView::Triage { .. } => Some(SidebarTarget::Triage),
             PaneView::SystemDrives => Some(SidebarTarget::SystemDrives),
             PaneView::Recent => Some(SidebarTarget::Recent),
             PaneView::Trash => Some(SidebarTarget::Trash),
-            PaneView::Search(_) => None,
+            PaneView::ActivityLog => Some(SidebarTarget::ActivityLog),
+            PaneView::Search(_) => Some(SidebarTarget::Search),
+            PaneView::ProjectLanding(id) => Some(SidebarTarget::Project(id)),
             PaneView::Directory(_) => {
                 let current = self.current_dir_for(self.active_slot());
-                self.projects
+                self.user_places
                     .borrow()
                     .iter()
-                    .find(|project| current.starts_with(&project.root_path))
-                    .map(|project| SidebarTarget::Project(project.id))
+                    .find(|place| current.starts_with(&place.folder_path))
+                    .map(|place| SidebarTarget::Place(place.id))
                     .or_else(|| {
-                        current
-                            .starts_with(&self.places.downloads)
-                            .then_some(SidebarTarget::Downloads)
-                    })
-                    .or_else(|| {
-                        current
-                            .starts_with(&self.places.documents)
-                            .then_some(SidebarTarget::Documents)
+                        self.projects
+                            .borrow()
+                            .iter()
+                            .find(|project| current.starts_with(&project.root_path))
+                            .map(|project| SidebarTarget::Project(project.id))
                     })
                     .or_else(|| {
                         current
@@ -6256,6 +9533,7 @@ impl BrowserController {
         match slot {
             PaneSlot::Primary => &self.primary_thumb_loader,
             PaneSlot::Secondary => &self.secondary_thumb_loader,
+            PaneSlot::Tertiary => &self.tertiary_thumb_loader,
         }
     }
 
@@ -6263,6 +9541,11 @@ impl BrowserController {
         if let Some(cancellable) = self.load_cancellable_cell(slot).borrow_mut().take() {
             cancellable.cancel();
         }
+        if let Some(cancelled) = self.search_cancel_cell(slot).borrow_mut().take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        self.load_generation_cell(slot)
+            .set(self.load_generation_cell(slot).get() + 1);
         self.thumb_loader_for(slot).cancel();
     }
 
@@ -6336,80 +9619,105 @@ impl BrowserController {
             }
             let dest = controller.current_dir_for(slot);
             let is_copy = last_action.get() == gdk::DragAction::COPY;
-            let c = Rc::clone(&controller);
-            glib::MainContext::default().spawn_local(async move {
-                c.handle_dnd_drop(paths, dest, is_copy, None).await;
-            });
+            controller.handle_dnd_drop(paths, dest, is_copy, None);
             true
         });
 
         pane_root.add_controller(drop_target);
     }
 
-    /// Called once from bootstrap. Adds DropTargets to the static sidebar
-    /// buttons (Home, Downloads, Documents) so files can be dragged into them.
-    fn attach_sidebar_dnd(self: &Rc<Self>) {
-        let buttons: &[(gtk::Button, PathBuf)] = &[
-            (self.sidebar.home_button.clone(), self.places.home.clone()),
-            (
-                self.sidebar.downloads_button.clone(),
-                self.places.downloads.clone(),
-            ),
-            (
-                self.sidebar.documents_button.clone(),
-                self.places.documents.clone(),
-            ),
-        ];
+    /// Adds a DropTarget to one sidebar place button so files can be dragged into it.
+    fn attach_sidebar_place_dnd(self: &Rc<Self>, button: gtk::Button, dest_path: PathBuf) {
+        let last_action = Rc::new(Cell::new(gdk::DragAction::MOVE));
+        let la_motion = last_action.clone();
 
-        for (button, dest_path) in buttons {
-            let last_action = Rc::new(Cell::new(gdk::DragAction::MOVE));
-            let la_motion = last_action.clone();
+        let drop_target = gtk::DropTarget::new(
+            glib::Type::STRING,
+            gdk::DragAction::COPY | gdk::DragAction::MOVE,
+        );
 
-            let drop_target = gtk::DropTarget::new(
-                glib::Type::STRING,
-                gdk::DragAction::COPY | gdk::DragAction::MOVE,
-            );
+        let btn_enter = button.clone();
+        drop_target.connect_enter(move |_, _, _| {
+            btn_enter.add_css_class("drop-hover");
+            gdk::DragAction::MOVE
+        });
 
-            let btn_enter = button.clone();
-            drop_target.connect_enter(move |_, _, _| {
-                btn_enter.add_css_class("drop-hover");
+        drop_target.connect_motion(move |_, _, _| {
+            let a = if ctrl_held() {
+                gdk::DragAction::COPY
+            } else {
                 gdk::DragAction::MOVE
-            });
+            };
+            la_motion.set(a);
+            a
+        });
 
-            drop_target.connect_motion(move |_, _, _| {
-                let a = if ctrl_held() {
-                    gdk::DragAction::COPY
-                } else {
-                    gdk::DragAction::MOVE
-                };
-                la_motion.set(a);
-                a
-            });
+        let btn_leave = button.clone();
+        drop_target.connect_leave(move |_| {
+            btn_leave.remove_css_class("drop-hover");
+        });
 
-            let btn_leave = button.clone();
-            drop_target.connect_leave(move |_| {
-                btn_leave.remove_css_class("drop-hover");
-            });
+        let controller = Rc::clone(self);
+        let btn_drop = button.clone();
+        drop_target.connect_drop(move |_, value, _, _| {
+            btn_drop.remove_css_class("drop-hover");
+            let paths = parse_dropped_uris(value);
+            if paths.is_empty() {
+                return false;
+            }
+            let is_copy = last_action.get() == gdk::DragAction::COPY;
+            controller.handle_dnd_drop(paths, dest_path.clone(), is_copy, None);
+            true
+        });
 
-            let controller = Rc::clone(self);
-            let btn_drop = button.clone();
-            let dest = dest_path.clone();
-            drop_target.connect_drop(move |_, value, _, _| {
-                btn_drop.remove_css_class("drop-hover");
-                let paths = parse_dropped_uris(value);
-                if paths.is_empty() {
-                    return false;
-                }
-                let is_copy = last_action.get() == gdk::DragAction::COPY;
-                let c = Rc::clone(&controller);
-                let d = dest.clone();
-                glib::MainContext::default().spawn_local(async move {
-                    c.handle_dnd_drop(paths, d, is_copy, None).await;
-                });
-                true
-            });
+        button.add_controller(drop_target);
+    }
 
-            button.add_controller(drop_target);
+    /// Called once from bootstrap. Adds a tray-level DropTarget so grid items
+    /// can be staged without using the context menu.
+    fn attach_holding_tray_dnd(self: &Rc<Self>) {
+        // Tray staging is handled from each grid/list DragSource's end/cancel
+        // callbacks. Avoiding tray DropTargets keeps GTK's internal
+        // drag-autoscroll path out of this non-file-operation staging flow.
+    }
+
+    fn finish_drag_to_holding_tray(self: &Rc<Self>, drag: &gdk::Drag, paths: &[PathBuf]) -> bool {
+        if paths.is_empty() || !self.drag_is_over_holding_tray(drag) {
+            return false;
+        }
+
+        self.add_paths_to_holding_tray(paths.to_vec());
+        drag.drop_done(true);
+        true
+    }
+
+    fn drag_is_over_holding_tray(&self, drag: &gdk::Drag) -> bool {
+        let (surface, x, y) = drag.device().surface_at_position();
+        let Some(pointer_surface) = surface else {
+            return false;
+        };
+        let Some(window_surface) = self.window.surface() else {
+            return false;
+        };
+        if pointer_surface != window_surface {
+            return false;
+        }
+
+        self.window
+            .pick(x, y, gtk::PickFlags::DEFAULT)
+            .as_ref()
+            .is_some_and(|widget| widget_or_ancestor_has_css(widget, "holding-tray"))
+    }
+
+    fn set_holding_tray_drag_active(&self, active: bool) {
+        if active {
+            self.holding_tray
+                .root
+                .add_css_class("holding-tray-drop-active");
+        } else {
+            self.holding_tray
+                .root
+                .remove_css_class("holding-tray-drop-active");
         }
     }
 
@@ -6427,11 +9735,14 @@ impl BrowserController {
                 continue;
             };
 
-            // ── Drag source on every card ──────────────────────────
+            // ── Drag source on every card (icon mode) ──────────────────────────
             let drag_source = gtk::DragSource::new();
             drag_source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
+            let tray_drag_paths = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
+            let tray_drag_staged = Rc::new(Cell::new(false));
 
             let ctrl = Rc::clone(self);
+            let tray_drag_paths_prepare = Rc::clone(&tray_drag_paths);
             drag_source.connect_prepare(move |_, _, _| {
                 let all = ctrl.items_cell(slot).borrow();
                 let grid = ctrl.pane_widgets(slot).file_grid.clone();
@@ -6452,6 +9763,7 @@ impl BrowserController {
                 if paths.is_empty() {
                     return None;
                 }
+                tray_drag_paths_prepare.replace(paths.clone());
 
                 let uri_list = paths
                     .iter()
@@ -6462,7 +9774,148 @@ impl BrowserController {
                 Some(gdk::ContentProvider::for_value(&uri_list.to_value()))
             });
 
+            let ctrl = Rc::clone(self);
+            let drag_item = item.clone();
+            let drag_shell = flow_child.clone();
+            let tray_drag_staged_begin = Rc::clone(&tray_drag_staged);
+            drag_source.connect_drag_begin(move |_, drag| {
+                tray_drag_staged_begin.set(false);
+                ctrl.set_holding_tray_drag_active(true);
+                if let Some(shell) = drag_shell.first_child() {
+                    shell.add_css_class("dragging");
+                }
+
+                let selected = ctrl.pane_widgets(slot).file_grid.selected_indices();
+                let count = if selected.contains(&(idx as i32)) {
+                    selected.len().max(1)
+                } else {
+                    1
+                };
+
+                let preview = build_drag_preview(&drag_item, count);
+                let drag_icon = gtk::DragIcon::for_drag(drag);
+                drag_icon.set_child(Some(&preview));
+            });
+
+            let drag_shell = flow_child.clone();
+            let ctrl = Rc::clone(self);
+            let tray_drag_paths_end = Rc::clone(&tray_drag_paths);
+            let tray_drag_staged_end = Rc::clone(&tray_drag_staged);
+            drag_source.connect_drag_end(move |_, drag, _| {
+                if let Some(shell) = drag_shell.first_child() {
+                    shell.remove_css_class("dragging");
+                }
+                ctrl.set_holding_tray_drag_active(false);
+                if !tray_drag_staged_end.get()
+                    && ctrl.finish_drag_to_holding_tray(drag, &tray_drag_paths_end.borrow())
+                {
+                    tray_drag_staged_end.set(true);
+                }
+            });
+
+            let ctrl = Rc::clone(self);
+            let tray_drag_paths_cancel = Rc::clone(&tray_drag_paths);
+            let tray_drag_staged_cancel = Rc::clone(&tray_drag_staged);
+            drag_source.connect_drag_cancel(move |_, drag, _| {
+                ctrl.set_holding_tray_drag_active(false);
+                if tray_drag_staged_cancel.get() {
+                    return true;
+                }
+                if ctrl.finish_drag_to_holding_tray(drag, &tray_drag_paths_cancel.borrow()) {
+                    tray_drag_staged_cancel.set(true);
+                    return true;
+                }
+                false
+            });
+
             flow_child.add_controller(drag_source);
+
+            // ── Drag source on every list row (list mode) ─────────────────────
+            if let Some(list_row) = pane.file_grid.list_box.row_at_index(idx as i32) {
+                let drag_source_list = gtk::DragSource::new();
+                drag_source_list.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
+                let tray_drag_paths_list = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
+                let tray_drag_staged_list = Rc::new(Cell::new(false));
+
+                let ctrl = Rc::clone(self);
+                let tray_drag_paths_prepare = Rc::clone(&tray_drag_paths_list);
+                drag_source_list.connect_prepare(move |_, _, _| {
+                    let all = ctrl.items_cell(slot).borrow();
+                    let grid = ctrl.pane_widgets(slot).file_grid.clone();
+                    let selected = grid.selected_indices();
+                    let paths: Vec<PathBuf> = if selected.contains(&(idx as i32)) {
+                        selected
+                            .iter()
+                            .filter_map(|&i| all.get(i as usize).map(|it| it.path.clone()))
+                            .collect()
+                    } else {
+                        all.get(idx)
+                            .map(|it| vec![it.path.clone()])
+                            .unwrap_or_default()
+                    };
+                    drop(all);
+                    if paths.is_empty() {
+                        return None;
+                    }
+                    tray_drag_paths_prepare.replace(paths.clone());
+                    let uri_list = paths
+                        .iter()
+                        .map(|p| gio::File::for_path(p).uri().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\r\n");
+                    Some(gdk::ContentProvider::for_value(&uri_list.to_value()))
+                });
+
+                let ctrl = Rc::clone(self);
+                let drag_item_list = item.clone();
+                let list_row_drag = list_row.clone();
+                let tray_drag_staged_begin = Rc::clone(&tray_drag_staged_list);
+                drag_source_list.connect_drag_begin(move |_, drag| {
+                    tray_drag_staged_begin.set(false);
+                    ctrl.set_holding_tray_drag_active(true);
+                    list_row_drag.add_css_class("dragging");
+                    let selected = ctrl.pane_widgets(slot).file_grid.selected_indices();
+                    let count = if selected.contains(&(idx as i32)) {
+                        selected.len().max(1)
+                    } else {
+                        1
+                    };
+                    let preview = build_drag_preview(&drag_item_list, count);
+                    let drag_icon = gtk::DragIcon::for_drag(drag);
+                    drag_icon.set_child(Some(&preview));
+                });
+
+                let list_row_end = list_row.clone();
+                let ctrl = Rc::clone(self);
+                let tray_drag_paths_end = Rc::clone(&tray_drag_paths_list);
+                let tray_drag_staged_end = Rc::clone(&tray_drag_staged_list);
+                drag_source_list.connect_drag_end(move |_, drag, _| {
+                    list_row_end.remove_css_class("dragging");
+                    ctrl.set_holding_tray_drag_active(false);
+                    if !tray_drag_staged_end.get()
+                        && ctrl.finish_drag_to_holding_tray(drag, &tray_drag_paths_end.borrow())
+                    {
+                        tray_drag_staged_end.set(true);
+                    }
+                });
+
+                let ctrl = Rc::clone(self);
+                let tray_drag_paths_cancel = Rc::clone(&tray_drag_paths_list);
+                let tray_drag_staged_cancel = Rc::clone(&tray_drag_staged_list);
+                drag_source_list.connect_drag_cancel(move |_, drag, _| {
+                    ctrl.set_holding_tray_drag_active(false);
+                    if tray_drag_staged_cancel.get() {
+                        return true;
+                    }
+                    if ctrl.finish_drag_to_holding_tray(drag, &tray_drag_paths_cancel.borrow()) {
+                        tray_drag_staged_cancel.set(true);
+                        return true;
+                    }
+                    false
+                });
+
+                list_row.add_controller(drag_source_list);
+            }
 
             // ── Drop target on folder cards ────────────────────────
             // Skip folder drop targets in virtual views — they are not normal folder listings.
@@ -6488,6 +9941,7 @@ impl BrowserController {
 
             let fc_enter = flow_child.clone();
             drop_target.connect_enter(move |_, _, _| {
+                fc_enter.add_css_class("drop-hover");
                 if let Some(card) = fc_enter.first_child() {
                     card.add_css_class("drop-hover");
                 }
@@ -6506,6 +9960,7 @@ impl BrowserController {
 
             let fc_leave = flow_child.clone();
             drop_target.connect_leave(move |_| {
+                fc_leave.remove_css_class("drop-hover");
                 if let Some(card) = fc_leave.first_child() {
                     card.remove_css_class("drop-hover");
                 }
@@ -6515,6 +9970,7 @@ impl BrowserController {
             let folder_path = item.path.clone();
             let fc_drop = flow_child.clone();
             drop_target.connect_drop(move |_, value, _, _| {
+                fc_drop.remove_css_class("drop-hover");
                 if let Some(card) = fc_drop.first_child() {
                     card.remove_css_class("drop-hover");
                 }
@@ -6524,21 +9980,66 @@ impl BrowserController {
                 }
                 let is_copy = last_action.get() == gdk::DragAction::COPY;
                 let dest = folder_path.clone();
-                let c = Rc::clone(&controller);
-                glib::MainContext::default().spawn_local(async move {
-                    c.handle_dnd_drop(paths, dest, is_copy, None).await;
-                });
+                controller.handle_dnd_drop(paths, dest, is_copy, None);
                 true
             });
 
             flow_child.add_controller(drop_target);
+
+            // ── Drop target on folder list rows ────────────────────────────────
+            if let Some(list_row) = pane.file_grid.list_box.row_at_index(idx as i32) {
+                let last_action_list = Rc::new(Cell::new(gdk::DragAction::MOVE));
+                let la_list = last_action_list.clone();
+
+                let drop_target_list = gtk::DropTarget::new(
+                    glib::Type::STRING,
+                    gdk::DragAction::COPY | gdk::DragAction::MOVE,
+                );
+
+                let lr_enter = list_row.clone();
+                drop_target_list.connect_enter(move |_, _, _| {
+                    lr_enter.add_css_class("drop-hover");
+                    gdk::DragAction::MOVE
+                });
+
+                drop_target_list.connect_motion(move |_, _, _| {
+                    let a = if ctrl_held() {
+                        gdk::DragAction::COPY
+                    } else {
+                        gdk::DragAction::MOVE
+                    };
+                    la_list.set(a);
+                    a
+                });
+
+                let lr_leave = list_row.clone();
+                drop_target_list.connect_leave(move |_| {
+                    lr_leave.remove_css_class("drop-hover");
+                });
+
+                let controller = Rc::clone(self);
+                let folder_path_list = item.path.clone();
+                let lr_drop = list_row.clone();
+                drop_target_list.connect_drop(move |_, value, _, _| {
+                    lr_drop.remove_css_class("drop-hover");
+                    let paths = parse_dropped_uris(value);
+                    if paths.is_empty() {
+                        return false;
+                    }
+                    let is_copy = last_action_list.get() == gdk::DragAction::COPY;
+                    let dest = folder_path_list.clone();
+                    controller.handle_dnd_drop(paths, dest, is_copy, None);
+                    true
+                });
+
+                list_row.add_controller(drop_target_list);
+            }
         }
     }
 
-    /// Core async drop handler. Resolves conflicts, performs copy/move via GIO,
-    /// then reloads affected panes.
-    async fn handle_dnd_drop(
-        self: Rc<Self>,
+    /// Drop handler. Filters trivial paths, then hands off to conflict-aware op starter.
+    fn handle_dnd_drop(
+        self: &Rc<Self>,
         src_paths: Vec<PathBuf>,
         dest_dir: PathBuf,
         is_copy: bool,
@@ -6557,42 +10058,75 @@ impl BrowserController {
             return;
         }
 
-        let flags_overwrite = gio::FileCopyFlags::OVERWRITE | gio::FileCopyFlags::ALL_METADATA;
-        let flags_plain = gio::FileCopyFlags::ALL_METADATA;
+        self.start_copy_move_with_conflict_check(
+            src_paths,
+            dest_dir,
+            is_copy,
+            String::new(), // label built inside after conflict resolution
+            clipboard_state,
+        );
+    }
 
-        // Phase 1: resolve conflicts (async, shows dialogs)
-        let mut resolved: Vec<(PathBuf, PathBuf, gio::FileCopyFlags)> = Vec::new();
-        for src in &src_paths {
-            let filename = src
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let tentative = dest_dir.join(&filename);
-            let (dst, flags) = if tentative.exists() {
-                match self.show_conflict_dialog(&filename).await {
-                    ConflictChoice::Skip => continue,
-                    ConflictChoice::Replace => (tentative, flags_overwrite),
-                    ConflictChoice::KeepBoth => (free_name_in(&dest_dir, &filename), flags_plain),
-                }
-            } else {
-                (tentative, flags_plain)
-            };
-            resolved.push((src.clone(), dst, flags));
-        }
-
-        if resolved.is_empty() {
-            return;
-        }
-
-        // Phase 2: hand off to the queued op runner
+    /// Check for conflicts, show the resolver if needed, then start the batch op.
+    fn start_copy_move_with_conflict_check(
+        self: &Rc<Self>,
+        sources: Vec<PathBuf>,
+        dest_dir: PathBuf,
+        is_copy: bool,
+        label_hint: String,
+        clipboard_state: Option<FileClipboardState>,
+    ) {
+        let conflicts = conflict_resolver::collect_conflicts(&sources, &dest_dir);
+        let plain = gio::FileCopyFlags::ALL_METADATA;
         let dest_name = dest_dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("destination")
             .to_string();
         let verb = if is_copy { "Copy" } else { "Move" };
-        let label = format!("{verb} {} item(s) → {dest_name}", resolved.len());
-        self.start_copy_move_op(resolved, is_copy, &label, clipboard_state);
+
+        // Non-conflicting items — built from sources that are not in the conflict list
+        let conflict_names: std::collections::HashSet<&str> =
+            conflicts.iter().map(|c| c.name.as_str()).collect();
+        let non_conflicting: Vec<(PathBuf, PathBuf, gio::FileCopyFlags)> = sources
+            .iter()
+            .filter_map(|src| {
+                let name = src.file_name()?.to_str()?;
+                if conflict_names.contains(name) {
+                    return None;
+                }
+                Some((src.clone(), dest_dir.join(name), plain))
+            })
+            .collect();
+
+        if conflicts.is_empty() {
+            // No conflicts — start immediately
+            if non_conflicting.is_empty() {
+                return;
+            }
+            let label = if label_hint.is_empty() {
+                format!("{verb} {} item(s) → {dest_name}", non_conflicting.len())
+            } else {
+                label_hint
+            };
+            self.start_copy_move_op(non_conflicting, is_copy, &label, clipboard_state, None);
+            return;
+        }
+
+        // Show conflict resolver
+        let ctrl = Rc::clone(self);
+        let dest_name_cb = dest_name.clone();
+        conflict_resolver::show(&self.modal_host, conflicts, move |result| {
+            ctrl.modal_host.hide();
+            let Some(decisions) = result else { return };
+            let note = conflict_resolver::decisions_note(&decisions);
+            let items = conflict_resolver::apply_decisions(&decisions, &non_conflicting);
+            if items.is_empty() {
+                return;
+            }
+            let label = format!("{verb} {} item(s) → {dest_name_cb}{note}", items.len());
+            ctrl.start_copy_move_op(items, is_copy, &label, clipboard_state.clone(), None);
+        });
     }
 
     fn start_copy_move_op(
@@ -6601,6 +10135,7 @@ impl BrowserController {
         is_copy: bool,
         label: &str,
         clipboard_state: Option<FileClipboardState>,
+        activity_operation: Option<&'static str>,
     ) {
         let cancellable = gio::Cancellable::new();
         let op_id = self.ops_panel.add_op(label, Some(cancellable.clone()));
@@ -6613,6 +10148,7 @@ impl BrowserController {
             Rc::new(RefCell::new(Vec::new())),
             Rc::new(RefCell::new(Vec::new())),
             clipboard_state,
+            activity_operation,
         );
     }
 
@@ -6626,6 +10162,7 @@ impl BrowserController {
         errors: Rc<RefCell<Vec<String>>>,
         moved_sources: Rc<RefCell<Vec<PathBuf>>>,
         clipboard_state: Option<FileClipboardState>,
+        activity_operation: Option<&'static str>,
     ) {
         let total = items.len();
 
@@ -6636,10 +10173,49 @@ impl BrowserController {
                 &moved_sources.borrow(),
             );
             self.ops_panel.finish_op(op_id, &errs);
-            self.load_current_view(PaneSlot::Primary);
-            if self.split_enabled.get() {
-                self.load_current_view(PaneSlot::Secondary);
-            }
+            // Activity log receipt
+            let n = items.len() as i32;
+            let op = activity_operation.unwrap_or(if is_copy { "copy" } else { "move" });
+            let verb = match op {
+                "duplicate" => "Duplicated",
+                _ if is_copy => "Copied",
+                _ => "Moved",
+            };
+            let dest_name = items[0]
+                .1
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("destination");
+            let summary = format!(
+                "{verb} {n} file{} to {dest_name}",
+                if n == 1 { "" } else { "s" }
+            );
+            let source = items[0]
+                .0
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or("")
+                .to_string();
+            let dest = items[0]
+                .1
+                .parent()
+                .and_then(|p| p.to_str())
+                .map(|s| s.to_string());
+            let activity_items: Vec<(PathBuf, Option<PathBuf>)> = items
+                .iter()
+                .map(|(source, destination, _)| (source.clone(), Some(destination.clone())))
+                .collect();
+            let _ = self.metadata.borrow().log_activity_with_items(
+                op,
+                n,
+                &summary,
+                &source,
+                dest.as_deref(),
+                &errs,
+                &activity_items,
+            );
+            self.reload_visible_panes();
             return;
         }
 
@@ -6649,10 +10225,7 @@ impl BrowserController {
                 &moved_sources.borrow(),
             );
             self.ops_panel.finish_op(op_id, &["Cancelled.".to_string()]);
-            self.load_current_view(PaneSlot::Primary);
-            if self.split_enabled.get() {
-                self.load_current_view(PaneSlot::Secondary);
-            }
+            self.reload_visible_panes();
             return;
         }
 
@@ -6734,6 +10307,7 @@ impl BrowserController {
                 errors_clone,
                 moved_sources_clone,
                 clipboard_state_clone,
+                activity_operation,
             );
         };
 
@@ -6786,6 +10360,7 @@ impl BrowserController {
                     errors_clone,
                     moved_sources_clone,
                     clipboard_state_clone,
+                    activity_operation,
                 );
             });
         } else if is_copy {
@@ -6808,37 +10383,87 @@ impl BrowserController {
             );
         }
     }
+}
 
-    /// Show a conflict resolution dialog and return the user's choice.
-    async fn show_conflict_dialog(self: &Rc<Self>, name: &str) -> ConflictChoice {
-        let dialog = gtk::AlertDialog::builder()
-            .modal(true)
-            .message(format!("\u{201c}{name}\u{201d} already exists"))
-            .detail(
-                "A file with this name already exists at the destination. \
-                 What would you like to do?",
-            )
-            .buttons(["Skip", "Keep Both", "Replace"])
-            .cancel_button(0)
-            .default_button(1)
-            .build();
-
-        match dialog.choose_future(Some(&self.window)).await {
-            Ok(1) => ConflictChoice::KeepBoth,
-            Ok(2) => ConflictChoice::Replace,
-            _ => ConflictChoice::Skip,
+fn add_unique_tray_items(existing: &mut Vec<FileItem>, incoming: Vec<FileItem>) -> usize {
+    let mut seen = existing
+        .iter()
+        .map(|item| item.path.clone())
+        .collect::<HashSet<_>>();
+    let mut added = 0;
+    for item in incoming {
+        if seen.insert(item.path.clone()) {
+            existing.push(item);
+            added += 1;
         }
     }
+    added
+}
+
+fn project_action_plan(
+    action: TrayProjectAction,
+    paths: &[PathBuf],
+    project_name: &str,
+    project_root: &Path,
+) -> ActionPlan {
+    let verb = match action {
+        TrayProjectAction::Copy => "Copy",
+        TrayProjectAction::Move => "Move",
+    };
+    let mut lines = vec![
+        format!(
+            "{verb} {} staged item(s) to project \"{project_name}\".",
+            paths.len()
+        ),
+        format!("Destination: {}", project_root.display()),
+    ];
+    lines.extend(plan_path_lines(paths));
+    ActionPlan::new(
+        action.title(),
+        verb,
+        action == TrayProjectAction::Move,
+        lines,
+    )
+}
+
+fn tag_action_plan(paths: &[PathBuf], tag_name: &str) -> ActionPlan {
+    let mut lines = vec![format!(
+        "Apply tag #{tag_name} to {} staged item(s).",
+        paths.len()
+    )];
+    lines.extend(plan_path_lines(paths));
+    ActionPlan::new("Tag Holding Tray", "Apply Tag", false, lines)
+}
+
+fn trash_action_plan(paths: &[PathBuf]) -> ActionPlan {
+    let mut lines = vec![format!("Move {} staged item(s) to Trash.", paths.len())];
+    lines.extend(plan_path_lines(paths));
+    ActionPlan::new("Move Tray to Trash", "Move to Trash", true, lines)
+}
+
+fn copy_path_action_plan(paths: &[PathBuf]) -> ActionPlan {
+    let mut lines = vec![format!(
+        "Copy {} staged path(s) to the clipboard.",
+        paths.len()
+    )];
+    lines.extend(plan_path_lines(paths));
+    ActionPlan::new("Copy Tray Paths", "Copy Paths", false, lines)
+}
+
+fn plan_path_lines(paths: &[PathBuf]) -> Vec<String> {
+    const MAX_PREVIEW_PATHS: usize = 8;
+    let mut lines = paths
+        .iter()
+        .take(MAX_PREVIEW_PATHS)
+        .map(|path| format!("• {}", path.display()))
+        .collect::<Vec<_>>();
+    if paths.len() > MAX_PREVIEW_PATHS {
+        lines.push(format!("… and {} more", paths.len() - MAX_PREVIEW_PATHS));
+    }
+    lines
 }
 
 // ── DnD helpers ─────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy)]
-enum ConflictChoice {
-    Skip,
-    KeepBoth,
-    Replace,
-}
 
 fn relevant_modifiers(modifiers: gdk::ModifierType) -> gdk::ModifierType {
     modifiers
@@ -6921,15 +10546,21 @@ fn builtin_command(action_id: &str) -> Option<WindowCommand> {
         "show_hidden" => Some(WindowCommand::ToggleHidden),
         "toggle_sidebar" => Some(WindowCommand::ToggleSidebar),
         "toggle_preview" => Some(WindowCommand::TogglePreview),
+        "toggle_holding_tray" => Some(WindowCommand::ToggleHoldingTray),
         "new_tab" => Some(WindowCommand::NewTab),
         "close_tab" => Some(WindowCommand::CloseTab),
         "toggle_split" => Some(WindowCommand::ToggleSplit),
         "previous_tab" => Some(WindowCommand::PreviousTab),
         "next_tab" => Some(WindowCommand::NextTab),
         "back" => Some(WindowCommand::GoBack),
+        "forward" => Some(WindowCommand::GoForward),
         "up" => Some(WindowCommand::GoUp),
         "cycle_pane" => Some(WindowCommand::CyclePane),
         "escape" => Some(WindowCommand::Escape),
+        "view_icons" => Some(WindowCommand::SetViewIcons),
+        "view_list" => Some(WindowCommand::SetViewList),
+        "toggle_plan_mode" => Some(WindowCommand::TogglePlanMode),
+        "empty_trash" => Some(WindowCommand::EmptyTrash),
         _ => None,
     }
 }
@@ -7044,10 +10675,14 @@ fn action_availability(
 ) -> ActionAvailability {
     let read_only_mutation_view = matches!(
         view,
-        PaneView::Trash | PaneView::SystemDrives | PaneView::Recent | PaneView::Search(_)
+        PaneView::Trash
+            | PaneView::SystemDrives
+            | PaneView::Recent
+            | PaneView::Search(_)
+            | PaneView::ActivityLog
     );
     let can_paste_files =
-        has_file_clipboard && matches!(view, PaneView::Directory(_) | PaneView::DownloadsTriage(_));
+        has_file_clipboard && matches!(view, PaneView::Directory(_) | PaneView::Triage { .. });
 
     ActionAvailability {
         can_copy_files: selected_count > 0,
@@ -7056,7 +10691,136 @@ fn action_availability(
         can_copy_paths: selected_count > 0 || !matches!(view, PaneView::SystemDrives),
         can_rename: selected_count > 0 && !read_only_mutation_view,
         can_trash: selected_count > 0 && !read_only_mutation_view,
-        can_new_folder: matches!(view, PaneView::Directory(_) | PaneView::DownloadsTriage(_)),
+        can_new_folder: matches!(view, PaneView::Directory(_) | PaneView::Triage { .. }),
+    }
+}
+
+fn widget_or_ancestor_has_css(widget: &gtk::Widget, class_name: &str) -> bool {
+    let mut current = Some(widget.clone());
+    while let Some(widget) = current {
+        if widget.has_css_class(class_name) {
+            return true;
+        }
+        current = widget.parent();
+    }
+    false
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathCompletionMode {
+    Absolute,
+    Home,
+    Relative,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PathCompletionQuery {
+    query: String,
+    mode: PathCompletionMode,
+}
+
+#[allow(deprecated)]
+fn update_path_completion_model(
+    store: &gtk::ListStore,
+    completer: &gio::FilenameCompleter,
+    input: &str,
+    current_dir: &Path,
+    home: &Path,
+) {
+    store.clear();
+
+    let Some(query) = path_completion_query(input, current_dir, home) else {
+        return;
+    };
+
+    let mut seen = HashSet::new();
+    let mut completions = completer
+        .completions(&query.query)
+        .into_iter()
+        .filter_map(|completion| {
+            path_completion_display(&completion, query.mode, current_dir, home)
+        })
+        .filter(|completion| completion != input)
+        .filter(|completion| seen.insert(completion.clone()))
+        .collect::<Vec<_>>();
+
+    completions.sort_by_key(|completion| completion.to_ascii_lowercase());
+    completions.truncate(24);
+
+    for completion in completions {
+        store.insert_with_values(None, &[(0, &completion)]);
+    }
+}
+
+#[allow(deprecated)]
+fn first_path_completion(store: &gtk::ListStore) -> Option<String> {
+    let iter = store.iter_first()?;
+    Some(store.get::<String>(&iter, 0))
+}
+
+fn path_completion_query(
+    input: &str,
+    current_dir: &Path,
+    home: &Path,
+) -> Option<PathCompletionQuery> {
+    let input = input.trim_start();
+    if input.is_empty() || input.starts_with("file://") {
+        return None;
+    }
+
+    if input == "~" {
+        return Some(PathCompletionQuery {
+            query: home.display().to_string(),
+            mode: PathCompletionMode::Home,
+        });
+    }
+
+    if let Some(relative_home) = input.strip_prefix("~/") {
+        return Some(PathCompletionQuery {
+            query: home.join(relative_home).display().to_string(),
+            mode: PathCompletionMode::Home,
+        });
+    }
+
+    let candidate = PathBuf::from(input);
+    if candidate.is_absolute() {
+        Some(PathCompletionQuery {
+            query: input.to_string(),
+            mode: PathCompletionMode::Absolute,
+        })
+    } else {
+        Some(PathCompletionQuery {
+            query: current_dir.join(input).display().to_string(),
+            mode: PathCompletionMode::Relative,
+        })
+    }
+}
+
+fn path_completion_display(
+    completion: &str,
+    mode: PathCompletionMode,
+    current_dir: &Path,
+    home: &Path,
+) -> Option<String> {
+    match mode {
+        PathCompletionMode::Absolute => Some(completion.to_string()),
+        PathCompletionMode::Home => display_completion_under_root(completion, home, "~"),
+        PathCompletionMode::Relative => display_completion_under_root(completion, current_dir, ""),
+    }
+}
+
+fn display_completion_under_root(completion: &str, root: &Path, prefix: &str) -> Option<String> {
+    let root = root.display().to_string();
+    if completion == root {
+        return Some(prefix.to_string());
+    }
+
+    let root_with_slash = format!("{root}/");
+    let suffix = completion.strip_prefix(&root_with_slash)?;
+    if prefix.is_empty() {
+        Some(suffix.to_string())
+    } else {
+        Some(format!("{prefix}/{suffix}"))
     }
 }
 
@@ -7067,6 +10831,59 @@ fn ctrl_held() -> bool {
         .and_then(|s| s.pointer())
         .map(|p| p.modifier_state().contains(gdk::ModifierType::CONTROL_MASK))
         .unwrap_or(false)
+}
+
+fn build_drag_preview(item: &FileItem, count: usize) -> GtkBox {
+    let preview = GtkBox::new(Orientation::Horizontal, 8);
+    preview.add_css_class("drag-preview");
+    preview.add_css_class(item.kind.css_class());
+    preview.set_size_request(180, 64);
+
+    let icon = Label::new(Some(item.kind.badge()));
+    icon.add_css_class("drag-preview-icon");
+    icon.set_halign(Align::Center);
+    icon.set_valign(Align::Center);
+    preview.append(&icon);
+
+    let copy = GtkBox::new(Orientation::Vertical, 2);
+    copy.add_css_class("drag-preview-copy");
+    copy.set_valign(Align::Center);
+
+    let title = if count > 1 {
+        format!("{count} items")
+    } else {
+        item.name.clone()
+    };
+    let title_label = Label::new(Some(&title));
+    title_label.add_css_class("drag-preview-title");
+    title_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title_label.set_xalign(0.0);
+    title_label.set_max_width_chars(18);
+    copy.append(&title_label);
+
+    let detail = if count > 1 {
+        format!("Including {}", item.name)
+    } else {
+        item.kind.label().to_string()
+    };
+    let detail_label = Label::new(Some(&detail));
+    detail_label.add_css_class("drag-preview-detail");
+    detail_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    detail_label.set_xalign(0.0);
+    detail_label.set_max_width_chars(22);
+    copy.append(&detail_label);
+
+    preview.append(&copy);
+
+    if count > 1 {
+        let badge = Label::new(Some(&count.to_string()));
+        badge.add_css_class("drag-preview-count");
+        badge.set_halign(Align::End);
+        badge.set_valign(Align::Start);
+        preview.append(&badge);
+    }
+
+    preview
 }
 
 /// Parse a newline-separated URI list from a drop value into local paths.
@@ -7105,8 +10922,12 @@ fn search_directory_blocking(
     show_hidden: bool,
     depth: u32,
     results: &mut Vec<FileItem>,
+    cancelled: &AtomicBool,
 ) {
-    if depth > MAX_SEARCH_DEPTH || results.len() >= MAX_SEARCH_RESULTS {
+    if cancelled.load(Ordering::Relaxed)
+        || depth > MAX_SEARCH_DEPTH
+        || results.len() >= MAX_SEARCH_RESULTS
+    {
         return;
     }
     let Ok(read_dir) = std::fs::read_dir(dir) else {
@@ -7126,6 +10947,9 @@ fn search_directory_blocking(
     let mut subdirs: Vec<SearchEntry> = Vec::new();
 
     for entry in read_dir.flatten() {
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
         let path = entry.path();
         let fname = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
@@ -7157,7 +10981,7 @@ fn search_directory_blocking(
 
     // Pass 1: files in this directory
     for e in &files {
-        if results.len() >= MAX_SEARCH_RESULTS {
+        if cancelled.load(Ordering::Relaxed) || results.len() >= MAX_SEARCH_RESULTS {
             return;
         }
         if let Some(item) = match_entry(e, query, now_secs) {
@@ -7167,14 +10991,14 @@ fn search_directory_blocking(
 
     // Pass 2: subdirectories — add matching ones then recurse
     for e in &subdirs {
-        if results.len() >= MAX_SEARCH_RESULTS {
+        if cancelled.load(Ordering::Relaxed) || results.len() >= MAX_SEARCH_RESULTS {
             return;
         }
         if let Some(item) = match_entry(e, query, now_secs) {
             results.push(item);
         }
         if query.recursive {
-            search_directory_blocking(&e.path, query, show_hidden, depth + 1, results);
+            search_directory_blocking(&e.path, query, show_hidden, depth + 1, results, cancelled);
         }
     }
 }
@@ -7277,32 +11101,117 @@ fn fmt_bytes(bytes: u64) -> String {
 }
 
 /// Return a path in `dir` that does not yet exist by appending " (2)", " (3)"…
-fn free_name_in(dir: &Path, name: &str) -> PathBuf {
-    let (stem, ext) = match name.rfind('.') {
-        Some(dot) => (&name[..dot], Some(&name[dot..])),
-        None => (name, None),
-    };
-    let mut n = 2u32;
+fn plan_copy_move_items(
+    sources: &[PathBuf],
+    dest_dir: &Path,
+) -> Vec<(PathBuf, PathBuf, gio::FileCopyFlags)> {
+    sources
+        .iter()
+        .filter_map(|src| {
+            let name = src.file_name()?;
+            Some((
+                src.clone(),
+                dest_dir.join(name),
+                gio::FileCopyFlags::ALL_METADATA,
+            ))
+        })
+        .collect()
+}
+
+fn duplicate_dest_name(src: &Path, parent: &Path) -> PathBuf {
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let base = format!("{stem} copy{ext}");
+    let candidate = parent.join(&base);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let mut i = 2u32;
     loop {
-        let candidate = match ext {
-            Some(e) => format!("{stem} ({n}){e}"),
-            None => format!("{stem} ({n})"),
-        };
-        let path = dir.join(&candidate);
-        if !path.exists() {
-            return path;
+        let name = format!("{stem} copy {i}{ext}");
+        let candidate = parent.join(&name);
+        if !candidate.exists() {
+            return candidate;
         }
-        n += 1;
+        i += 1;
     }
 }
 
+fn activity_sources(entry: &ActivityLogEntry) -> Vec<PathBuf> {
+    entry
+        .items
+        .iter()
+        .map(|item| PathBuf::from(&item.source_path))
+        .collect()
+}
+
+fn activity_destinations(entry: &ActivityLogEntry) -> Vec<PathBuf> {
+    entry
+        .items
+        .iter()
+        .filter_map(|item| item.destination_path.as_ref().map(PathBuf::from))
+        .collect()
+}
+
+fn activity_renames(entry: &ActivityLogEntry) -> Vec<(PathBuf, String)> {
+    entry
+        .items
+        .iter()
+        .filter_map(|item| {
+            let destination = item.destination_path.as_ref().map(PathBuf::from)?;
+            let name = destination.file_name()?.to_str()?.to_string();
+            Some((PathBuf::from(&item.source_path), name))
+        })
+        .collect()
+}
+
+fn activity_created_parent_and_name(entry: &ActivityLogEntry) -> Option<(PathBuf, String)> {
+    let path = activity_destinations(entry).into_iter().next()?;
+    let parent = path.parent()?.to_path_buf();
+    let name = path.file_name()?.to_str()?.to_string();
+    Some((parent, name))
+}
+
+fn activity_relevant_path(entry: &ActivityLogEntry) -> Option<PathBuf> {
+    entry
+        .items
+        .first()
+        .map(|item| {
+            item.destination_path
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(&item.source_path))
+        })
+        .or_else(|| entry.destination_path.as_ref().map(PathBuf::from))
+        .or_else(|| (!entry.source_path.is_empty()).then(|| PathBuf::from(&entry.source_path)))
+}
+
+fn common_activity_destination_parent(entry: &ActivityLogEntry) -> Option<PathBuf> {
+    let mut parents = entry
+        .items
+        .iter()
+        .filter_map(|item| item.destination_path.as_ref())
+        .filter_map(|path| Path::new(path).parent().map(Path::to_path_buf));
+    let first = parents.next()?;
+    parents.all(|path| path == first).then_some(first)
+}
+
 struct BodyLayout {
-    root: Paned,
-    preview_host: GtkBox,
+    root: GtkBox,
+    sidebar_revealer: Revealer,
+    preview_revealer: Revealer,
+    split_paned: Paned,
+    right_paned: Paned,
 }
 
 struct CenterLayout {
     root: GtkBox,
+    split_paned: Paned,
+    right_paned: Paned,
 }
 
 fn build_body(
@@ -7310,36 +11219,42 @@ fn build_body(
     tab_strip: &TabStrip,
     primary_pane: &PaneWidgets,
     secondary_pane: &PaneWidgets,
+    tertiary_pane: &PaneWidgets,
     preview: &PreviewPane,
 ) -> BodyLayout {
-    let outer = Paned::new(Orientation::Horizontal);
-    outer.set_wide_handle(false);
-    outer.set_start_child(Some(&sidebar.root));
-    outer.set_position(220);
-    outer.set_resize_start_child(false);
-    outer.set_shrink_start_child(false);
-    outer.set_resize_end_child(true);
-    outer.set_shrink_end_child(true);
+    let outer = GtkBox::new(Orientation::Horizontal, 0);
 
-    let center_and_preview = Paned::new(Orientation::Horizontal);
-    center_and_preview.set_wide_handle(false);
-    center_and_preview.set_resize_start_child(true);
-    center_and_preview.set_shrink_start_child(true);
-    center_and_preview.set_resize_end_child(false);
-    center_and_preview.set_shrink_end_child(false);
+    let sidebar_revealer = Revealer::new();
+    sidebar_revealer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+    sidebar_revealer.set_transition_duration(180);
+    sidebar_revealer.set_hexpand(false);
+    sidebar_revealer.set_child(Some(&sidebar.root));
+    sidebar_revealer.set_reveal_child(true);
+    outer.append(&sidebar_revealer);
 
-    let center = build_center(tab_strip, primary_pane, secondary_pane);
+    let center = build_center(tab_strip, primary_pane, secondary_pane, tertiary_pane);
+    center.root.set_hexpand(true);
+    center.root.set_vexpand(true);
+    outer.append(&center.root);
+
     let preview_host = GtkBox::new(Orientation::Vertical, 0);
     preview_host.add_css_class("preview-host");
     preview_host.append(&preview.root);
-    center_and_preview.set_start_child(Some(&center.root));
-    center_and_preview.set_end_child(Some(&preview_host));
-    center_and_preview.set_position(820);
 
-    outer.set_end_child(Some(&center_and_preview));
+    let preview_revealer = Revealer::new();
+    preview_revealer.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
+    preview_revealer.set_transition_duration(180);
+    preview_revealer.set_hexpand(false);
+    preview_revealer.set_child(Some(&preview_host));
+    preview_revealer.set_reveal_child(true);
+    outer.append(&preview_revealer);
+
     BodyLayout {
         root: outer,
-        preview_host,
+        sidebar_revealer,
+        preview_revealer,
+        split_paned: center.split_paned,
+        right_paned: center.right_paned,
     }
 }
 
@@ -7347,25 +11262,50 @@ fn build_center(
     tab_strip: &TabStrip,
     primary_pane: &PaneWidgets,
     secondary_pane: &PaneWidgets,
+    tertiary_pane: &PaneWidgets,
 ) -> CenterLayout {
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.append(&tab_strip.root);
 
-    let panes = Paned::new(Orientation::Horizontal);
-    panes.add_css_class("split-panes");
-    panes.set_wide_handle(false);
-    panes.set_resize_start_child(true);
-    panes.set_shrink_start_child(true);
-    panes.set_resize_end_child(true);
-    panes.set_shrink_end_child(true);
-    panes.set_start_child(Some(&primary_pane.root));
-    panes.set_end_child(Some(&secondary_pane.root));
-    panes.set_position(540);
-    panes.set_vexpand(true);
-    panes.set_hexpand(true);
+    // Inner split: secondary | tertiary
+    let right_paned = Paned::new(Orientation::Horizontal);
+    right_paned.set_wide_handle(false);
+    right_paned.set_resize_start_child(true);
+    right_paned.set_shrink_start_child(true);
+    right_paned.set_resize_end_child(true);
+    right_paned.set_shrink_end_child(true);
+    right_paned.set_start_child(Some(&secondary_pane.root));
+    right_paned.set_end_child(Some(&tertiary_pane.root));
+    right_paned.set_hexpand(true);
+    right_paned.set_vexpand(true);
+    tertiary_pane.root.set_visible(false);
 
-    vbox.append(&panes);
-    CenterLayout { root: vbox }
+    // Outer split: primary | right_paned
+    let split_paned = Paned::new(Orientation::Horizontal);
+    split_paned.set_wide_handle(false);
+    split_paned.add_css_class("split-panes");
+    split_paned.set_resize_start_child(true);
+    split_paned.set_shrink_start_child(true);
+    split_paned.set_resize_end_child(true);
+    split_paned.set_shrink_end_child(true);
+    split_paned.set_start_child(Some(&primary_pane.root));
+    split_paned.set_end_child(Some(&right_paned));
+    split_paned.set_hexpand(true);
+    split_paned.set_vexpand(true);
+    // Start in single-pane mode: right section hidden
+    right_paned.set_visible(false);
+
+    for pane in [primary_pane, secondary_pane, tertiary_pane] {
+        pane.root.set_vexpand(true);
+        pane.root.set_hexpand(true);
+    }
+
+    vbox.append(&split_paned);
+    CenterLayout {
+        root: vbox,
+        split_paned,
+        right_paned,
+    }
 }
 
 fn connect_directory_button(controller: &Rc<BrowserController>, button: &Button, path: PathBuf) {
@@ -7447,7 +11387,17 @@ fn append_menu_button<F: Fn() + 'static>(
     row.append(&lbl);
 
     button.set_child(Some(&row));
-    button.connect_clicked(move |_| action());
+    button.connect_clicked(move |button| {
+        if let Some(popover) = button
+            .ancestor(Popover::static_type())
+            .and_then(|widget| widget.downcast::<Popover>().ok())
+        {
+            if popover.parent().is_some() {
+                popover.unparent();
+            }
+        }
+        action();
+    });
     menu_box.append(&button);
 }
 
@@ -7457,13 +11407,34 @@ fn append_menu_sep(menu_box: &GtkBox) {
     menu_box.append(&sep);
 }
 
-fn sort_items(items: &mut [FileItem]) {
-    items.sort_by(|left, right| {
-        right
-            .is_dir
-            .cmp(&left.is_dir)
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+fn sort_items_with(items: &mut [FileItem], field: SortField, direction: SortDirection) {
+    items.sort_by(|a, b| {
+        let dir_ord = b.is_dir.cmp(&a.is_dir);
+        if dir_ord != std::cmp::Ordering::Equal {
+            return dir_ord;
+        }
+        let base = match field {
+            SortField::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortField::Modified => a
+                .modified_unix
+                .unwrap_or(0)
+                .cmp(&b.modified_unix.unwrap_or(0)),
+            SortField::Size => a.size_bytes.unwrap_or(0).cmp(&b.size_bytes.unwrap_or(0)),
+            SortField::Kind => a
+                .kind
+                .sort_key()
+                .cmp(&b.kind.sort_key())
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        };
+        match direction {
+            SortDirection::Ascending => base,
+            SortDirection::Descending => base.reverse(),
+        }
     });
+}
+
+fn sort_items(items: &mut [FileItem]) {
+    sort_items_with(items, SortField::Name, SortDirection::Ascending);
 }
 
 struct MountedVolumeListing {
@@ -7567,7 +11538,13 @@ fn tab_title_for_view(view: &PaneView, path: &Path) -> String {
     match view {
         PaneView::Directory(_) => tab_title_for_path(path),
         PaneView::Tag(tag) => format!("#{}", tag.name),
-        PaneView::DownloadsTriage(filter) => format!("Triage {}", filter.label()),
+        PaneView::Triage { root, filter } => {
+            let folder = root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.display().to_string());
+            format!("Triage: {} / {}", folder, filter.label())
+        }
         PaneView::SystemDrives => "Drives".to_string(),
         PaneView::Recent => "Recent".to_string(),
         PaneView::Trash => "Trash".to_string(),
@@ -7578,6 +11555,9 @@ fn tab_title_for_view(view: &PaneView, path: &Path) -> String {
                 format!("Search \u{201c}{}\u{201d}", q.name)
             }
         }
+        PaneView::ActivityLog => "Activity Log".to_string(),
+        PaneView::ProjectLanding(_) => "Project".to_string(),
+        PaneView::TagManager => "Tags".to_string(),
     }
 }
 
@@ -7585,7 +11565,10 @@ fn view_display_label(view: &PaneView, home: &Path) -> String {
     match view {
         PaneView::Directory(path) => format_path(path, home),
         PaneView::Tag(tag) => format!("Tag / #{}", tag.name),
-        PaneView::DownloadsTriage(filter) => format!("Downloads Triage / {}", filter.label()),
+        PaneView::Triage { root, filter } => {
+            let folder = format_path(root, home);
+            format!("Triage: {} / {}", folder, filter.label())
+        }
         PaneView::SystemDrives => "System Drives".to_string(),
         PaneView::Recent => "Recent".to_string(),
         PaneView::Trash => "Trash".to_string(),
@@ -7597,6 +11580,9 @@ fn view_display_label(view: &PaneView, home: &Path) -> String {
                 format!("Search \u{201c}{}\u{201d} in {scope}", q.name)
             }
         }
+        PaneView::ActivityLog => "Activity Log".to_string(),
+        PaneView::ProjectLanding(_) => "Project".to_string(),
+        PaneView::TagManager => "Tags".to_string(),
     }
 }
 
@@ -7657,16 +11643,27 @@ fn resolve_launch(
     places: &Places,
     metadata: &crate::metadata::MetadataStore,
 ) -> LaunchResolution {
-    if let Some((left, right)) = &launch.split {
+    if let Some(split_paths) = &launch.split {
+        let left = &split_paths[0];
+        let right = &split_paths[1];
+        let third = split_paths.get(2);
         let (left_path, left_notice) = validate_launch_directory(left, places, "Left split path");
         let (right_path, right_notice) =
-            validate_launch_directory(right, places, "Right split path");
+            validate_launch_directory(right, places, "Middle split path");
+        let (third_path, third_notice) = third
+            .map(|path| validate_launch_directory(path, places, "Right split path"))
+            .unwrap_or_else(|| (places.home.clone(), None));
         return LaunchResolution {
             primary_dir: left_path.clone(),
             primary_view: PaneView::Directory(left_path),
             secondary_dir: right_path,
-            split_enabled: true,
-            notice: combine_launch_notices(left_notice, right_notice),
+            tertiary_dir: third_path,
+            pane_layout: if third.is_some() {
+                PaneLayout::Three
+            } else {
+                PaneLayout::Two
+            },
+            notice: combine_launch_notices([left_notice, right_notice, third_notice]),
         };
     }
 
@@ -7676,7 +11673,8 @@ fn resolve_launch(
             primary_dir: resolved_path.clone(),
             primary_view: PaneView::Directory(resolved_path),
             secondary_dir: places.home.clone(),
-            split_enabled: false,
+            tertiary_dir: places.home.clone(),
+            pane_layout: PaneLayout::Single,
             notice,
         };
     }
@@ -7696,13 +11694,17 @@ fn resolve_launch(
         let primary_view = if notice.is_some() {
             PaneView::Directory(primary_dir.clone())
         } else {
-            PaneView::DownloadsTriage(DownloadsTriageFilter::All)
+            PaneView::Triage {
+                root: primary_dir.clone(),
+                filter: TriageFilter::All,
+            }
         };
         return LaunchResolution {
             primary_dir,
             primary_view,
             secondary_dir: places.home.clone(),
-            split_enabled: false,
+            tertiary_dir: places.home.clone(),
+            pane_layout: PaneLayout::Single,
             notice,
         };
     }
@@ -7718,14 +11720,16 @@ fn resolve_launch(
                 primary_dir: project.root_path.clone(),
                 primary_view: PaneView::Directory(project.root_path),
                 secondary_dir: places.home.clone(),
-                split_enabled: false,
+                tertiary_dir: places.home.clone(),
+                pane_layout: PaneLayout::Single,
                 notice: None,
             },
             Some(project) => LaunchResolution {
                 primary_dir: places.home.clone(),
                 primary_view: PaneView::Directory(places.home.clone()),
                 secondary_dir: places.home.clone(),
-                split_enabled: false,
+                tertiary_dir: places.home.clone(),
+                pane_layout: PaneLayout::Single,
                 notice: Some(format!(
                     "Project '{}' points to a missing folder. Opened Home instead.",
                     project.name
@@ -7735,7 +11739,8 @@ fn resolve_launch(
                 primary_dir: places.home.clone(),
                 primary_view: PaneView::Directory(places.home.clone()),
                 secondary_dir: places.home.clone(),
-                split_enabled: false,
+                tertiary_dir: places.home.clone(),
+                pane_layout: PaneLayout::Single,
                 notice: Some(format!(
                     "Project '{}' was not found. Opened Home instead.",
                     project_name
@@ -7748,7 +11753,8 @@ fn resolve_launch(
         primary_dir: places.home.clone(),
         primary_view: PaneView::Directory(places.home.clone()),
         secondary_dir: places.home.clone(),
-        split_enabled: false,
+        tertiary_dir: places.home.clone(),
+        pane_layout: PaneLayout::Single,
         notice: None,
     }
 }
@@ -7771,13 +11777,9 @@ fn validate_launch_directory(
     }
 }
 
-fn combine_launch_notices(left: Option<String>, right: Option<String>) -> Option<String> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(format!("{left} {right}")),
-        (Some(left), None) => Some(left),
-        (None, Some(right)) => Some(right),
-        (None, None) => None,
-    }
+fn combine_launch_notices(notices: [Option<String>; 3]) -> Option<String> {
+    let notices = notices.into_iter().flatten().collect::<Vec<_>>();
+    (!notices.is_empty()).then(|| notices.join(" "))
 }
 
 fn is_launchable_directory(path: &Path) -> bool {
@@ -7870,17 +11872,25 @@ fn copy_path_recursively(
     Ok(())
 }
 
-fn filter_triage_items(items: Vec<FileItem>, filter: DownloadsTriageFilter) -> Vec<FileItem> {
+fn filter_triage_items(
+    items: Vec<FileItem>,
+    filter: TriageFilter,
+    duplicate_set: Option<&std::collections::HashSet<PathBuf>>,
+) -> Vec<FileItem> {
     items
         .into_iter()
-        .filter(|item| matches_triage_filter(item, filter))
+        .filter(|item| matches_triage_filter(item, filter, duplicate_set))
         .collect()
 }
 
-fn matches_triage_filter(item: &FileItem, filter: DownloadsTriageFilter) -> bool {
+fn matches_triage_filter(
+    item: &FileItem,
+    filter: TriageFilter,
+    duplicate_set: Option<&std::collections::HashSet<PathBuf>>,
+) -> bool {
     match filter {
-        DownloadsTriageFilter::All => true,
-        DownloadsTriageFilter::Today => item
+        TriageFilter::All => true,
+        TriageFilter::Today => item
             .modified_unix
             .and_then(|timestamp| glib::DateTime::from_unix_local(timestamp).ok())
             .and_then(|value| value.format("%Y-%m-%d").ok())
@@ -7891,7 +11901,7 @@ fn matches_triage_filter(item: &FileItem, filter: DownloadsTriageFilter) -> bool
             )
             .map(|(left, right)| left.as_str() == right.as_str())
             .unwrap_or(false),
-        DownloadsTriageFilter::ThisWeek => item
+        TriageFilter::ThisWeek => item
             .modified_unix
             .zip(
                 glib::DateTime::now_local()
@@ -7900,7 +11910,7 @@ fn matches_triage_filter(item: &FileItem, filter: DownloadsTriageFilter) -> bool
             )
             .map(|(modified, now)| now.saturating_sub(modified) <= 7 * 24 * 60 * 60)
             .unwrap_or(false),
-        DownloadsTriageFilter::ThisMonth => item
+        TriageFilter::ThisMonth => item
             .modified_unix
             .and_then(|timestamp| glib::DateTime::from_unix_local(timestamp).ok())
             .and_then(|value| value.format("%Y-%m").ok())
@@ -7911,7 +11921,7 @@ fn matches_triage_filter(item: &FileItem, filter: DownloadsTriageFilter) -> bool
             )
             .map(|(left, right)| left.as_str() == right.as_str())
             .unwrap_or(false),
-        DownloadsTriageFilter::OlderThanOneMonth => item
+        TriageFilter::OlderThanOneMonth => item
             .modified_unix
             .zip(
                 glib::DateTime::now_local()
@@ -7920,10 +11930,10 @@ fn matches_triage_filter(item: &FileItem, filter: DownloadsTriageFilter) -> bool
             )
             .map(|(modified, now)| now.saturating_sub(modified) > 30 * 24 * 60 * 60)
             .unwrap_or(false),
-        DownloadsTriageFilter::Images => item.kind == crate::ui::file_grid::FileKind::Image,
-        DownloadsTriageFilter::Videos => item.kind == crate::ui::file_grid::FileKind::Video,
-        DownloadsTriageFilter::Archives => item.kind == crate::ui::file_grid::FileKind::Archive,
-        DownloadsTriageFilter::Documents => {
+        TriageFilter::Images => item.kind == crate::ui::file_grid::FileKind::Image,
+        TriageFilter::Videos => item.kind == crate::ui::file_grid::FileKind::Video,
+        TriageFilter::Archives => item.kind == crate::ui::file_grid::FileKind::Archive,
+        TriageFilter::Documents => {
             matches!(
                 item.kind,
                 crate::ui::file_grid::FileKind::Document
@@ -7931,10 +11941,77 @@ fn matches_triage_filter(item: &FileItem, filter: DownloadsTriageFilter) -> bool
                     | crate::ui::file_grid::FileKind::ConfigCode
             )
         }
-        DownloadsTriageFilter::LargeFiles => {
-            item.size_bytes.unwrap_or(0) >= TRIAGE_LARGE_FILE_BYTES
+        TriageFilter::LargeFiles => item.size_bytes.unwrap_or(0) >= TRIAGE_LARGE_FILE_BYTES,
+        TriageFilter::Audio => item.kind == crate::ui::file_grid::FileKind::Audio,
+        TriageFilter::Executables => !item.is_dir && is_executable(&item.path),
+        TriageFilter::Empty => !item.is_dir && item.size_bytes == Some(0),
+        TriageFilter::Duplicates => duplicate_set
+            .map(|set| set.contains(&item.path))
+            .unwrap_or(false),
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    false
+}
+
+fn fnv1a_64(data: &[u8]) -> u64 {
+    let mut h: u64 = 14695981039346656037;
+    for b in data {
+        h ^= *b as u64;
+        h = h.wrapping_mul(1099511628211);
+    }
+    h
+}
+
+fn compute_duplicate_set_from_dir(dir: &Path) -> std::collections::HashSet<PathBuf> {
+    use std::collections::HashMap;
+    use std::io::Read;
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return std::collections::HashSet::new();
+    };
+
+    let mut by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() || meta.len() == 0 {
+            continue;
+        }
+        by_size.entry(meta.len()).or_default().push(entry.path());
+    }
+
+    let mut duplicates = std::collections::HashSet::new();
+    for (_size, paths) in by_size {
+        if paths.len() < 2 {
+            continue;
+        }
+        let mut by_hash: HashMap<u64, Vec<PathBuf>> = HashMap::new();
+        for path in &paths {
+            let Ok(mut file) = std::fs::File::open(path) else {
+                continue;
+            };
+            let mut buf = vec![0u8; 65536];
+            let n = file.read(&mut buf).unwrap_or(0);
+            let hash = fnv1a_64(&buf[..n]);
+            by_hash.entry(hash).or_default().push(path.clone());
+        }
+        for (_hash, group) in by_hash {
+            if group.len() >= 2 {
+                duplicates.extend(group);
+            }
         }
     }
+    duplicates
 }
 
 fn detect_terminal_command() -> Option<Vec<OsString>> {
@@ -7985,15 +12062,9 @@ mod tests {
         let root = temp_test_dir("places");
         let home = root.join("home");
         let downloads = root.join("downloads");
-        let documents = root.join("documents");
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&downloads).unwrap();
-        fs::create_dir_all(&documents).unwrap();
-        Places {
-            home,
-            downloads,
-            documents,
-        }
+        Places { home, downloads }
     }
 
     fn test_tag() -> TagRecord {
@@ -8002,6 +12073,123 @@ mod tests {
             name: "Focus".to_string(),
             color: None,
         }
+    }
+
+    fn test_item(path: &str) -> FileItem {
+        let path = PathBuf::from(path);
+        FileItem {
+            name: path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("item")
+                .to_string(),
+            path,
+            kind: FileKind::Text,
+            is_dir: false,
+            size_bytes: None,
+            modified_unix: None,
+            tags: Vec::new(),
+            original_path: None,
+        }
+    }
+
+    #[test]
+    fn holding_tray_deduplicates_items_by_path() {
+        let mut existing = vec![test_item("/tmp/a.txt")];
+        let added = add_unique_tray_items(
+            &mut existing,
+            vec![test_item("/tmp/a.txt"), test_item("/tmp/b.txt")],
+        );
+
+        assert_eq!(added, 1);
+        assert_eq!(
+            existing
+                .iter()
+                .map(|item| item.path.clone())
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")]
+        );
+    }
+
+    #[test]
+    fn tray_action_plan_summarizes_long_path_lists() {
+        let paths = (0..10)
+            .map(|index| PathBuf::from(format!("/tmp/item-{index}.txt")))
+            .collect::<Vec<_>>();
+
+        let plan = trash_action_plan(&paths);
+
+        assert_eq!(plan.title, "Move Tray to Trash");
+        assert!(plan.destructive);
+        assert!(plan.lines[0].contains("10 staged item"));
+        assert!(plan.lines.iter().any(|line| line.contains("and 2 more")));
+    }
+
+    #[test]
+    fn path_completion_query_supports_home_absolute_and_relative_inputs() {
+        let current_dir = PathBuf::from("/home/tester/Downloads");
+        let home = PathBuf::from("/home/tester");
+
+        assert_eq!(
+            path_completion_query("~/Doc", &current_dir, &home),
+            Some(PathCompletionQuery {
+                query: "/home/tester/Doc".to_string(),
+                mode: PathCompletionMode::Home,
+            })
+        );
+        assert_eq!(
+            path_completion_query("/var/lo", &current_dir, &home),
+            Some(PathCompletionQuery {
+                query: "/var/lo".to_string(),
+                mode: PathCompletionMode::Absolute,
+            })
+        );
+        assert_eq!(
+            path_completion_query("Pho", &current_dir, &home),
+            Some(PathCompletionQuery {
+                query: "/home/tester/Downloads/Pho".to_string(),
+                mode: PathCompletionMode::Relative,
+            })
+        );
+        assert_eq!(path_completion_query("", &current_dir, &home), None);
+        assert_eq!(
+            path_completion_query("file:///home/tester", &current_dir, &home),
+            None
+        );
+    }
+
+    #[test]
+    fn path_completion_display_preserves_user_facing_prefix_style() {
+        let current_dir = PathBuf::from("/home/tester/Downloads");
+        let home = PathBuf::from("/home/tester");
+
+        assert_eq!(
+            path_completion_display(
+                "/home/tester/Documents",
+                PathCompletionMode::Home,
+                &current_dir,
+                &home
+            ),
+            Some("~/Documents".to_string())
+        );
+        assert_eq!(
+            path_completion_display(
+                "/home/tester/Downloads/Photos",
+                PathCompletionMode::Relative,
+                &current_dir,
+                &home
+            ),
+            Some("Photos".to_string())
+        );
+        assert_eq!(
+            path_completion_display(
+                "/var/log",
+                PathCompletionMode::Absolute,
+                &current_dir,
+                &home
+            ),
+            Some("/var/log".to_string())
+        );
     }
 
     #[test]
@@ -8061,7 +12249,10 @@ mod tests {
         assert!(!tag_actions.can_new_folder);
 
         let triage_actions = action_availability(
-            &PaneView::DownloadsTriage(DownloadsTriageFilter::All),
+            &PaneView::Triage {
+                root: PathBuf::from("/tmp/triage"),
+                filter: TriageFilter::All,
+            },
             0,
             true,
         );
@@ -8077,6 +12268,18 @@ mod tests {
         fs::write(root.join("Untitled 2"), "").unwrap();
 
         assert_eq!(next_new_text_document_path(&root), root.join("Untitled 3"));
+    }
+
+    #[test]
+    fn pane_layout_cycles_and_reports_visible_slots() {
+        assert_eq!(PaneLayout::Single.next(), PaneLayout::Two);
+        assert_eq!(PaneLayout::Two.next(), PaneLayout::Three);
+        assert_eq!(PaneLayout::Three.next(), PaneLayout::Single);
+        assert!(PaneLayout::Single.includes(PaneSlot::Primary));
+        assert!(!PaneLayout::Single.includes(PaneSlot::Secondary));
+        assert!(PaneLayout::Two.includes(PaneSlot::Secondary));
+        assert!(!PaneLayout::Two.includes(PaneSlot::Tertiary));
+        assert!(PaneLayout::Three.includes(PaneSlot::Tertiary));
     }
 
     #[test]
@@ -8113,12 +12316,20 @@ mod tests {
             Some(WindowCommand::ToggleSidebar)
         );
         assert_eq!(
+            window_command_from_key(gdk::Key::h, ctrl | gdk::ModifierType::ALT_MASK),
+            Some(WindowCommand::ToggleHoldingTray)
+        );
+        assert_eq!(
             window_command_from_key(gdk::Key::t, ctrl),
             Some(WindowCommand::NewTab)
         );
         assert_eq!(
             window_command_from_key(gdk::Key::w, ctrl),
             Some(WindowCommand::CloseTab)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::backslash, ctrl),
+            Some(WindowCommand::ToggleSplit)
         );
         assert_eq!(
             window_command_from_key(gdk::Key::Page_Up, ctrl),
@@ -8135,6 +12346,10 @@ mod tests {
         assert_eq!(
             window_command_from_key(gdk::Key::Delete, gdk::ModifierType::empty()),
             Some(WindowCommand::TrashSelection)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::Delete, ctrl_shift),
+            Some(WindowCommand::EmptyTrash)
         );
         assert_eq!(
             window_command_from_key(gdk::Key::F2, gdk::ModifierType::empty()),
@@ -8189,7 +12404,7 @@ mod tests {
     fn resolve_launch_uses_existing_project_case_insensitively() {
         let places = test_places();
         let mut metadata = MetadataStore::open_in_memory().unwrap();
-        let project_root = places.documents.join("workspace");
+        let project_root = places.home.join("documents").join("workspace");
         fs::create_dir_all(&project_root).unwrap();
         metadata.create_project("Alpha", &project_root).unwrap();
 
@@ -8210,14 +12425,39 @@ mod tests {
         let valid_left = places.downloads.clone();
         let invalid_right = places.home.join("missing-right");
         let launch = LaunchConfig {
-            split: Some((valid_left.clone(), invalid_right)),
+            split: Some(vec![valid_left.clone(), invalid_right]),
             ..LaunchConfig::default()
         };
 
         let resolution = resolve_launch(&launch, &places, &metadata);
-        assert!(resolution.split_enabled);
+        assert_eq!(resolution.pane_layout, PaneLayout::Two);
         assert_eq!(resolution.primary_dir, valid_left);
         assert_eq!(resolution.secondary_dir, places.home);
+        assert!(resolution.notice.unwrap().contains("Middle split path"));
+    }
+
+    #[test]
+    fn resolve_launch_three_pane_split_preserves_valid_sides_and_falls_back_invalid_side() {
+        let places = test_places();
+        let metadata = MetadataStore::open_in_memory().unwrap();
+        let valid_left = places.downloads.clone();
+        let valid_middle = places.home.join("documents");
+        fs::create_dir_all(&valid_middle).unwrap();
+        let invalid_right = places.home.join("missing-right");
+        let launch = LaunchConfig {
+            split: Some(vec![
+                valid_left.clone(),
+                valid_middle.clone(),
+                invalid_right,
+            ]),
+            ..LaunchConfig::default()
+        };
+
+        let resolution = resolve_launch(&launch, &places, &metadata);
+        assert_eq!(resolution.pane_layout, PaneLayout::Three);
+        assert_eq!(resolution.primary_dir, valid_left);
+        assert_eq!(resolution.secondary_dir, valid_middle);
+        assert_eq!(resolution.tertiary_dir, places.home);
         assert!(resolution.notice.unwrap().contains("Right split path"));
     }
 }

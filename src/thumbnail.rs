@@ -5,14 +5,20 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-/// Pixel size used for the cached PNG. Large enough for HiDPI, small enough to
-/// keep cache files compact.
+/// Pixel size used for the cached PNG.
 const CACHE_SIZE: i32 = 128;
 
 /// Maximum thumbnail loads running concurrently per pane.
 const MAX_CONCURRENT: u32 = 6;
 
-/// A handle to the Stack/Picture widgets inside an image card, passed back to
+#[derive(Clone, Debug)]
+pub enum ThumbnailKind {
+    Image,
+    Video,
+    Audio,
+}
+
+/// A handle to the Stack/Picture widgets inside a media card, passed back to
 /// the loader so it can swap in the real thumbnail once it arrives.
 #[derive(Clone)]
 pub struct ThumbnailTarget {
@@ -20,6 +26,7 @@ pub struct ThumbnailTarget {
     pub mtime: i64,
     pub stack: gtk::Stack,
     pub picture: gtk::Picture,
+    pub kind: ThumbnailKind,
 }
 
 struct PendingLoad {
@@ -27,6 +34,7 @@ struct PendingLoad {
     mtime: i64,
     stack: gtk::Stack,
     picture: gtk::Picture,
+    kind: ThumbnailKind,
     /// The generation counter captured when this load was queued.
     gen: u64,
 }
@@ -67,6 +75,7 @@ impl ThumbnailLoader {
                     mtime: t.mtime,
                     stack: t.stack,
                     picture: t.picture,
+                    kind: t.kind,
                     gen,
                 });
             }
@@ -91,11 +100,13 @@ impl ThumbnailLoader {
         glib::MainContext::default().spawn_local(async move {
             let path = pending.path.clone();
             let mtime = pending.mtime;
+            let kind = pending.kind.clone();
             let gen_at_start = pending.gen;
 
             // Run the expensive decode+scale+encode on a thread-pool thread.
-            // Only path, mtime, and cache_dir are passed — all are Send.
-            let result = gio::spawn_blocking(move || ensure_cached(&path, mtime, &cache_dir)).await;
+            // Only path, mtime, cache_dir, and kind are passed — all are Send.
+            let result =
+                gio::spawn_blocking(move || ensure_cached(&path, mtime, &cache_dir, &kind)).await;
 
             // Back on the main thread. Skip the UI update if the pane has
             // already navigated away (generation changed or load was cancelled).
@@ -120,7 +131,12 @@ impl ThumbnailLoader {
 
 /// Called from a thread-pool thread. Returns the path to the cached PNG,
 /// generating it first if necessary.
-fn ensure_cached(source: &Path, mtime: i64, cache_dir: &Path) -> Option<PathBuf> {
+fn ensure_cached(
+    source: &Path,
+    mtime: i64,
+    cache_dir: &Path,
+    kind: &ThumbnailKind,
+) -> Option<PathBuf> {
     let dest = cache_path(source, mtime, cache_dir);
 
     if dest.exists() {
@@ -131,13 +147,36 @@ fn ensure_cached(source: &Path, mtime: i64, cache_dir: &Path) -> Option<PathBuf>
         std::fs::create_dir_all(parent).ok()?;
     }
 
-    let pixbuf =
-        gdk_pixbuf::Pixbuf::from_file_at_scale(source, CACHE_SIZE, CACHE_SIZE, true).ok()?;
-
-    // Save as PNG into the cache directory. We write via a byte buffer so the
-    // file is only created once it's fully written (reduces partial-read risk).
-    let bytes = pixbuf.save_to_bufferv("png", &[]).ok()?;
-    std::fs::write(&dest, bytes).ok()?;
+    match kind {
+        ThumbnailKind::Image => {
+            let pixbuf =
+                gdk_pixbuf::Pixbuf::from_file_at_scale(source, CACHE_SIZE, CACHE_SIZE, true)
+                    .ok()?;
+            let bytes = pixbuf.save_to_bufferv("png", &[]).ok()?;
+            std::fs::write(&dest, bytes).ok()?;
+        }
+        ThumbnailKind::Video | ThumbnailKind::Audio => {
+            let status = std::process::Command::new("ffmpegthumbnailer")
+                .args([
+                    "-i",
+                    source.to_str()?,
+                    "-o",
+                    dest.to_str()?,
+                    "-s",
+                    &CACHE_SIZE.to_string(),
+                    "-t",
+                    "10%",
+                    "-q",
+                    "4",
+                    "-f",
+                ])
+                .status()
+                .ok()?;
+            if !status.success() {
+                return None;
+            }
+        }
+    }
 
     Some(dest)
 }

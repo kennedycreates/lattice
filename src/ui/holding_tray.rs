@@ -1,0 +1,298 @@
+use crate::thumbnail::{ThumbnailKind, ThumbnailTarget};
+use crate::ui::file_grid::FileItem;
+use gtk::prelude::*;
+use gtk::{Box as GtkBox, Button, Label, Orientation, Picture, Revealer, Separator, Stack};
+use std::cell::RefCell;
+use std::path::PathBuf;
+
+#[derive(Clone)]
+pub struct HoldingTray {
+    pub root: Revealer,
+    pub item_box: GtkBox,
+    pub empty_label: Label,
+    pub add_selection_button: Button,
+    pub move_to_project_button: Button,
+    pub copy_to_project_button: Button,
+    pub tag_button: Button,
+    pub trash_button: Button,
+    pub copy_path_button: Button,
+    pub clear_button: Button,
+    count_label: Label,
+    thumb_targets: RefCell<Vec<ThumbnailTarget>>,
+}
+
+impl HoldingTray {
+    pub fn build() -> Self {
+        let panel = GtkBox::new(Orientation::Vertical, 0);
+        panel.add_css_class("holding-tray");
+
+        let header = GtkBox::new(Orientation::Horizontal, 8);
+        header.add_css_class("holding-tray-header");
+
+        let title = Label::new(Some("Holding Tray"));
+        title.add_css_class("holding-tray-title");
+        title.set_halign(gtk::Align::Start);
+        header.append(&title);
+
+        let count_label = Label::new(Some("0 items"));
+        count_label.add_css_class("holding-tray-count");
+        count_label.set_halign(gtk::Align::Start);
+        count_label.set_hexpand(true);
+        header.append(&count_label);
+
+        let add_selection_button = action_button(
+            "Add selected grid items to the Holding Tray",
+            "list-add-symbolic",
+        );
+        header.append(&add_selection_button);
+
+        let move_to_project_button =
+            action_button("Move staged items to a Project", "go-next-symbolic");
+        header.append(&move_to_project_button);
+
+        let copy_to_project_button =
+            action_button("Copy staged items to a Project", "edit-copy-symbolic");
+        header.append(&copy_to_project_button);
+
+        let tag_button = action_button("Tag staged items", "tag-symbolic");
+        header.append(&tag_button);
+
+        let trash_button = action_button(
+            "Move staged items to Trash after preview",
+            "user-trash-symbolic",
+        );
+        trash_button.add_css_class("holding-tray-danger-action");
+        header.append(&trash_button);
+
+        let copy_path_button = action_button(
+            "Copy selected staged paths, or all staged paths when none are selected (Ctrl+C)",
+            "edit-copy-symbolic",
+        );
+        header.append(&copy_path_button);
+
+        let clear_button = action_button(
+            "Clear all staged items from the tray",
+            "edit-clear-symbolic",
+        );
+        header.append(&clear_button);
+
+        panel.append(&header);
+
+        let body = GtkBox::new(Orientation::Horizontal, 0);
+        body.add_css_class("holding-tray-body");
+
+        let item_box = GtkBox::new(Orientation::Horizontal, 6);
+        item_box.add_css_class("holding-tray-items");
+        item_box.set_hexpand(true);
+        body.append(&item_box);
+
+        let empty_label = Label::new(Some("No staged items"));
+        empty_label.add_css_class("holding-tray-empty");
+        empty_label.set_halign(gtk::Align::Center);
+        empty_label.set_hexpand(true);
+        body.append(&empty_label);
+
+        panel.append(&body);
+
+        let root = Revealer::new();
+        root.set_transition_type(gtk::RevealerTransitionType::SlideUp);
+        root.set_transition_duration(200);
+        root.set_reveal_child(false);
+        root.set_child(Some(&panel));
+
+        let tray = Self {
+            root,
+            item_box,
+            empty_label,
+            add_selection_button,
+            move_to_project_button,
+            copy_to_project_button,
+            tag_button,
+            trash_button,
+            copy_path_button,
+            clear_button,
+            count_label,
+            thumb_targets: RefCell::new(Vec::new()),
+        };
+        tray.set_action_sensitive(false);
+        tray
+    }
+
+    pub fn set_items<F, G, H>(
+        &self,
+        items: &[FileItem],
+        selected_paths: &[PathBuf],
+        on_remove: F,
+        on_select: G,
+        on_open: H,
+    ) where
+        F: Fn(PathBuf) + Clone + 'static,
+        G: Fn(PathBuf) + Clone + 'static,
+        H: Fn(PathBuf) + Clone + 'static,
+    {
+        clear_box(&self.item_box);
+        self.thumb_targets.borrow_mut().clear();
+
+        let count = items.len();
+        self.count_label.set_label(&format!(
+            "{count} item{}",
+            if count == 1 { "" } else { "s" }
+        ));
+        self.empty_label.set_visible(items.is_empty());
+        self.item_box.set_visible(!items.is_empty());
+        self.set_action_sensitive(!items.is_empty());
+
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                let sep = Separator::new(Orientation::Vertical);
+                sep.add_css_class("holding-tray-item-separator");
+                self.item_box.append(&sep);
+            }
+            let selected = selected_paths.iter().any(|path| path == &item.path);
+            let (row, target) = tray_item(
+                item,
+                selected,
+                on_remove.clone(),
+                on_select.clone(),
+                on_open.clone(),
+            );
+            self.item_box.append(&row);
+            if let Some(target) = target {
+                self.thumb_targets.borrow_mut().push(target);
+            }
+        }
+    }
+
+    pub fn drain_thumb_targets(&self) -> Vec<ThumbnailTarget> {
+        self.thumb_targets.borrow_mut().drain(..).collect()
+    }
+
+    fn set_action_sensitive(&self, sensitive: bool) {
+        self.add_selection_button.set_sensitive(true);
+        self.move_to_project_button.set_sensitive(sensitive);
+        self.copy_to_project_button.set_sensitive(sensitive);
+        self.tag_button.set_sensitive(sensitive);
+        self.trash_button.set_sensitive(sensitive);
+        self.copy_path_button.set_sensitive(sensitive);
+        self.clear_button.set_sensitive(sensitive);
+    }
+}
+
+fn action_button(label: &str, icon_name: &str) -> Button {
+    let button = Button::from_icon_name(icon_name);
+    button.add_css_class("holding-tray-action");
+    button.add_css_class("toolbar-icon-btn");
+    super::attach_tooltip(&button, label);
+    button
+}
+
+fn tray_item<F, G, H>(
+    item: &FileItem,
+    selected: bool,
+    on_remove: F,
+    on_select: G,
+    on_open: H,
+) -> (GtkBox, Option<ThumbnailTarget>)
+where
+    F: Fn(PathBuf) + Clone + 'static,
+    G: Fn(PathBuf) + Clone + 'static,
+    H: Fn(PathBuf) + Clone + 'static,
+{
+    let row = GtkBox::new(Orientation::Horizontal, 5);
+    row.add_css_class("holding-tray-item");
+    row.add_css_class(item.kind.css_class());
+    if selected {
+        row.add_css_class("holding-tray-item-selected");
+    }
+    row.set_tooltip_text(Some(&format!(
+        "{}\nClick to select. Double-click or Enter opens.",
+        item.path.display()
+    )));
+    row.set_focusable(true);
+
+    let (media, target) = tray_item_media(item);
+    row.append(&media);
+
+    let name = Label::new(Some(&item.name));
+    name.add_css_class("holding-tray-item-name");
+    name.set_single_line_mode(true);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name.set_max_width_chars(18);
+    row.append(&name);
+
+    let remove_button = Button::from_icon_name("window-close-symbolic");
+    remove_button.add_css_class("holding-tray-remove");
+    remove_button.add_css_class("toolbar-icon-btn");
+    super::attach_tooltip(
+        &remove_button,
+        "Remove this item from the Holding Tray (Delete)",
+    );
+    let path = item.path.clone();
+    remove_button.connect_clicked(move |_| on_remove(path.clone()));
+    row.append(&remove_button);
+
+    let click_path = item.path.clone();
+    let click_select = on_select.clone();
+    let click_open = on_open.clone();
+    let row_focus = row.clone();
+    let click = gtk::GestureClick::new();
+    click.set_button(0);
+    click.connect_released(move |gesture, n_press, _, _| {
+        row_focus.grab_focus();
+        if n_press >= 2 {
+            click_open(click_path.clone());
+        } else {
+            click_select(click_path.clone());
+        }
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+    });
+    row.add_controller(click);
+
+    (row, target)
+}
+
+fn tray_item_media(item: &FileItem) -> (Stack, Option<ThumbnailTarget>) {
+    let stack = Stack::new();
+    stack.add_css_class("holding-tray-item-media");
+    stack.set_size_request(24, 24);
+
+    let icon = Label::new(Some(item.kind.badge()));
+    icon.add_css_class("holding-tray-item-icon");
+    stack.add_named(&icon, Some("badge"));
+
+    let target_kind = match item.kind {
+        crate::ui::file_grid::FileKind::Image => Some(ThumbnailKind::Image),
+        crate::ui::file_grid::FileKind::Video => Some(ThumbnailKind::Video),
+        crate::ui::file_grid::FileKind::Audio => Some(ThumbnailKind::Audio),
+        _ => None,
+    };
+
+    let Some(kind) = target_kind else {
+        stack.set_visible_child_name("badge");
+        return (stack, None);
+    };
+
+    let picture = Picture::new();
+    picture.add_css_class("holding-tray-item-thumb");
+    picture.set_size_request(24, 24);
+    picture.set_content_fit(gtk::ContentFit::Cover);
+    stack.add_named(&picture, Some("thumb"));
+    stack.set_visible_child_name("badge");
+
+    (
+        stack.clone(),
+        Some(ThumbnailTarget {
+            path: item.path.clone(),
+            mtime: item.modified_unix.unwrap_or(0),
+            stack,
+            picture,
+            kind,
+        }),
+    )
+}
+
+fn clear_box(container: &GtkBox) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+}

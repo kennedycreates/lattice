@@ -133,7 +133,6 @@ impl TagFilterPanel {
     pub fn build() -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("tf-panel");
-        root.set_visible(false);
 
         let inner = GtkBox::new(Orientation::Vertical, 0);
         inner.add_css_class("tf-inner");

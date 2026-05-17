@@ -9,8 +9,8 @@ pub struct LaunchConfig {
     pub downloads: bool,
     /// Open a pinned project by name on startup.
     pub project: Option<String>,
-    /// Open in split view with explicit left/right paths.
-    pub split: Option<(PathBuf, PathBuf)>,
+    /// Open in split view with explicit pane paths.
+    pub split: Option<Vec<PathBuf>>,
 }
 
 impl LaunchConfig {
@@ -48,11 +48,17 @@ impl LaunchConfig {
                 }
                 "--split" => {
                     if i + 2 < args.len() {
-                        config.split =
-                            Some((PathBuf::from(&args[i + 1]), PathBuf::from(&args[i + 2])));
-                        i += 3;
+                        let mut paths =
+                            vec![PathBuf::from(&args[i + 1]), PathBuf::from(&args[i + 2])];
+                        if i + 3 < args.len() && !args[i + 3].starts_with('-') {
+                            paths.push(PathBuf::from(&args[i + 3]));
+                            i += 4;
+                        } else {
+                            i += 3;
+                        }
+                        config.split = Some(paths);
                     } else {
-                        eprintln!("lattice: --split requires two folder arguments");
+                        eprintln!("lattice: --split requires two or three folder arguments");
                         i += 1;
                     }
                 }
@@ -105,7 +111,20 @@ mod tests {
         let config = LaunchConfig::from_args(&args(&["--split", "/left", "/right"]));
         assert_eq!(
             config.split,
-            Some((PathBuf::from("/left"), PathBuf::from("/right")))
+            Some(vec![PathBuf::from("/left"), PathBuf::from("/right")])
+        );
+    }
+
+    #[test]
+    fn parses_three_pane_split_flag() {
+        let config = LaunchConfig::from_args(&args(&["--split", "/left", "/middle", "/right"]));
+        assert_eq!(
+            config.split,
+            Some(vec![
+                PathBuf::from("/left"),
+                PathBuf::from("/middle"),
+                PathBuf::from("/right")
+            ])
         );
     }
 

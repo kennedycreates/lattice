@@ -107,6 +107,14 @@ impl SearchQuery {
             recursive: true,
         }
     }
+
+    pub fn is_unconstrained(&self) -> bool {
+        self.name.trim().is_empty()
+            && self.kind == SearchKindFilter::All
+            && self.age == SearchAgeFilter::Any
+            && self.size == SearchSizeFilter::Any
+            && self.tag_id.is_none()
+    }
 }
 
 #[derive(Clone)]
@@ -128,7 +136,6 @@ impl SearchPanel {
     pub fn build() -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("search-strip");
-        root.set_visible(false);
 
         // ── Row 1: name entry + scope + recurse ──────────────────────
         let row1 = GtkBox::new(Orientation::Horizontal, 6);

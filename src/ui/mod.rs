@@ -1,14 +1,20 @@
+pub mod activity_log_panel;
 pub mod bulk_rename;
+pub mod conflict_resolver;
 pub mod file_grid;
+pub mod holding_tray;
 pub mod main_window;
 pub mod modal_host;
 pub mod ops_panel;
+pub mod plan_queue_panel;
 pub mod preview_pane;
+pub mod project_landing_panel;
 pub mod search_panel;
 pub mod sidebar;
 pub mod status_bar;
 pub mod tab_strip;
 pub mod tag_filter;
+pub mod tag_panel;
 pub mod toolbar;
 
 use glib::SourceId;

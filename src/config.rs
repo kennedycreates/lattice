@@ -84,15 +84,21 @@ fn default_shortcuts() -> HashMap<String, String> {
         ("show_hidden", "Ctrl+H"),
         ("toggle_sidebar", "Ctrl+B"),
         ("toggle_preview", "Ctrl+P"),
+        ("toggle_holding_tray", "Ctrl+Alt+H"),
         ("new_tab", "Ctrl+T"),
         ("close_tab", "Ctrl+W"),
         ("toggle_split", "Ctrl+\\"),
         ("previous_tab", "Ctrl+Page_Up"),
         ("next_tab", "Ctrl+Page_Down"),
         ("back", "Alt+Left"),
+        ("forward", "Alt+Right"),
         ("up", "Alt+Up"),
         ("cycle_pane", "F6"),
         ("escape", "Escape"),
+        ("view_icons", "Ctrl+1"),
+        ("view_list", "Ctrl+2"),
+        ("toggle_plan_mode", "Ctrl+Shift+P"),
+        ("empty_trash", "Ctrl+Shift+Delete"),
     ]
     .into_iter()
     .map(|(action, shortcut)| (action.to_string(), shortcut.to_string()))
@@ -337,16 +343,18 @@ theme = "default"
 # new_text_document = "Ctrl+Shift+N"
 # toggle_sidebar = "Ctrl+B"
 # toggle_preview = "Ctrl+P"
+# toggle_holding_tray = "Ctrl+Alt+H"
 # rename = "F2"
 # trash = "Delete"
+# empty_trash = "Ctrl+Shift+Delete"
 # custom.open_in_gimp = "Ctrl+Alt+G"
 # custom.compress_here = "Ctrl+Alt+Z"
 
 # Right-click menu order. Use "separator" for dividers and "custom.<id>" for custom actions.
 [context_menu]
-# file = ["open", "open_with", "separator", "custom.open_in_gimp", "rename", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
-# folder = ["open", "open_new_tab", "open_in_pane", "separator", "custom.compress_here", "rename", "copy_path", "terminal_here", "separator", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
-# background = ["new_folder", "new_text_document", "separator", "custom.compress_here", "pin_project", "terminal_here", "copy_path"]
+# file = ["open", "open_with", "separator", "add_to_holding_tray", "custom.open_in_gimp", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# folder = ["open", "open_new_tab", "open_in_pane", "separator", "add_to_holding_tray", "custom.compress_here", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# background = ["new_folder", "new_text_document", "separator", "custom.compress_here", "pin_place", "pin_project", "terminal_here", "copy_path"]
 
 # Custom actions never run through a shell. Each argv entry is passed as a separate argument.
 # {paths} expands selected paths into separate arguments.
