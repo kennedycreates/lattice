@@ -56,7 +56,7 @@ sudo pacman -S rust gtk4 desktop-file-utils
 ## Build From Source
 
 ```sh
-git clone <repository-url> lattice
+git clone https://github.com/kennedycreates/lattice.git
 cd lattice
 cargo build --release
 ```
