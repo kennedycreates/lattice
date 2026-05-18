@@ -96,13 +96,8 @@ fn copy_icon_as_square(src: &Path, dest: &Path, size: i32) {
     let Ok(src_buf) = gdk_pixbuf::Pixbuf::from_file(src) else {
         return;
     };
-    let Some(canvas) = gdk_pixbuf::Pixbuf::new(
-        gdk_pixbuf::Colorspace::Rgb,
-        true,
-        8,
-        size,
-        size,
-    ) else {
+    let Some(canvas) = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, size, size)
+    else {
         return;
     };
     canvas.fill(0x00000000);
@@ -132,7 +127,9 @@ fn copy_icon_as_square(src: &Path, dest: &Path, size: i32) {
 }
 
 fn install_dev_assets() {
-    let Some(icons_dir) = find_icons_dir() else { return };
+    let Some(icons_dir) = find_icons_dir() else {
+        return;
+    };
     let src_icon = icons_dir.join("lattice-icon.png");
     if !src_icon.exists() {
         return;
@@ -144,32 +141,22 @@ fn install_dev_assets() {
     if fs::create_dir_all(&icon_dest_dir).is_ok() {
         let icon_dest = icon_dest_dir.join("lattice.png");
         let needs_update = !icon_dest.exists()
-            || src_icon
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                > icon_dest
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok());
+            || src_icon.metadata().ok().and_then(|m| m.modified().ok())
+                > icon_dest.metadata().ok().and_then(|m| m.modified().ok());
         if needs_update {
             copy_icon_as_square(&src_icon, &icon_dest, 256);
         }
     }
 
-    let Some(desktop_src) = find_desktop_file() else { return };
+    let Some(desktop_src) = find_desktop_file() else {
+        return;
+    };
     let apps_dir = data_dir.join("applications");
     if fs::create_dir_all(&apps_dir).is_ok() {
         let desktop_dest = apps_dir.join("com.lattice.filemanager.desktop");
         let needs_update = !desktop_dest.exists()
-            || desktop_src
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                > desktop_dest
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok());
+            || desktop_src.metadata().ok().and_then(|m| m.modified().ok())
+                > desktop_dest.metadata().ok().and_then(|m| m.modified().ok());
         if needs_update {
             let _ = fs::copy(&desktop_src, &desktop_dest);
         }

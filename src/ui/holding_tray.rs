@@ -40,41 +40,33 @@ impl HoldingTray {
         count_label.set_hexpand(true);
         header.append(&count_label);
 
-        let add_selection_button = action_button(
-            "Add selected grid items to the Holding Tray",
-            "list-add-symbolic",
-        );
-        header.append(&add_selection_button);
+        let (add_selection_button, add_selection_host) =
+            action_button("Add selection (Ctrl+Alt+A)", "list-add-symbolic");
+        header.append(&add_selection_host);
 
-        let move_to_project_button =
-            action_button("Move staged items to a Project", "go-next-symbolic");
-        header.append(&move_to_project_button);
+        let (move_to_project_button, move_to_project_host) =
+            action_button("Move to project (Ctrl+Alt+M)", "go-next-symbolic");
+        header.append(&move_to_project_host);
 
-        let copy_to_project_button =
-            action_button("Copy staged items to a Project", "edit-copy-symbolic");
-        header.append(&copy_to_project_button);
+        let (copy_to_project_button, copy_to_project_host) =
+            action_button("Copy to project (Ctrl+Alt+C)", "edit-copy-symbolic");
+        header.append(&copy_to_project_host);
 
-        let tag_button = action_button("Tag staged items", "tag-symbolic");
-        header.append(&tag_button);
+        let (tag_button, tag_host) = action_button("Tag tray (Ctrl+Alt+T)", "tag-symbolic");
+        header.append(&tag_host);
 
-        let trash_button = action_button(
-            "Move staged items to Trash after preview",
-            "user-trash-symbolic",
-        );
+        let (trash_button, trash_host) =
+            action_button("Trash tray (Ctrl+Alt+Delete)", "user-trash-symbolic");
         trash_button.add_css_class("holding-tray-danger-action");
-        header.append(&trash_button);
+        header.append(&trash_host);
 
-        let copy_path_button = action_button(
-            "Copy selected staged paths, or all staged paths when none are selected (Ctrl+C)",
-            "edit-copy-symbolic",
-        );
-        header.append(&copy_path_button);
+        let (copy_path_button, copy_path_host) =
+            action_button("Copy paths (Ctrl+Alt+P)", "edit-copy-symbolic");
+        header.append(&copy_path_host);
 
-        let clear_button = action_button(
-            "Clear all staged items from the tray",
-            "edit-clear-symbolic",
-        );
-        header.append(&clear_button);
+        let (clear_button, clear_host) =
+            action_button("Clear tray (Ctrl+Alt+K)", "edit-clear-symbolic");
+        header.append(&clear_host);
 
         panel.append(&header);
 
@@ -178,12 +170,12 @@ impl HoldingTray {
     }
 }
 
-fn action_button(label: &str, icon_name: &str) -> Button {
+fn action_button(label: &str, icon_name: &str) -> (Button, GtkBox) {
     let button = Button::from_icon_name(icon_name);
     button.add_css_class("holding-tray-action");
     button.add_css_class("toolbar-icon-btn");
-    super::attach_tooltip(&button, label);
-    button
+    let host = super::tooltip_host(&button, label);
+    (button, host)
 }
 
 fn tray_item<F, G, H>(
@@ -225,7 +217,7 @@ where
     remove_button.add_css_class("toolbar-icon-btn");
     super::attach_tooltip(
         &remove_button,
-        "Remove this item from the Holding Tray (Delete)",
+        "Remove item (Delete)",
     );
     let path = item.path.clone();
     remove_button.connect_clicked(move |_| on_remove(path.clone()));

@@ -1,56 +1,32 @@
-use crate::metadata::TagRecord;
+use crate::metadata::ProjectRecord;
+use crate::ui::tag_panel::{tag_color_class, TAG_PALETTE};
 use gtk::prelude::*;
 use gtk::{
     Align, Box as GtkBox, Button, Entry, EventControllerKey, Label, Orientation, Popover, Revealer,
     RevealerTransitionType, ScrolledWindow, Stack,
 };
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
-pub const TAG_PALETTE: [(&str, &str); 8] = [
-    ("#00e5ff", "tag-color-0"),
-    ("#10b981", "tag-color-1"),
-    ("#f59e0b", "tag-color-2"),
-    ("#ff4b6e", "tag-color-3"),
-    ("#a855f7", "tag-color-4"),
-    ("#38bdf8", "tag-color-5"),
-    ("#22c55e", "tag-color-6"),
-    ("#f97316", "tag-color-7"),
-];
-
-pub fn tag_color_class(color: Option<&str>) -> &'static str {
-    let Some(c) = color else { return "tag-color-0" };
-    TAG_PALETTE
-        .iter()
-        .find(|(hex, _)| hex.eq_ignore_ascii_case(c))
-        .map(|(_, class)| *class)
-        .unwrap_or("tag-color-0")
-}
-
-// ── Callbacks ─────────────────────────────────────────────────────────────────
-
 struct Callbacks {
-    on_tag_clicked: RefCell<Option<Box<dyn Fn(i64)>>>,
-    on_tag_created: RefCell<Option<Box<dyn Fn(String, String)>>>,
-    on_tag_renamed: RefCell<Option<Box<dyn Fn(i64, String)>>>,
-    on_tag_recolored: RefCell<Option<Box<dyn Fn(i64, String)>>>,
-    on_tag_deleted: RefCell<Option<Box<dyn Fn(i64)>>>,
+    on_project_clicked: RefCell<Option<Box<dyn Fn(i64)>>>,
+    on_project_created: RefCell<Option<Box<dyn Fn(String, String)>>>,
+    on_project_renamed: RefCell<Option<Box<dyn Fn(i64, String)>>>,
+    on_project_recolored: RefCell<Option<Box<dyn Fn(i64, String)>>>,
+    on_project_deleted: RefCell<Option<Box<dyn Fn(i64)>>>,
 }
 
 impl Callbacks {
     fn new() -> Self {
         Self {
-            on_tag_clicked: RefCell::new(None),
-            on_tag_created: RefCell::new(None),
-            on_tag_renamed: RefCell::new(None),
-            on_tag_recolored: RefCell::new(None),
-            on_tag_deleted: RefCell::new(None),
+            on_project_clicked: RefCell::new(None),
+            on_project_created: RefCell::new(None),
+            on_project_renamed: RefCell::new(None),
+            on_project_recolored: RefCell::new(None),
+            on_project_deleted: RefCell::new(None),
         }
     }
 }
-
-// ── Inner state ───────────────────────────────────────────────────────────────
 
 struct Inner {
     list_box: GtkBox,
@@ -61,37 +37,35 @@ struct Inner {
     cbs: Callbacks,
 }
 
-// ── Public widget ─────────────────────────────────────────────────────────────
-
 #[derive(Clone)]
-pub struct TagManagerPanel {
+pub struct ProjectManagerPanel {
     pub root: GtkBox,
     inner: Rc<Inner>,
 }
 
-impl TagManagerPanel {
+impl ProjectManagerPanel {
     pub fn build() -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
-        root.add_css_class("tm-panel");
+        root.add_css_class("pm-panel");
         root.set_visible(false);
 
-        // ── Header ─────────────────────────────────────────────────────────────
+        // ── Header ──────────────────────────────────────────────────────────────
         let header = GtkBox::new(Orientation::Horizontal, 8);
         header.add_css_class("tm-header");
 
-        let title = Label::new(Some("🏷  Tags"));
+        let title = Label::new(Some("🗂  Projects"));
         title.add_css_class("tm-title");
         title.set_halign(Align::Start);
         title.set_hexpand(true);
         header.append(&title);
 
-        let new_btn = Button::with_label("+ New Tag");
+        let new_btn = Button::with_label("+ New Project");
         new_btn.add_css_class("tm-new-btn");
         header.append(&new_btn);
 
         root.append(&header);
 
-        // ── Create row (slide-down revealer) ────────────────────────────────────
+        // ── Create row ───────────────────────────────────────────────────────────
         let create_revealer = Revealer::new();
         create_revealer.set_transition_type(RevealerTransitionType::SlideDown);
         create_revealer.set_transition_duration(160);
@@ -102,10 +76,9 @@ impl TagManagerPanel {
 
         let create_name_entry = Entry::new();
         create_name_entry.add_css_class("tm-create-entry");
-        create_name_entry.set_placeholder_text(Some("Tag name…"));
+        create_name_entry.set_placeholder_text(Some("Project name…"));
         create_row.append(&create_name_entry);
 
-        // 8-color swatch row
         let swatch_row = GtkBox::new(Orientation::Horizontal, 6);
         swatch_row.add_css_class("tm-swatch-row");
 
@@ -140,7 +113,7 @@ impl TagManagerPanel {
         create_revealer.set_child(Some(&create_row));
         root.append(&create_revealer);
 
-        // ── Tag list ────────────────────────────────────────────────────────────
+        // ── Project list ─────────────────────────────────────────────────────────
         let scrolled = ScrolledWindow::new();
         scrolled.set_vexpand(true);
         scrolled.set_hscrollbar_policy(gtk::PolicyType::Never);
@@ -151,14 +124,15 @@ impl TagManagerPanel {
         scrolled.set_child(Some(&list_box));
         root.append(&scrolled);
 
-        let empty_hint = Label::new(Some("No tags yet. Create one with + New Tag above."));
+        let empty_hint = Label::new(Some(
+            "No projects yet. Create one with + New Project above.",
+        ));
         empty_hint.add_css_class("tm-empty");
         empty_hint.set_halign(Align::Start);
         empty_hint.set_wrap(true);
         empty_hint.set_visible(false);
         root.append(&empty_hint);
 
-        // ── Assemble inner state ────────────────────────────────────────────────
         let inner = Rc::new(Inner {
             list_box,
             empty_hint,
@@ -168,7 +142,7 @@ impl TagManagerPanel {
             cbs: Callbacks::new(),
         });
 
-        // ── Wire create swatch buttons ──────────────────────────────────────────
+        // ── Wire create swatch buttons ───────────────────────────────────────────
         for (idx, (hex, btn)) in create_swatch_btns.iter().enumerate() {
             let hex = hex.clone();
             let inner = Rc::clone(&inner);
@@ -186,7 +160,7 @@ impl TagManagerPanel {
             });
         }
 
-        // ── Wire new-tag button ─────────────────────────────────────────────────
+        // ── Wire new-project button ──────────────────────────────────────────────
         {
             let inner = Rc::clone(&inner);
             new_btn.connect_clicked(move |_| {
@@ -199,7 +173,7 @@ impl TagManagerPanel {
             });
         }
 
-        // ── Wire cancel button ──────────────────────────────────────────────────
+        // ── Wire cancel button ───────────────────────────────────────────────────
         {
             let inner = Rc::clone(&inner);
             cancel_btn.connect_clicked(move |_| {
@@ -208,7 +182,7 @@ impl TagManagerPanel {
             });
         }
 
-        // ── Wire create button ──────────────────────────────────────────────────
+        // ── Wire create button ───────────────────────────────────────────────────
         {
             let inner = Rc::clone(&inner);
             create_btn.connect_clicked(move |_| {
@@ -216,7 +190,7 @@ impl TagManagerPanel {
             });
         }
 
-        // ── Wire entry activate (Enter) ─────────────────────────────────────────
+        // ── Wire entry activate ──────────────────────────────────────────────────
         {
             let inner = Rc::clone(&inner);
             create_name_entry.connect_activate(move |_| {
@@ -227,14 +201,14 @@ impl TagManagerPanel {
         Self { root, inner }
     }
 
-    // ── Data loading ───────────────────────────────────────────────────────────
+    // ── Data loading ─────────────────────────────────────────────────────────────
 
-    pub fn set_tags(&self, tags: &[TagRecord], counts: &HashMap<i64, usize>) {
+    pub fn set_projects(&self, projects: &[ProjectRecord]) {
         while let Some(child) = self.inner.list_box.first_child() {
             self.inner.list_box.remove(&child);
         }
 
-        if tags.is_empty() {
+        if projects.is_empty() {
             self.inner.empty_hint.set_visible(true);
             self.inner.list_box.set_visible(false);
             return;
@@ -243,37 +217,34 @@ impl TagManagerPanel {
         self.inner.empty_hint.set_visible(false);
         self.inner.list_box.set_visible(true);
 
-        for tag in tags {
-            let count = counts.get(&tag.id).copied().unwrap_or(0);
-            let row = build_tag_row(tag, count, &self.inner);
+        for project in projects {
+            let row = build_project_row(project, &self.inner);
             self.inner.list_box.append(&row);
         }
     }
 
-    // ── Callback wiring ────────────────────────────────────────────────────────
+    // ── Callback wiring ───────────────────────────────────────────────────────────
 
-    pub fn connect_tag_clicked<F: Fn(i64) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_tag_clicked.borrow_mut() = Some(Box::new(f));
+    pub fn connect_project_clicked<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.inner.cbs.on_project_clicked.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_tag_created<F: Fn(String, String) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_tag_created.borrow_mut() = Some(Box::new(f));
+    pub fn connect_project_created<F: Fn(String, String) + 'static>(&self, f: F) {
+        *self.inner.cbs.on_project_created.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_tag_renamed<F: Fn(i64, String) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_tag_renamed.borrow_mut() = Some(Box::new(f));
+    pub fn connect_project_renamed<F: Fn(i64, String) + 'static>(&self, f: F) {
+        *self.inner.cbs.on_project_renamed.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_tag_recolored<F: Fn(i64, String) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_tag_recolored.borrow_mut() = Some(Box::new(f));
+    pub fn connect_project_recolored<F: Fn(i64, String) + 'static>(&self, f: F) {
+        *self.inner.cbs.on_project_recolored.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_tag_deleted<F: Fn(i64) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_tag_deleted.borrow_mut() = Some(Box::new(f));
+    pub fn connect_project_deleted<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.inner.cbs.on_project_deleted.borrow_mut() = Some(Box::new(f));
     }
 }
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn fire_create(inner: &Rc<Inner>) {
     let name = inner.create_name_entry.text().to_string();
@@ -284,19 +255,19 @@ fn fire_create(inner: &Rc<Inner>) {
     let color = inner.create_color_selected.borrow().clone();
     inner.create_revealer.set_reveal_child(false);
     inner.create_name_entry.set_text("");
-    if let Some(cb) = inner.cbs.on_tag_created.borrow().as_ref() {
+    if let Some(cb) = inner.cbs.on_project_created.borrow().as_ref() {
         cb(name, color);
     }
 }
 
-fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
+fn build_project_row(project: &ProjectRecord, inner: &Rc<Inner>) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 6);
     row.add_css_class("tm-row");
 
     // Color dot
     let dot = Label::new(Some("●"));
     dot.add_css_class("tm-dot");
-    dot.add_css_class(tag_color_class(tag.color.as_deref()));
+    dot.add_css_class(tag_color_class(project.color.as_deref()));
     dot.set_valign(Align::Center);
     row.append(&dot);
 
@@ -304,7 +275,7 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
     let name_stack = Stack::new();
     name_stack.set_transition_duration(0);
 
-    let name_label = Label::new(Some(&tag.name));
+    let name_label = Label::new(Some(&project.name));
     name_label.add_css_class("tm-tag-name");
     name_label.set_halign(Align::Start);
     name_label.set_hexpand(true);
@@ -312,32 +283,24 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
 
     let name_entry = Entry::new();
     name_entry.add_css_class("tm-tag-entry");
-    name_entry.set_text(&tag.name);
+    name_entry.set_text(&project.name);
     name_stack.add_named(&name_entry, Some("edit"));
 
     name_stack.set_visible_child_name("label");
     row.append(&name_stack);
 
-    // Click name label to browse tag files
+    // Click name label to open project
     {
-        let tag_id = tag.id;
+        let project_id = project.id;
         let inner = Rc::clone(inner);
         let click = gtk::GestureClick::new();
         click.connect_pressed(move |_, _, _, _| {
-            if let Some(cb) = inner.cbs.on_tag_clicked.borrow().as_ref() {
-                cb(tag_id);
+            if let Some(cb) = inner.cbs.on_project_clicked.borrow().as_ref() {
+                cb(project_id);
             }
         });
         name_label.add_controller(click);
     }
-
-    // File count label
-    let file_word = if count == 1 { "file" } else { "files" };
-    let count_label = Label::new(Some(&format!("{count} {file_word}")));
-    count_label.add_css_class("tm-count");
-    count_label.set_hexpand(true);
-    count_label.set_halign(Align::End);
-    row.append(&count_label);
 
     // Edit (rename) button
     let edit_btn = Button::with_label("✏");
@@ -345,32 +308,32 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
     {
         let name_stack = name_stack.clone();
         let name_entry = name_entry.clone();
-        let tag_name = tag.name.clone();
+        let project_name = project.name.clone();
         edit_btn.connect_clicked(move |_| {
-            name_entry.set_text(&tag_name);
+            name_entry.set_text(&project_name);
             name_stack.set_visible_child_name("edit");
             name_entry.grab_focus();
         });
     }
     row.append(&edit_btn);
 
-    // Wire rename commit (Enter key)
+    // Wire rename commit (Enter)
     {
-        let tag_id = tag.id;
-        let tag_name = tag.name.clone();
+        let project_id = project.id;
+        let project_name = project.name.clone();
         let inner = Rc::clone(inner);
         let name_stack = name_stack.clone();
         let name_entry_ref = name_entry.clone();
         name_entry.connect_activate(move |entry| {
-            commit_rename(tag_id, &tag_name, entry, &name_stack, &inner);
+            commit_rename(project_id, &project_name, entry, &name_stack, &inner);
             let _ = name_entry_ref;
         });
     }
 
     // Wire rename commit (focus-out)
     {
-        let tag_id = tag.id;
-        let tag_name = tag.name.clone();
+        let project_id = project.id;
+        let project_name = project.name.clone();
         let inner = Rc::clone(inner);
         let name_stack_fo = name_stack.clone();
         let name_entry_fo = name_entry.clone();
@@ -381,7 +344,7 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
                     .map(|s| s == "edit")
                     .unwrap_or(false)
             {
-                commit_rename(tag_id, &tag_name, entry, &name_stack_fo, &inner);
+                commit_rename(project_id, &project_name, entry, &name_stack_fo, &inner);
                 let _ = name_entry_fo;
             }
         });
@@ -404,12 +367,12 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
     // Color change button → Popover with swatch row
     let color_btn = Button::with_label("●");
     color_btn.add_css_class("tm-color-btn");
-    color_btn.add_css_class(tag_color_class(tag.color.as_deref()));
+    color_btn.add_css_class(tag_color_class(project.color.as_deref()));
     {
-        let tag_id = tag.id;
+        let project_id = project.id;
         let inner = Rc::clone(inner);
         let color_btn_ref = color_btn.clone();
-        let current_color = tag
+        let current_color = project
             .color
             .clone()
             .unwrap_or_else(|| TAG_PALETTE[0].0.to_string());
@@ -435,13 +398,12 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
                 let color_btn_inner = color_btn_ref.clone();
                 swatch.connect_clicked(move |_| {
                     popover_ref.popdown();
-                    // Update the color button's own CSS class
                     for (_, c) in TAG_PALETTE.iter() {
                         color_btn_inner.remove_css_class(c);
                     }
                     color_btn_inner.add_css_class(tag_color_class(Some(&hex_str)));
-                    if let Some(cb) = inner.cbs.on_tag_recolored.borrow().as_ref() {
-                        cb(tag_id, hex_str.clone());
+                    if let Some(cb) = inner.cbs.on_project_recolored.borrow().as_ref() {
+                        cb(project_id, hex_str.clone());
                     }
                 });
                 swatch_row.append(&swatch);
@@ -451,7 +413,6 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
             popover.set_parent(btn);
             popover.popup();
 
-            // Auto-unparent when closed
             let popover_clone = popover.clone();
             popover.connect_closed(move |_| {
                 popover_clone.unparent();
@@ -464,11 +425,11 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
     let delete_btn = Button::with_label("🗑");
     delete_btn.add_css_class("tm-delete-btn");
     {
-        let tag_id = tag.id;
+        let project_id = project.id;
         let inner = Rc::clone(inner);
         delete_btn.connect_clicked(move |_| {
-            if let Some(cb) = inner.cbs.on_tag_deleted.borrow().as_ref() {
-                cb(tag_id);
+            if let Some(cb) = inner.cbs.on_project_deleted.borrow().as_ref() {
+                cb(project_id);
             }
         });
     }
@@ -478,7 +439,7 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
 }
 
 fn commit_rename(
-    tag_id: i64,
+    project_id: i64,
     original_name: &str,
     entry: &Entry,
     name_stack: &Stack,
@@ -488,8 +449,8 @@ fn commit_rename(
     let new_name = new_name.trim().to_string();
     name_stack.set_visible_child_name("label");
     if !new_name.is_empty() && new_name != original_name {
-        if let Some(cb) = inner.cbs.on_tag_renamed.borrow().as_ref() {
-            cb(tag_id, new_name);
+        if let Some(cb) = inner.cbs.on_project_renamed.borrow().as_ref() {
+            cb(project_id, new_name);
         }
     }
 }

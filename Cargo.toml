@@ -1,6 +1,6 @@
 [package]
 name = "lattice"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
 description = "A mouse-first GTK4 file manager for custom Linux desktops."
@@ -15,3 +15,4 @@ glib = "0.20"
 gio = { version = "0.20", features = ["v2_72"] }
 gdk-pixbuf = "0.20"
 rusqlite = { version = "0.31", features = ["bundled"] }
+cairo-rs = { package = "cairo-rs", version = "0.20" }

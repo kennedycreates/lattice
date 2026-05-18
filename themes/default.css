@@ -261,8 +261,31 @@ headerbar windowcontrols button {
     font-weight: 700;
     letter-spacing: 1.8px;
     text-transform: uppercase;
+}
+
+.sidebar-section-toggle {
+    background: transparent;
+    border: none;
     border-top: 1px solid #302e2848;
-    padding-top: 5px;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 5px 8px 4px 10px;
+    min-height: 0;
+}
+
+.sidebar-section-toggle:hover {
+    background: rgba(154, 106, 113, 0.07);
+}
+
+.sidebar-section-toggle:active {
+    background: rgba(154, 106, 113, 0.13);
+}
+
+.sidebar-section-arrow {
+    color: #9a6a71;
+    font-size: 9px;
+    margin-right: 5px;
+    min-width: 10px;
 }
 
 .sidebar-sep {
@@ -2707,4 +2730,277 @@ flowboxchild:hover > .file-card-shell.drop-hover > .file-card,
 /* Color popover */
 .tm-color-popover .tm-swatch-popover-row {
     padding: 6px 8px;
+}
+
+/* ── Project Manager Panel (.pm-*) ──────────────────────────────────────────── */
+
+.pm-panel {
+    background-color: #0f0e0c;
+    padding: 0;
+}
+
+/* Project Manager reuses .tm-header, .tm-title, .tm-new-btn, .tm-row,
+   .tm-dot, .tm-tag-name, .tm-edit-btn, .tm-color-btn, .tm-delete-btn,
+   .tm-empty, .tm-swatch-*, .tm-create-* from the tag manager panel. */
+
+/* ── Project Landing — updated classes ─────────────────────────────────────── */
+
+.landing-back-btn {
+    background: transparent;
+    border: 1px solid #2a2820;
+    border-radius: 4px;
+    color: #8a7858;
+    font-size: 12px;
+    padding: 2px 8px;
+    margin-bottom: 4px;
+}
+
+.landing-back-btn:hover {
+    background: #ffffff08;
+    color: #b09868;
+    border-color: #3a3828;
+}
+
+.landing-project-dot {
+    font-size: 18px;
+    margin-right: 2px;
+}
+
+.landing-pin-path {
+    color: #5a5040;
+    font-size: 10px;
+    font-style: italic;
+}
+
+/* ── Space Viewer Panel ──────────────────────────────────────────────────── */
+
+.sv-panel {
+    background: #1c1b19;
+}
+
+.sv-header {
+    padding: 12px 14px 8px;
+    border-bottom: 1px solid #302e28;
+}
+
+.sv-title {
+    color: #806040;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+
+.sv-path-label {
+    color: #e8dcc8;
+    font-size: 11px;
+    margin-top: 1px;
+}
+
+.sv-rescan-btn {
+    margin-left: 4px;
+}
+
+.sv-stat-strip {
+    padding: 8px 14px 6px;
+    border-bottom: 1px solid #302e28;
+}
+
+.sv-stat-value {
+    color: #e8dcc8;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.sv-stat-label {
+    color: #806040;
+    font-size: 10px;
+}
+
+.sv-depth-row {
+    padding: 6px 14px;
+    border-bottom: 1px solid #302e28;
+}
+
+.sv-depth-btn {
+    background: #1c1b19;
+    border: 1px solid #302e28;
+    border-radius: 4px;
+    color: #806040;
+    font-size: 10px;
+    padding: 3px 10px;
+    min-height: 0;
+}
+
+.sv-depth-btn:hover {
+    background: #252320;
+    color: #b89e78;
+    border-color: #3a3828;
+}
+
+.sv-depth-btn.active {
+    background: #2e2b27;
+    color: #c9962e;
+    border-color: #8a6820;
+}
+
+.sv-section-heading {
+    color: #806040;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    padding: 10px 14px 4px;
+}
+
+.sv-bar-row {
+    padding: 4px 14px 6px;
+    border-bottom: 1px solid #252320;
+}
+
+.sv-bar-row:hover {
+    background: #252320;
+}
+
+.sv-bar-name {
+    color: #e8dcc8;
+    font-size: 11px;
+}
+
+.sv-bar-size {
+    color: #806040;
+    font-size: 10px;
+}
+
+.sv-bar-progress {
+    min-height: 3px;
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
+
+.sv-bar-progress trough {
+    background: #252320;
+    border-radius: 2px;
+    min-height: 3px;
+}
+
+.sv-bar-progress progress {
+    background: linear-gradient(90deg, #5080b8 0%, #6898d0 100%);
+    border-radius: 2px;
+}
+
+.sv-action-btn {
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: #5a5040;
+    font-size: 10px;
+    padding: 1px 5px;
+    min-height: 0;
+}
+
+.sv-action-btn:hover {
+    background: #2e2b27;
+    color: #c9962e;
+}
+
+.sv-action-btn-danger:hover {
+    color: #a02850;
+}
+
+.sv-chart-row {
+    border-bottom: 1px solid #252320;
+}
+
+.sv-hover-col {
+    /* right column next to pie chart */
+}
+
+.sv-hover-name {
+    color: #e8dcc8;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.sv-hover-size {
+    color: #b89e78;
+    font-size: 11px;
+}
+
+.sv-hover-hint {
+    color: #3a3828;
+    font-size: 10px;
+    font-style: italic;
+}
+
+.sv-legend {
+    margin-top: 4px;
+}
+
+.sv-legend-row {
+    padding: 2px 0;
+}
+
+.sv-legend-name {
+    color: #b89e78;
+    font-size: 10px;
+}
+
+.sv-legend-pct {
+    color: #5a5040;
+    font-size: 10px;
+    min-width: 32px;
+}
+
+.sv-legend-size {
+    color: #e8dcc8;
+    font-size: 10px;
+    min-width: 52px;
+}
+
+.sv-error-note {
+    color: #a02850;
+    font-size: 10px;
+}
+
+.sv-empty-hint {
+    color: #5a5040;
+    font-size: 11px;
+    padding: 6px 0 6px 4px;
+    font-style: italic;
+}
+
+.sv-spinner {
+    margin-top: 16px;
+    margin-bottom: 16px;
+}
+
+/* view nav row */
+.sv-view-nav {
+    border-bottom: 1px solid #302e28;
+    padding: 4px 8px;
+}
+
+.sv-view-nav-btn {
+    background: transparent;
+    border: none;
+    color: #806040;
+    font-size: 16px;
+    padding: 0 6px;
+    min-height: 0;
+}
+
+.sv-view-nav-btn:hover {
+    color: #c9962e;
+}
+
+.sv-view-nav-label {
+    color: #b89e78;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.10em;
+}
+
+/* categories */
+.sv-cat-list {
+    margin-left: 0;
+    margin-right: 0;
 }

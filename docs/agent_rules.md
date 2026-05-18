@@ -18,9 +18,9 @@ Lattice is a **mouse-first** application. Every feature must be fully usable wit
 
 Do not add vim-style navigation, keybinding-heavy workflows, or any UI that assumes the user prefers the keyboard. If a keyboard shortcut is added, the same action must also be reachable by mouse.
 
-### 3. Stay within the current milestone
+### 3. Stay within the current release scope
 
-Do not implement features outside the current milestone. Check `docs/roadmap.md` for what is in scope. A feature listed in M3 must not be added while working on M1, even if it seems simple. Keep scope tight so each milestone ships cleanly.
+Do not implement features outside the user's requested release scope. If the repo has a current planning document or issue for the active release, treat that as the boundary. Keep scope tight so each release ships cleanly.
 
 ### 4. Every milestone must compile
 

@@ -99,6 +99,13 @@ fn default_shortcuts() -> HashMap<String, String> {
         ("view_list", "Ctrl+2"),
         ("toggle_plan_mode", "Ctrl+Shift+P"),
         ("empty_trash", "Ctrl+Shift+Delete"),
+        ("tray_add_selection", "Ctrl+Alt+A"),
+        ("tray_move_to_project", "Ctrl+Alt+M"),
+        ("tray_copy_to_project", "Ctrl+Alt+C"),
+        ("tray_tag", "Ctrl+Alt+T"),
+        ("tray_trash", "Ctrl+Alt+Delete"),
+        ("tray_copy_paths", "Ctrl+Alt+P"),
+        ("tray_clear", "Ctrl+Alt+K"),
     ]
     .into_iter()
     .map(|(action, shortcut)| (action.to_string(), shortcut.to_string()))
@@ -344,6 +351,13 @@ theme = "default"
 # toggle_sidebar = "Ctrl+B"
 # toggle_preview = "Ctrl+P"
 # toggle_holding_tray = "Ctrl+Alt+H"
+# tray_add_selection = "Ctrl+Alt+A"
+# tray_move_to_project = "Ctrl+Alt+M"
+# tray_copy_to_project = "Ctrl+Alt+C"
+# tray_tag = "Ctrl+Alt+T"
+# tray_trash = "Ctrl+Alt+Delete"
+# tray_copy_paths = "Ctrl+Alt+P"
+# tray_clear = "Ctrl+Alt+K"
 # rename = "F2"
 # trash = "Delete"
 # empty_trash = "Ctrl+Shift+Delete"

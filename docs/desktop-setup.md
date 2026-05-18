@@ -20,13 +20,15 @@ The `.desktop` file makes Lattice appear in application launchers and registers 
 as a file manager with the system.
 
 ```bash
-sudo install -m 644 lattice.desktop /usr/local/share/applications/lattice.desktop
+sudo install -m 644 com.lattice.filemanager.desktop \
+  /usr/local/share/applications/com.lattice.filemanager.desktop
 ```
 
 Or for a per-user install:
 
 ```bash
-install -m 644 lattice.desktop ~/.local/share/applications/lattice.desktop
+install -Dm 644 com.lattice.filemanager.desktop \
+  ~/.local/share/applications/com.lattice.filemanager.desktop
 ```
 
 Update the desktop database after installing:
@@ -42,14 +44,14 @@ update-desktop-database ~/.local/share/applications/
 To open folders with Lattice when you click them in another app:
 
 ```bash
-xdg-mime default lattice.desktop inode/directory
+xdg-mime default com.lattice.filemanager.desktop inode/directory
 ```
 
 Verify:
 
 ```bash
 xdg-mime query default inode/directory
-# should output: lattice.desktop
+# should output: com.lattice.filemanager.desktop
 ```
 
 ---
@@ -145,7 +147,7 @@ Lattice will appear in the GNOME application grid automatically once the desktop
 is installed. To set Lattice as the default folder opener:
 
 ```bash
-xdg-mime default lattice.desktop inode/directory
+xdg-mime default com.lattice.filemanager.desktop inode/directory
 ```
 
 GNOME does not use a separate keybinding config file. Add a keyboard shortcut in
@@ -160,7 +162,7 @@ Install the binary and desktop entry as above. COSMIC reads `.desktop` files fro
 standard XDG paths. To set Lattice as the default folder opener:
 
 ```bash
-xdg-mime default lattice.desktop inode/directory
+xdg-mime default com.lattice.filemanager.desktop inode/directory
 ```
 
 Add keybindings in **COSMIC Settings → Keyboard → Keyboard Shortcuts**.

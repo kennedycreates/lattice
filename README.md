@@ -1,147 +1,161 @@
 # Lattice
 
-A mouse-first GTK4 file manager for custom Linux desktops, built with Rust, GTK4, GIO, and GLib.
+Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. It is designed for polished custom desktops such as labwc, GNOME, COSMIC, Sway, and other GTK-capable environments.
 
-Lattice is aimed at a slick, dark, cursor-driven workflow. The default view is an icon grid, not a keyboard-centric file list. It runs on any GTK4-compatible Linux desktop — labwc, GNOME, COSMIC, Sway, and others.
+## Features
 
-## Current Status
+**Navigation**
+- Icon grid with folder-first sorting, per-pane hidden-file toggle, and icon/list view switch
+- Tabbed browsing with two- and three-panel split view
+- Back, Up, Refresh, and a breadcrumb location bar with inline path editing and autocomplete
+- Sidebar: Home, user-pinned Places, System Drives, Recent, Trash, Search, Space Viewer, Triage, Activity Log, Tags, and Projects
 
-Lattice is currently in **Milestone 6: Polish, Theme System, and Desktop Integration**.
+**File Operations**
+- Copy, move, rename, new folder, new text document, and move to trash
+- Batched conflict resolver before copy/move operations begin, with Keep Both, Replace, and Skip choices
+- Drag and drop within and between panes, and onto sidebar targets
+- Holding Tray for staging files from multiple locations before batch actions
 
-Core M6 features implemented:
-- CLI flags for launch modes (`--path`, `--downloads`, `--project`, `--split`)
-- TOML config at `~/.config/lattice/config.toml` (theme selection)
-- Configurable shortcuts, context menus, and custom safe-argv actions
-- Theming system with user and bundled theme paths
-- Two bundled themes: `default` (Victorian Gothic dark) and `high-contrast` (maximum contrast dark)
-- Desktop entry (`lattice.desktop`) for application launchers and default folder-opener
-- Desktop integration guide (install, xdg-mime, launcher setup)
-- Emoji file-type icons in the grid and preview pane
-- Visual polish across the dense floating-icon grid, preview pane, tabs, status bar, and scrollbars
+**Workspace**
+- Projects: user-defined named collections with a color; manage them in the Project Manager panel and pin folders to each project landing page
+- Tags: create, rename, recolor, delete, and filter folder views by tag
+- Space Viewer: disk usage analysis for the active folder — total size, file/folder counts, pie chart by file type, ranked largest files and subfolders, three scan depths (folder only, one level deep, full recursive with cancellation), and row actions (open, reveal, add to Holding Tray, copy path, move to trash)
+- Downloads Triage: Images, Videos, Archives, Documents, Large Files, Today, This Week, This Month, and Older filters
+- Folder search with name, kind, date, size, and tag filters; current-folder or recursive scope
 
-Implemented now:
+**Preview and History**
+- Preview pane for images, text/config files, folders, and media metadata
+- Activity Log with SQLite-backed receipts plus guarded undo, repeat, reveal, and copy-path actions per row
 
-- Real local folder browsing through GIO async APIs
-- Home plus user-pinned Places / System Drives / Recent / Trash / Projects sidebar navigation
-- Folder-first alphabetical sorting
-- Per-pane hidden-file toggle
-- Double-click to open folders and files
-- Back / Up / Refresh navigation
-- Compact icon-only top toolbar grouped into navigation, workspace surfaces, and file actions, with elegant dividers and hover tooltips
-- Configurable keyboard shortcuts, right-click menu order, and custom context actions
-- Breadcrumb-style location bar that flips into full-path editing on click, with local filesystem autocomplete for absolute, `~`, and relative paths
-- Manual sidebar toggle and preview panel toggle to reclaim browser space during the session
-- Toggleable preview pane with real folder, image, and text/config previews
-- Right-click context menus on file and folder cards
-- New Folder, New Text Document, Rename, Move to Trash, Copy Path, and Open Terminal Here
-- Standard desktop keyboard support as secondary input: copy/cut/paste, copy path, new folder, new text document, rename, trash, search, path focus, refresh, hidden files, sidebar, preview, tabs, split view, back/up, pane switching, and grid navigation
-- Real tabs with per-tab folder state
-- Split-pane browsing with an active pane model and two- or three-panel layouts
-- Per-pane tag filter, hidden-file, and icon/list controls in each pane header, so split panes can use different view/filter states
-- Drag and drop within and between panes, plus drops onto key sidebar destinations, with a custom visual drag card and highlighted drop targets
-- In-window Conflict Resolver: batched conflict detection before any copy/move starts, with per-file Keep Both / Replace / Skip choices, metadata (size, age, MIME type), batch buttons, and conflict notes in the Activity Log
-- Activity Log rows with compact mouse-first actions for undoing reversible operations, repeating logged operations, revealing related folders, and copying logged paths
-- Hideable Holding Tray for temporarily collecting files/folders from multiple locations before batch project, tag, trash, or path-copy actions
-- App-local SQLite metadata store for projects and tags
-- Pin folders to Places for quick navigation, or pin folders as Projects for workspace routing
-- Send to Project flow with copy/move choice and overwrite conflict prompts
-- Tag creation and assignment from the context menu
-- Compact tag chips rendered on icon items
-- Tag-filtered sidebar views
-- Folder search from the sidebar: filename, kind, date, and size filters; recursive or current-folder scope; results shown in the normal file grid with full context menu actions
-- Downloads Triage mode with category/time filters for messy Downloads folders
-- Trash view backed by `trash:///` with basic restore when the original path is available
-- System Drives view backed by mounted GIO/GVfs volumes
-- Recent view backed by app-local recent folder history
-
-Not implemented yet:
-
-- Video thumbnails / richer media handling
-- Global/indexed search beyond the current folder scope
-- Cross-device tag sync or xattrs
-- Drag/drop project routing
-- Undo for permanent delete, cancelled operations, and older Activity Log rows created before item-level history was recorded
+**Configuration**
+- TOML config at `~/.config/lattice/config.toml`
+- Bundled `default` and `high-contrast` themes
+- User themes in `~/.config/lattice/themes/`
 
 ## Requirements
 
+- Linux with a GTK4-capable desktop session
 - Rust stable `1.75+`
 - GTK4 development libraries
-- Build support for the bundled SQLite dependency used by `rusqlite`
-- A Linux desktop session with working default app handlers
+- `update-desktop-database` from `desktop-file-utils` for launcher database refresh
+- `gtk-update-icon-cache` for icon cache refresh
 
-For the best experience, use a desktop environment or compositor with:
-
-- default app associations for opening files
-- a trash implementation
-- an installed terminal emulator
-
-### Installing GTK4 on Debian/Ubuntu
+Install common build/runtime dependencies:
 
 ```sh
-sudo apt install libgtk-4-dev
+# Debian / Ubuntu
+sudo apt install cargo libgtk-4-dev desktop-file-utils
+
+# Fedora
+sudo dnf install cargo gtk4-devel desktop-file-utils gtk-update-icon-cache
+
+# Arch Linux
+sudo pacman -S rust gtk4 desktop-file-utils
 ```
 
-### Installing GTK4 on Arch Linux
+## Build From Source
 
 ```sh
-sudo pacman -S gtk4
+git clone <repository-url> lattice
+cd lattice
+cargo build --release
 ```
 
-### Installing GTK4 on Fedora
+The release binary is written to `target/release/lattice`.
+
+## Install
+
+### Per-User Install
+
+Use this when installing for the current account only:
 
 ```sh
-sudo dnf install gtk4-devel
+mkdir -p ~/.local/bin
+install -m 755 target/release/lattice ~/.local/bin/lattice
+
+install -Dm 644 com.lattice.filemanager.desktop \
+  ~/.local/share/applications/com.lattice.filemanager.desktop
+
+install -Dm 644 icons/lattice-icon.png \
+  ~/.local/share/lattice/icons/lattice-icon.png
+install -Dm 644 icons/lattice-icon.png \
+  ~/.local/share/icons/hicolor/256x256/apps/lattice.png
+
+install -Dm 644 themes/default.css \
+  ~/.local/share/lattice/themes/default.css
+install -Dm 644 themes/high-contrast.css \
+  ~/.local/share/lattice/themes/high-contrast.css
+
+update-desktop-database ~/.local/share/applications/
+gtk-update-icon-cache ~/.local/share/icons/hicolor/
 ```
 
-## Build & Run
+Make sure `~/.local/bin` is in `PATH`.
+
+### System-Wide Install
+
+Use this when installing for all users:
 
 ```sh
-cargo run
+sudo install -m 755 target/release/lattice /usr/local/bin/lattice
+
+sudo install -Dm 644 com.lattice.filemanager.desktop \
+  /usr/local/share/applications/com.lattice.filemanager.desktop
+
+sudo install -Dm 644 icons/lattice-icon.png \
+  /usr/local/share/lattice/icons/lattice-icon.png
+sudo install -Dm 644 icons/lattice-icon.png \
+  /usr/local/share/icons/hicolor/256x256/apps/lattice.png
+
+sudo install -Dm 644 themes/default.css \
+  /usr/local/share/lattice/themes/default.css
+sudo install -Dm 644 themes/high-contrast.css \
+  /usr/local/share/lattice/themes/high-contrast.css
+
+sudo update-desktop-database /usr/local/share/applications/
+sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
 ```
 
-Running from the project root is recommended during development so the CSS themes in `themes/` are found automatically.
-
-## CLI Launch Modes
+### Set as Default Folder Opener
 
 ```sh
-lattice                          # open home directory
-lattice --path /some/folder      # open a specific folder
-lattice /some/folder             # same (positional shorthand)
-lattice --downloads              # open Downloads Triage view
-lattice --project "My Project"   # open a pinned project's root folder
-lattice --split ~/Downloads ~/Documents  # split view with two paths
-lattice --split ~/Downloads ~/Documents ~/Pictures  # split view with three paths
+xdg-mime default com.lattice.filemanager.desktop inode/directory
+xdg-mime query default inode/directory
 ```
 
-Invalid launch paths and unknown project names fall back to Home with a status
-message instead of opening a broken startup view.
+Expected output:
 
-## Themes
+```text
+com.lattice.filemanager.desktop
+```
 
-Lattice reads `~/.config/lattice/config.toml` for the theme name:
+## Run
+
+```sh
+lattice                                             # home directory
+lattice --path /some/folder                         # specific folder
+lattice /some/folder                                # positional shorthand
+lattice --downloads                                 # Downloads Triage view
+lattice --project "My Project"                      # project landing page
+lattice --split ~/Downloads ~/Documents             # two-panel split
+lattice --split ~/Downloads ~/Documents ~/Pictures  # three-panel split
+```
+
+If `--path` or `--project` cannot resolve to a readable folder, Lattice falls back to the home directory.
+
+## Configuration
+
+On first run, Lattice creates `~/.config/lattice/config.toml`.
 
 ```toml
-theme = "default"       # Victorian Gothic dark (default)
-# theme = "high-contrast"  # maximum contrast dark
-```
+theme = "default" # or "high-contrast"
 
-Place custom `.css` files in `~/.config/lattice/themes/` and reference them by filename.
-See [docs/theming.md](docs/theming.md) for the full CSS class reference.
-
-## Configurable Actions
-
-On first run, Lattice creates `~/.config/lattice/config.toml` with commented examples.
-Custom actions use an `argv` array and never run through a shell. `{paths}` expands selected paths as separate arguments, `{path}` expands the first selected path, and `{cwd}` expands the active folder.
-
-```toml
 [shortcuts]
 custom.open_in_gimp = "Ctrl+Alt+G"
-custom.compress_here = "Ctrl+Alt+Z"
 
 [context_menu]
-file = ["open", "open_with", "separator", "add_to_holding_tray", "custom.open_in_gimp", "rename", "copy_path", "terminal_here", "separator", "move_to_trash"]
-folder = ["open", "open_new_tab", "open_in_pane", "separator", "add_to_holding_tray", "custom.compress_here", "rename", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash"]
-background = ["new_folder", "new_text_document", "separator", "pin_place", "pin_project", "terminal_here", "copy_path"]
+file = ["open", "open_with", "separator", "rename", "copy_path",
+        "terminal_here", "separator", "move_to_trash"]
 
 [[custom_actions]]
 id = "open_in_gimp"
@@ -149,71 +163,50 @@ label = "Open in GIMP"
 argv = ["gimp", "{paths}"]
 contexts = ["file"]
 needs_selection = true
-
-[[custom_actions]]
-id = "compress_here"
-label = "Compress Here"
-argv = ["file-roller", "--add", "{paths}"]
-contexts = ["file", "folder"]
-needs_selection = true
 ```
 
-Built-in shortcut IDs include `new_folder`, `new_text_document`, `rename`, `trash`, `empty_trash`, `search`, `focus_path`, `refresh`, `show_hidden`, `toggle_sidebar`, `toggle_preview`, `toggle_holding_tray`, `toggle_plan_mode`, `new_tab`, `close_tab`, `toggle_split`, `back`, `up`, `cycle_pane`, `view_icons`, and `view_list`.
+`{paths}` expands all selected paths as separate arguments, `{path}` expands the first selected path, and `{cwd}` expands the active folder.
 
-Built-in context-menu IDs also include `add_to_holding_tray`, `send_to_project`, `add_tag`, `remove_tag`, `pin_place`, `pin_project`, and `delete_permanently`.
+Theme lookup order:
 
-## Places
+1. `~/.config/lattice/themes/<name>.css`
+2. `themes/<name>.css` relative to the current working directory
+3. `themes/<name>.css` beside the source tree when running a Cargo build
+4. `<prefix>/share/lattice/themes/<name>.css` for installed builds
 
-Home is always available in Places. Other folders are user-pinned: right-click a folder or the current-folder background and choose **Pin to Places**. Right-click a pinned Place in the sidebar to open it, copy its path, or remove it from Places. Places are separate from Projects; use Projects when you want project destinations and Send to Project workflows.
+See [docs/theming.md](docs/theming.md) for the full CSS class reference and theme authoring guide.
 
-## Holding Tray
+## Desktop Integration
 
-The Holding Tray is a temporary staging area, not a folder. Use the toolbar tray button to show or hide it, then drag files/folders from the grid into the tray, click the tray's add-selection button, or right-click selected files/folders and choose **Add to Holding Tray**. Tray contents stay in memory only for the current app session.
+See [docs/desktop-setup.md](docs/desktop-setup.md) for labwc keybindings, Waybar launcher config, GNOME, COSMIC, and Sway setup.
 
-Tray items use compact icons or media thumbnails when available, show filename labels, expose full paths through tooltips, and can be selected without affecting the real file. `Delete` / `Backspace` removes selected items from the tray only, `Enter` opens the selected item, `Escape` clears tray selection, and `Ctrl+C` copies selected staged paths. When the tray has focus, `Ctrl+V` stages the app-local file clipboard.
+The desktop entry ID is `com.lattice.filemanager.desktop`. The application icon name is `lattice`.
 
-Batch tray actions are previewed before they run, and completed tray actions leave dismissible receipts in the bottom operation panel and Activity Log rows. Dragging files out of the tray into folder views is still a known limitation; use **Move to Project**, **Copy to Project**, or normal grid drag/drop for file-moving operations.
+## Uninstall
 
-## Activity Log
-
-The Activity Log in the sidebar records recent file-operation receipts. New rows include compact buttons to undo reversible operations, repeat the logged action, reveal the related folder, or copy the stored path. Undo is guarded: copied, duplicated, or newly created items are moved to Trash; moves and renames move items back only when that will not overwrite an existing path; trashed items restore from the system Trash when their original path is still available.
-
-## Install
+Per-user install:
 
 ```sh
-cargo build --release
-sudo install -m 755 target/release/lattice /usr/local/bin/lattice
-sudo install -m 644 lattice.desktop /usr/local/share/applications/lattice.desktop
+rm -f ~/.local/bin/lattice
+rm -f ~/.local/share/applications/com.lattice.filemanager.desktop
+rm -f ~/.local/share/icons/hicolor/256x256/apps/lattice.png
+rm -rf ~/.local/share/lattice
+update-desktop-database ~/.local/share/applications/
+gtk-update-icon-cache ~/.local/share/icons/hicolor/
 ```
 
-To set Lattice as the default folder opener:
+System-wide install:
 
 ```sh
-xdg-mime default lattice.desktop inode/directory
+sudo rm -f /usr/local/bin/lattice
+sudo rm -f /usr/local/share/applications/com.lattice.filemanager.desktop
+sudo rm -f /usr/local/share/icons/hicolor/256x256/apps/lattice.png
+sudo rm -rf /usr/local/share/lattice
+sudo update-desktop-database /usr/local/share/applications/
+sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
 ```
 
-See [docs/desktop-setup.md](docs/desktop-setup.md) for install, xdg-mime, and desktop-specific setup.
-
-## Development Checks
-
-```sh
-cargo fmt --check
-cargo check
-```
-
-## Project Workflow
-
-- Read `AGENTS.md` and `JOURNAL.md` before starting work.
-- Record each meaningful work session in `JOURNAL.md`.
-- Keep `README.md` updated after each major step so it stays accurate and low-chaff.
-- Follow `docs/agent_rules.md` and `docs/roadmap.md` when making changes.
-
-## GitHub CI
-
-The repo includes a minimal GitHub Actions workflow at `.github/workflows/ci.yml` that installs GTK4 development packages on Ubuntu and runs:
-
-- `cargo fmt --check`
-- `cargo check`
+User data is not removed by those commands. Lattice stores config in `~/.config/lattice/` and metadata in `~/.local/share/lattice/metadata.db`.
 
 ## Project Structure
 
@@ -221,66 +214,60 @@ The repo includes a minimal GitHub Actions workflow at `.github/workflows/ci.yml
 lattice/
   Cargo.toml
   Cargo.lock
+  LICENSE
   README.md
-  AGENTS.md
-  JOURNAL.md
-  .github/
-    workflows/
-      ci.yml
+  com.lattice.filemanager.desktop
+  icons/
+    lattice-icon.png
   src/
-    main.rs            — entry point, GTK application setup
-    app.rs             — activation handler, CSS loading
-    config.rs          — config loading, shortcut/menu/custom action schema
-    launch.rs          — CLI launch-mode parsing
-    metadata.rs        — SQLite metadata store and schema init
+    main.rs
+    app.rs
+    config.rs
+    launch.rs
+    metadata.rs
+    action_plan.rs
+    thumbnail.rs
     ui/
-      mod.rs
-      main_window.rs   — main window controller and file actions
-      toolbar.rs       — top toolbar buttons and path display
-      sidebar.rs       — left navigation sidebar
-      file_grid.rs     — central icon-grid view
-      preview_pane.rs  — right preview panel
-      status_bar.rs    — bottom status/status-message bar
+      main_window.rs
+      toolbar.rs
+      sidebar.rs
+      file_grid.rs
+      preview_pane.rs
+      status_bar.rs
+      tab_strip.rs
+      search_panel.rs
+      tag_filter.rs
+      tag_panel.rs
+      project_manager_panel.rs
+      project_landing_panel.rs
+      space_viewer_panel.rs
+      ops_panel.rs
+      holding_tray.rs
+      activity_log_panel.rs
+      plan_queue_panel.rs
+      conflict_resolver.rs
+      bulk_rename.rs
+      modal_host.rs
   themes/
-    default.css        — Victorian Gothic dark CSS theme
-    high-contrast.css  — high-contrast dark CSS theme
-  lattice.desktop      — desktop entry for application launchers
+    default.css
+    high-contrast.css
   docs/
-    product_brief.md
-    roadmap.md
     agent_rules.md
+    desktop-setup.md
     metadata.md
-    theming.md         — CSS class reference and theme authoring guide
-    desktop-setup.md   — install, xdg-mime, labwc/GNOME/COSMIC setup
+    modal_architecture.md
+    product_brief.md
+    theming.md
 ```
 
-## Milestone 5 Workflows
+## Development
 
-Projects:
-- Pin the current folder or a folder card as a Project.
-- Pinned projects appear in the sidebar as first-class workspace entries.
-- Use `Send to Project` from item context menus to copy or move items into the project root.
+```sh
+cargo fmt --check
+cargo check
+cargo run
+```
 
-Tags:
-- Use `Add Tag` on a file or folder to create a new tag or reuse an existing one by name.
-- Tagged items render tag chips directly on their file cards.
-- Click a tag in the sidebar to open a filtered virtual view of all files using that tag.
+During development, `cargo run` auto-installs the desktop entry and icon into `~/.local/share/` when they are newer than the installed copies. Manual install is still required for release-style testing of the binary, bundled themes, and system-wide paths.
 
-Downloads Triage:
-- Open `Downloads Triage` from the sidebar.
-- Switch between `All`, `Today`, `This Week`, `This Month`, `Older Than 1 Month`, `Images`, `Videos`, `Archives`, `Documents`, and `Large Files`.
-- Use the existing preview, rename, trash, and context-menu flows while cleaning up Downloads.
-
-## Metadata Storage
-
-Lattice stores Projects and Tags in a local SQLite database under the user data directory, not in the repository and not in filesystem xattrs.
-
-See [docs/metadata.md](docs/metadata.md) for the database path, tables, and current schema scope.
-
-Current limitation:
-- Tags are still keyed by full path. Renames and project moves performed inside Lattice update those paths, but external filesystem moves outside Lattice can still break tag associations.
-- Recent folders are app-local to Lattice. This is a recent-folder history, not a cross-app recent-files index.
-
-## Roadmap
-
-See [docs/roadmap.md](docs/roadmap.md) for the milestone plan and current status.
+The project uses GitHub Actions (`.github/workflows/ci.yml`) for `cargo fmt --check` and `cargo check` on every push.

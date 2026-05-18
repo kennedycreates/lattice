@@ -4,14 +4,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const DB_FILE_NAME: &str = "metadata.db";
-const DB_SCHEMA_VERSION: i32 = 5;
+const DB_SCHEMA_VERSION: i32 = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectRecord {
     pub id: i64,
     pub name: String,
-    pub root_path: PathBuf,
-    pub accent: Option<String>,
+    pub color: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,7 +18,7 @@ pub struct ProjectDestinationRecord {
     pub id: i64,
     pub project_id: i64,
     pub name: String,
-    pub relative_path: String,
+    pub path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,7 +89,7 @@ impl MetadataStore {
         let mut statement = self
             .conn
             .prepare(
-                "SELECT id, name, root_path, accent
+                "SELECT id, name, color
                  FROM projects
                  ORDER BY name COLLATE NOCASE ASC",
             )
@@ -101,8 +100,7 @@ impl MetadataStore {
                 Ok(ProjectRecord {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    root_path: PathBuf::from(row.get::<_, String>(2)?),
-                    accent: row.get(3)?,
+                    color: row.get(2)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -114,30 +112,47 @@ impl MetadataStore {
     pub fn create_project(
         &mut self,
         name: &str,
-        root_path: &Path,
+        color: Option<&str>,
     ) -> Result<ProjectRecord, String> {
-        let normalized_root = normalize_path(root_path);
-        if normalized_root.is_empty() {
-            return Err("Project root path cannot be empty.".to_string());
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err("Project name cannot be empty.".to_string());
         }
 
-        let tx = self.conn.transaction().map_err(|error| error.to_string())?;
-        tx.execute(
-            "INSERT INTO projects (name, root_path, accent) VALUES (?1, ?2, NULL)",
-            params![name.trim(), normalized_root],
-        )
-        .map_err(map_constraint_error)?;
-        let project_id = tx.last_insert_rowid();
-        tx.execute(
-            "INSERT INTO project_destinations (project_id, name, relative_path)
-             VALUES (?1, 'Root', '')",
-            params![project_id],
-        )
-        .map_err(|error| error.to_string())?;
-        tx.commit().map_err(|error| error.to_string())?;
+        self.conn
+            .execute(
+                "INSERT INTO projects (name, color) VALUES (?1, ?2)",
+                params![trimmed, color],
+            )
+            .map_err(map_constraint_error)?;
+        let project_id = self.conn.last_insert_rowid();
 
         self.project_by_id(project_id)?
             .ok_or_else(|| "Failed to reload saved project.".to_string())
+    }
+
+    pub fn rename_project(&mut self, id: i64, name: &str) -> Result<(), String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err("Project name cannot be empty.".to_string());
+        }
+        self.conn
+            .execute(
+                "UPDATE projects SET name = ?1 WHERE id = ?2",
+                params![trimmed, id],
+            )
+            .map_err(map_constraint_error)?;
+        Ok(())
+    }
+
+    pub fn update_project_color(&mut self, id: i64, color: Option<&str>) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE projects SET color = ?1 WHERE id = ?2",
+                params![color, id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn list_project_destinations(
@@ -147,7 +162,7 @@ impl MetadataStore {
         let mut statement = self
             .conn
             .prepare(
-                "SELECT id, project_id, name, relative_path
+                "SELECT id, project_id, name, path
                  FROM project_destinations
                  WHERE project_id = ?1
                  ORDER BY id ASC",
@@ -159,7 +174,7 @@ impl MetadataStore {
                     id: row.get(0)?,
                     project_id: row.get(1)?,
                     name: row.get(2)?,
-                    relative_path: row.get(3)?,
+                    path: row.get(3)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -179,13 +194,13 @@ impl MetadataStore {
         &mut self,
         project_id: i64,
         name: &str,
-        relative_path: &str,
+        path: &str,
     ) -> Result<ProjectDestinationRecord, String> {
         self.conn
             .execute(
-                "INSERT INTO project_destinations (project_id, name, relative_path)
+                "INSERT INTO project_destinations (project_id, name, path)
                  VALUES (?1, ?2, ?3)",
-                params![project_id, name.trim(), relative_path.trim()],
+                params![project_id, name.trim(), path.trim()],
             )
             .map_err(map_constraint_error)?;
         let id = self.conn.last_insert_rowid();
@@ -193,7 +208,7 @@ impl MetadataStore {
             id,
             project_id,
             name: name.trim().to_string(),
-            relative_path: relative_path.trim().to_string(),
+            path: path.trim().to_string(),
         })
     }
 
@@ -207,6 +222,7 @@ impl MetadataStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn list_project_activity(&self, root_path: &str, limit: usize) -> Vec<ActivityLogEntry> {
         let prefix = format!("{root_path}/%");
         let mut stmt = match self.conn.prepare(
@@ -510,7 +526,9 @@ impl MetadataStore {
             .prepare("SELECT tag_id, COUNT(*) FROM file_tags GROUP BY tag_id")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, usize>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, usize>(1)?))
+            })
             .map_err(|e| e.to_string())?;
         let mut map = HashMap::new();
         for row in rows {
@@ -547,10 +565,13 @@ impl MetadataStore {
 
         let tx = self.conn.transaction().map_err(|error| error.to_string())?;
         tx.execute(
+            "DELETE FROM recent_locations WHERE folder_path = ?1",
+            params![normalized_path],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.execute(
             "INSERT INTO recent_locations (folder_path, last_visited_unix)
-             VALUES (?1, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))
-             ON CONFLICT(folder_path) DO UPDATE
-             SET last_visited_unix = excluded.last_visited_unix",
+             VALUES (?1, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))",
             params![normalized_path],
         )
         .map_err(|error| error.to_string())?;
@@ -748,16 +769,26 @@ impl MetadataStore {
             return Ok(());
         }
 
+        // v6: projects no longer tied to a folder; destinations store absolute paths.
+        // Drop and recreate project tables — pre-1.0, data loss is acceptable.
+        if version > 0 {
+            self.conn
+                .execute_batch(
+                    "DROP TABLE IF EXISTS project_destinations;
+                     DROP TABLE IF EXISTS projects;",
+                )
+                .map_err(|error| error.to_string())?;
+        }
+
         self.conn
             .execute_batch(
                 "
                 PRAGMA foreign_keys = ON;
 
                 CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    root_path TEXT NOT NULL UNIQUE,
-                    accent TEXT
+                    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name  TEXT NOT NULL UNIQUE,
+                    color TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS tags (
@@ -774,10 +805,10 @@ impl MetadataStore {
                 );
 
                 CREATE TABLE IF NOT EXISTS project_destinations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                    name TEXT NOT NULL,
-                    relative_path TEXT NOT NULL DEFAULT ''
+                    name       TEXT NOT NULL,
+                    path       TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS places (
@@ -827,14 +858,13 @@ impl MetadataStore {
     fn project_by_id(&self, id: i64) -> Result<Option<ProjectRecord>, String> {
         self.conn
             .query_row(
-                "SELECT id, name, root_path, accent FROM projects WHERE id = ?1",
+                "SELECT id, name, color FROM projects WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(ProjectRecord {
                         id: row.get(0)?,
                         name: row.get(1)?,
-                        root_path: PathBuf::from(row.get::<_, String>(2)?),
-                        accent: row.get(3)?,
+                        color: row.get(2)?,
                     })
                 },
             )
@@ -972,22 +1002,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn creates_projects_and_root_destination() {
+    fn creates_projects_and_destinations() {
         let mut store = MetadataStore::open_in_memory().unwrap();
-        let project = store
-            .create_project("Lattice", Path::new("/tmp/lattice-project"))
-            .unwrap();
+        let project = store.create_project("Lattice", Some("#00e5ff")).unwrap();
 
         let projects = store.list_projects().unwrap();
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "Lattice");
-        assert_eq!(projects[0].root_path, PathBuf::from("/tmp/lattice-project"));
-        assert_eq!(project.accent, None);
+        assert_eq!(projects[0].color.as_deref(), Some("#00e5ff"));
+        assert_eq!(project.color.as_deref(), Some("#00e5ff"));
+
+        let destination = store
+            .add_project_destination(project.id, "Workspace", "/tmp/lattice-project")
+            .unwrap();
+        assert_eq!(destination.name, "Workspace");
+        assert_eq!(destination.path, "/tmp/lattice-project");
 
         let destinations = store.list_project_destinations(project.id).unwrap();
         assert_eq!(destinations.len(), 1);
-        assert_eq!(destinations[0].name, "Root");
-        assert_eq!(destinations[0].relative_path, "");
+        assert_eq!(destinations[0].name, "Workspace");
+        assert_eq!(destinations[0].path, "/tmp/lattice-project");
     }
 
     #[test]

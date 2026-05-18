@@ -3,7 +3,6 @@ use crate::config::{AppConfig, CustomActionConfig};
 use crate::metadata::{ActivityLogEntry, MetadataStore, PlaceRecord, ProjectRecord, TagRecord};
 use crate::ui::{
     activity_log_panel::{ActivityLogAction, ActivityLogPanel},
-    project_landing_panel::ProjectLandingPanel,
     bulk_rename, conflict_resolver,
     file_grid::{FileGrid, FileItem, FileKind, ViewMode},
     holding_tray::HoldingTray,
@@ -13,8 +12,11 @@ use crate::ui::{
     ops_panel::{OpId, OpsPanel},
     plan_queue_panel::{PlanQueuePanel, QueueAction},
     preview_pane::PreviewPane,
+    project_landing_panel::ProjectLandingPanel,
+    project_manager_panel::ProjectManagerPanel,
     search_panel::{SearchAgeFilter, SearchKindFilter, SearchPanel, SearchQuery, SearchSizeFilter},
     sidebar::{Sidebar, SidebarTarget},
+    space_viewer_panel::SpaceViewerPanel,
     status_bar::StatusBar,
     tab_strip::TabStrip,
     tag_filter::{TagFilterPanel, TagFilterSpec},
@@ -248,6 +250,13 @@ enum WindowCommand {
     ToggleSidebar,
     TogglePreview,
     ToggleHoldingTray,
+    TrayAddSelection,
+    TrayMoveToProject,
+    TrayCopyToProject,
+    TrayTag,
+    TrayTrash,
+    TrayCopyPaths,
+    TrayClear,
     NewTab,
     CloseTab,
     ToggleSplit,
@@ -285,8 +294,10 @@ enum PaneView {
     Recent,
     Trash,
     Search(SearchQuery),
+    SpaceViewer { root: PathBuf },
     ActivityLog,
     ProjectLanding(i64),
+    ProjectManager,
     TagManager,
 }
 
@@ -456,7 +467,9 @@ struct PaneWidgets {
     file_grid: FileGrid,
     activity_log_panel: ActivityLogPanel,
     project_landing_panel: ProjectLandingPanel,
+    project_manager_panel: ProjectManagerPanel,
     tag_manager_panel: TagManagerPanel,
+    space_viewer_panel: SpaceViewerPanel,
 }
 
 impl PaneWidgets {
@@ -567,8 +580,10 @@ impl PaneWidgets {
 
         let activity_log_panel = ActivityLogPanel::build();
         let project_landing_panel = ProjectLandingPanel::build();
+        let project_manager_panel = ProjectManagerPanel::build();
 
         let tag_manager_panel = TagManagerPanel::build();
+        let space_viewer_panel = SpaceViewerPanel::build();
 
         root.append(&header);
         root.append(&tag_filter_revealer);
@@ -577,7 +592,9 @@ impl PaneWidgets {
         root.append(&file_grid.root);
         root.append(&activity_log_panel.root);
         root.append(&project_landing_panel.root);
+        root.append(&project_manager_panel.root);
         root.append(&tag_manager_panel.root);
+        root.append(&space_viewer_panel.root);
 
         Self {
             root,
@@ -599,7 +616,9 @@ impl PaneWidgets {
             file_grid,
             activity_log_panel,
             project_landing_panel,
+            project_manager_panel,
             tag_manager_panel,
+            space_viewer_panel,
         }
     }
 }
@@ -1383,12 +1402,6 @@ impl BrowserController {
                 .into_iter()
                 .map(|(_, button)| button),
         );
-        buttons.extend(
-            self.sidebar
-                .project_buttons()
-                .into_iter()
-                .map(|(_, button)| button),
-        );
         buttons
     }
 
@@ -1455,6 +1468,84 @@ impl BrowserController {
         self.sidebar
             .tags_button
             .connect_clicked(move |_| controller.open_tag_manager());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .projects_button
+            .connect_clicked(move |_| controller.open_project_manager());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .space_viewer_button
+            .connect_clicked(move |_| controller.open_space_viewer());
+    }
+
+    fn open_space_viewer(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        let dir = self.current_dir_for(slot).to_path_buf();
+        self.current_view_cell(slot)
+            .replace(PaneView::SpaceViewer { root: dir });
+        self.sync_active_tab_state();
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_space_viewer_view(slot);
+    }
+
+    fn load_space_viewer_view(self: &Rc<Self>, slot: PaneSlot) {
+        self.cancel_active_load(slot);
+        if slot == self.active_slot() {
+            self.cancel_active_preview();
+        }
+        self.dismiss_context_menu();
+
+        let pane = self.pane_widgets(slot);
+        let dir = self.current_dir_for(slot).to_path_buf();
+        let display_label = self.display_label_for(slot);
+        pane.path_label.set_label(&display_label);
+        pane.file_grid.clear_selection();
+        self.reset_keyboard_state(slot);
+        self.items_cell(slot).borrow_mut().clear();
+
+        let controller = Rc::clone(self);
+        pane.space_viewer_panel.connect_open_file(move |path| {
+            controller.open_file(&path);
+        });
+        let controller = Rc::clone(self);
+        pane.space_viewer_panel.connect_reveal_file(move |path| {
+            let folder = if path.is_dir() {
+                path
+            } else {
+                path.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| controller.current_dir_for(controller.active_slot()))
+            };
+            controller.navigate_to(controller.active_slot(), folder, true);
+        });
+        let controller = Rc::clone(self);
+        pane.space_viewer_panel.connect_add_to_tray(move |paths| {
+            controller.add_paths_to_holding_tray(paths);
+        });
+        let controller = Rc::clone(self);
+        pane.space_viewer_panel.connect_copy_path(move |path| {
+            controller.copy_paths_to_clipboard(vec![path]);
+        });
+        let controller = Rc::clone(self);
+        pane.space_viewer_panel.connect_trash_file(move |path| {
+            controller.move_paths_to_trash(vec![path]);
+        });
+
+        pane.space_viewer_panel.set_folder(&dir);
+        self.update_view_strip(slot);
+
+        if slot == self.active_slot() {
+            self.toolbar.set_breadcrumb_path(&display_label);
+            self.toolbar.show_breadcrumb_mode();
+            self.status.set_path(&display_label);
+            self.status.clear_message();
+            self.status.set_counts(0, 0);
+            self.update_sidebar_state();
+            self.update_navigation_state();
+            self.update_action_state();
+        }
     }
 
     fn open_activity_log(self: &Rc<Self>) {
@@ -1465,6 +1556,170 @@ impl BrowserController {
             self.rebuild_tab_strip();
         }
         self.load_activity_log_view(slot);
+    }
+
+    fn open_project_manager(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        if matches!(self.current_view_for(slot), PaneView::ProjectManager) {
+            return;
+        }
+        self.current_view_cell(slot)
+            .replace(PaneView::ProjectManager);
+        self.sync_active_tab_state();
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_project_manager_view(slot);
+        self.update_navigation_state();
+    }
+
+    fn load_project_manager_view(self: &Rc<Self>, slot: PaneSlot) {
+        self.cancel_active_load(slot);
+        if slot == self.active_slot() {
+            self.cancel_active_preview();
+        }
+        self.dismiss_context_menu();
+
+        let pane = self.pane_widgets(slot);
+        let display_label = self.display_label_for(slot);
+        pane.path_label.set_label(&display_label);
+        pane.file_grid.clear_selection();
+        self.reset_keyboard_state(slot);
+        self.items_cell(slot).borrow_mut().clear();
+
+        let projects = self.projects.borrow().clone();
+        let project_count = projects.len();
+        pane.project_manager_panel.set_projects(&projects);
+
+        let controller = Rc::clone(self);
+        pane.project_manager_panel
+            .connect_project_clicked(move |project_id| {
+                controller.open_project(project_id);
+            });
+        let controller = Rc::clone(self);
+        pane.project_manager_panel
+            .connect_project_created(move |name, color| {
+                controller.handle_project_created(name, color);
+            });
+        let controller = Rc::clone(self);
+        pane.project_manager_panel
+            .connect_project_renamed(move |id, name| {
+                controller.handle_project_renamed(id, name);
+            });
+        let controller = Rc::clone(self);
+        pane.project_manager_panel
+            .connect_project_recolored(move |id, color| {
+                controller.handle_project_recolored(id, color);
+            });
+        let controller = Rc::clone(self);
+        pane.project_manager_panel
+            .connect_project_deleted(move |id| {
+                controller.handle_project_deleted(id);
+            });
+
+        self.update_view_strip(slot);
+
+        if slot == self.active_slot() {
+            self.toolbar.set_breadcrumb_path(&display_label);
+            self.toolbar.show_breadcrumb_mode();
+            self.status.set_path(&display_label);
+            self.status.clear_message();
+            self.status.set_counts(project_count, 0);
+            self.update_sidebar_state();
+            self.update_navigation_state();
+            self.update_action_state();
+        }
+    }
+
+    fn handle_project_created(self: &Rc<Self>, name: String, color: String) {
+        let result = self
+            .metadata
+            .borrow_mut()
+            .create_project(&name, Some(&color));
+        match result {
+            Ok(_) => {
+                self.refresh_metadata_sidebar();
+                self.reload_project_manager_if_visible();
+            }
+            Err(error) => {
+                self.modal_host.show_error("Create Project Failed", &error);
+            }
+        }
+    }
+
+    fn handle_project_renamed(self: &Rc<Self>, id: i64, name: String) {
+        let result = self.metadata.borrow_mut().rename_project(id, &name);
+        match result {
+            Ok(_) => {
+                self.refresh_metadata_sidebar();
+                self.reload_project_manager_if_visible();
+            }
+            Err(error) => {
+                self.modal_host.show_error("Rename Project Failed", &error);
+            }
+        }
+    }
+
+    fn handle_project_recolored(self: &Rc<Self>, id: i64, color: String) {
+        let _ = self
+            .metadata
+            .borrow_mut()
+            .update_project_color(id, Some(&color));
+        self.refresh_metadata_sidebar();
+        self.reload_project_manager_if_visible();
+        // Reload landing if it's currently open for this project
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            if matches!(self.current_view_for(slot), PaneView::ProjectLanding(pid) if pid == id) {
+                self.load_project_landing_view(slot, id);
+            }
+        }
+    }
+
+    fn handle_project_deleted(self: &Rc<Self>, project_id: i64) {
+        let Some(project) = self
+            .projects
+            .borrow()
+            .iter()
+            .find(|p| p.id == project_id)
+            .cloned()
+        else {
+            return;
+        };
+        let controller = Rc::clone(self);
+        self.modal_host.show_confirm(
+            "Delete Project",
+            &format!(
+                "Delete \u{201c}{}\u{201d}? Pinned folders will not be affected.",
+                project.name
+            ),
+            "Delete",
+            true,
+            false,
+            move || {
+                let _ = controller.metadata.borrow_mut().delete_project(project_id);
+                for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+                    if matches!(
+                        controller.current_view_for(slot),
+                        PaneView::ProjectLanding(id) if id == project_id
+                    ) {
+                        controller
+                            .current_view_cell(slot)
+                            .replace(PaneView::ProjectManager);
+                        controller.load_project_manager_view(slot);
+                    }
+                }
+                controller.refresh_metadata_sidebar();
+                controller.reload_project_manager_if_visible();
+            },
+        );
+    }
+
+    fn reload_project_manager_if_visible(self: &Rc<Self>) {
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            if matches!(self.current_view_for(slot), PaneView::ProjectManager) {
+                self.load_project_manager_view(slot);
+            }
+        }
     }
 
     fn open_tag_manager(self: &Rc<Self>) {
@@ -1509,9 +1764,10 @@ impl BrowserController {
             controller.open_tag(tag_id);
         });
         let controller = Rc::clone(self);
-        pane.tag_manager_panel.connect_tag_created(move |name, color| {
-            controller.handle_tag_created(name, color);
-        });
+        pane.tag_manager_panel
+            .connect_tag_created(move |name, color| {
+                controller.handle_tag_created(name, color);
+            });
         let controller = Rc::clone(self);
         pane.tag_manager_panel.connect_tag_renamed(move |id, name| {
             controller.handle_tag_renamed(id, name);
@@ -1542,9 +1798,8 @@ impl BrowserController {
 
     fn handle_tag_created(self: &Rc<Self>, name: String, color: String) {
         let tag_result = self.metadata.borrow_mut().ensure_tag(&name);
-        let result = tag_result.and_then(|tag| {
-            self.metadata.borrow_mut().update_tag_color(tag.id, &color)
-        });
+        let result =
+            tag_result.and_then(|tag| self.metadata.borrow_mut().update_tag_color(tag.id, &color));
         match result {
             Ok(()) => {
                 self.refresh_metadata_sidebar();
@@ -1553,8 +1808,7 @@ impl BrowserController {
                     .set_message(&format!("Tag \u{2018}{name}\u{2019} created."));
             }
             Err(e) => {
-                self.modal_host
-                    .show_error("Create Tag Failed", &e);
+                self.modal_host.show_error("Create Tag Failed", &e);
             }
         }
     }
@@ -1567,8 +1821,7 @@ impl BrowserController {
                 self.reload_tag_manager_if_visible();
             }
             Err(e) => {
-                self.modal_host
-                    .show_error("Rename Tag Failed", &e);
+                self.modal_host.show_error("Rename Tag Failed", &e);
             }
         }
     }
@@ -1581,8 +1834,7 @@ impl BrowserController {
                 self.reload_tag_manager_if_visible();
             }
             Err(e) => {
-                self.modal_host
-                    .show_error("Recolor Tag Failed", &e);
+                self.modal_host.show_error("Recolor Tag Failed", &e);
             }
         }
     }
@@ -1604,22 +1856,15 @@ impl BrowserController {
             .map(|t| t.name.clone())
             .unwrap_or_default();
         let prompt = if count == 0 {
-            format!(
-                "Delete tag \u{2018}{tag_name}\u{2019}? This cannot be undone."
-            )
+            format!("Delete tag \u{2018}{tag_name}\u{2019}? This cannot be undone.")
         } else {
             format!(
                 "Delete tag \u{2018}{tag_name}\u{2019}? It will be removed from {count} file(s). This cannot be undone."
             )
         };
         let controller = Rc::clone(self);
-        self.modal_host.show_confirm(
-            "Delete Tag",
-            &prompt,
-            "Delete",
-            true,
-            false,
-            move || {
+        self.modal_host
+            .show_confirm("Delete Tag", &prompt, "Delete", true, false, move || {
                 let result = controller.metadata.borrow_mut().delete_tag(id);
                 match result {
                     Ok(()) => {
@@ -1628,13 +1873,10 @@ impl BrowserController {
                         controller.status.set_message("Tag deleted.");
                     }
                     Err(e) => {
-                        controller
-                            .modal_host
-                            .show_error("Delete Tag Failed", &e);
+                        controller.modal_host.show_error("Delete Tag Failed", &e);
                     }
                 }
-            },
-        );
+            });
     }
 
     fn reload_tag_manager_if_visible(self: &Rc<Self>) {
@@ -1703,11 +1945,6 @@ impl BrowserController {
             .borrow()
             .list_project_destinations(project_id)
             .unwrap_or_default();
-        let root_str = project.root_path.to_string_lossy().to_string();
-        let activity = self
-            .metadata
-            .borrow()
-            .list_project_activity(&root_str, 10);
 
         let pane = self.pane_widgets(slot);
         let display_label = project.name.clone();
@@ -1717,51 +1954,32 @@ impl BrowserController {
         self.items_cell(slot).borrow_mut().clear();
 
         let controller = Rc::clone(self);
+        let on_back = move || {
+            controller.open_project_manager();
+        };
+
+        let controller = Rc::clone(self);
         let on_navigate = move |path: PathBuf| {
             controller.navigate_to(slot, path, true);
         };
 
         let controller = Rc::clone(self);
-        let on_remove_destination = move |dest_id: i64| {
+        let on_remove_pin = move |dest_id: i64| {
             controller.remove_project_destination(dest_id, project_id, slot);
         };
 
         let controller = Rc::clone(self);
-        let on_open_new_tab = move |path: PathBuf| {
-            controller.open_new_tab(Some(path));
-        };
-
-        let controller = Rc::clone(self);
-        let on_open_split = move |path: PathBuf| {
-            controller.open_in_split(slot, path);
-        };
-
-        let controller = Rc::clone(self);
-        let on_view_log = move || {
-            controller.open_activity_log();
-        };
-
-        let controller = Rc::clone(self);
-        let on_add_destination = move || {
-            controller.show_add_destination_dialog(project_id, slot);
-        };
-
-        let controller = Rc::clone(self);
-        let on_send_holding_tray = move || {
-            controller.send_holding_tray_to_project(project_id);
+        let on_pin_folder = move || {
+            controller.show_pin_folder_dialog(project_id, slot);
         };
 
         pane.project_landing_panel.populate(
             &project,
             &destinations,
-            &activity,
+            on_back,
             on_navigate,
-            on_remove_destination,
-            on_open_new_tab,
-            on_open_split,
-            on_view_log,
-            on_add_destination,
-            on_send_holding_tray,
+            on_remove_pin,
+            on_pin_folder,
         );
 
         self.update_view_strip(slot);
@@ -1777,36 +1995,35 @@ impl BrowserController {
         }
     }
 
-    fn show_add_destination_dialog(self: &Rc<Self>, project_id: i64, slot: PaneSlot) {
+    fn show_pin_folder_dialog(self: &Rc<Self>, project_id: i64, slot: PaneSlot) {
         let content = GtkBox::new(Orientation::Vertical, 12);
         content.append(&build_modal_prompt(
-            "Enter a name and relative path (e.g. \"Inbox\" and \"inbox\").",
+            "Enter a name and absolute path for the folder to pin.",
         ));
 
         let name_entry = Entry::new();
-        name_entry.set_placeholder_text(Some("Destination name"));
+        name_entry.set_placeholder_text(Some("Display name (e.g. Inbox)"));
         content.append(&name_entry);
 
         let path_entry = Entry::new();
-        path_entry.set_placeholder_text(Some("Relative path (e.g. inbox or docs/notes)"));
+        path_entry.set_placeholder_text(Some("Absolute path (e.g. /home/user/projects/inbox)"));
         content.append(&path_entry);
 
         let actions = build_modal_actions();
         let host = self.modal_host.clone();
-        let cancel_btn =
-            build_modal_button("Cancel", ButtonKind::Secondary, move || host.hide());
+        let cancel_btn = build_modal_button("Cancel", ButtonKind::Secondary, move || host.hide());
         actions.append(&cancel_btn);
 
         let host = self.modal_host.clone();
         let controller = Rc::clone(self);
-        let add_btn = build_modal_button("Add", ButtonKind::Primary, move || {
+        let add_btn = build_modal_button("Pin", ButtonKind::Primary, move || {
             let name = name_entry.text().trim().to_string();
-            let rel_path = path_entry.text().trim().to_string();
-            if !name.is_empty() {
+            let path = path_entry.text().trim().to_string();
+            if !name.is_empty() && !path.is_empty() {
                 let _ = controller
                     .metadata
                     .borrow_mut()
-                    .add_project_destination(project_id, &name, &rel_path);
+                    .add_project_destination(project_id, &name, &path);
                 controller.load_project_landing_view(slot, project_id);
             }
             host.hide();
@@ -1814,7 +2031,7 @@ impl BrowserController {
         actions.append(&add_btn);
 
         self.modal_host
-            .show_with_custom_ui("Add Destination", &content, &actions, false, None);
+            .show_with_custom_ui("Pin Folder", &content, &actions, false, None);
     }
 
     fn remove_project_destination(
@@ -1830,6 +2047,7 @@ impl BrowserController {
         self.load_project_landing_view(slot, project_id);
     }
 
+    #[allow(dead_code)]
     fn send_holding_tray_to_project(self: &Rc<Self>, project_id: i64) {
         let paths: Vec<PathBuf> = self
             .holding_tray_items
@@ -1845,6 +2063,7 @@ impl BrowserController {
         self.send_paths_to_project(paths, project_id, ProjectTransferKind::Copy, None);
     }
 
+    #[allow(dead_code)]
     fn open_in_split(self: &Rc<Self>, requesting_slot: PaneSlot, path: PathBuf) {
         let target_slot = if requesting_slot == PaneSlot::Primary {
             PaneSlot::Secondary
@@ -1938,6 +2157,7 @@ impl BrowserController {
         popover.popup();
     }
 
+    #[allow(dead_code)]
     fn show_project_context_menu(
         self: &Rc<Self>,
         project: ProjectRecord,
@@ -1962,37 +2182,27 @@ impl BrowserController {
         menu_box.set_margin_end(6);
         menu_box.set_size_request(190, -1);
 
-        append_menu_button(&menu_box, "Open Project", Some("document-open-symbolic"), false, {
-            let controller = Rc::clone(self);
-            let project_id = project.id;
-            move || controller.open_project(project_id)
-        });
         append_menu_button(
             &menu_box,
-            "Open Root Folder",
-            Some("folder-symbolic"),
+            "Open Project",
+            Some("document-open-symbolic"),
             false,
             {
                 let controller = Rc::clone(self);
-                let path = project.root_path.clone();
-                move || controller.navigate_to_active(path.clone())
+                let project_id = project.id;
+                move || controller.open_project(project_id)
             },
         );
-        append_menu_button(&menu_box, "Copy Path", Some("edit-copy-symbolic"), false, {
-            let controller = Rc::clone(self);
-            let path = project.root_path.clone();
-            move || controller.copy_paths_to_clipboard(vec![path.clone()])
-        });
         append_menu_sep(&menu_box);
         append_menu_button(
             &menu_box,
-            "Remove Project",
+            "Delete Project",
             Some("list-remove-symbolic"),
             true,
             {
                 let controller = Rc::clone(self);
                 let project_id = project.id;
-                move || controller.confirm_delete_project(project_id)
+                move || controller.handle_project_deleted(project_id)
             },
         );
 
@@ -2017,6 +2227,7 @@ impl BrowserController {
         popover.popup();
     }
 
+    #[allow(dead_code)]
     fn confirm_delete_project(self: &Rc<Self>, project_id: i64) {
         let Some(project) = self
             .projects
@@ -2428,7 +2639,6 @@ impl BrowserController {
         self.projects.replace(projects.clone());
         self.tags.replace(tags.clone());
         self.sidebar.set_places(&places);
-        self.sidebar.set_projects(&projects);
 
         for (place, button) in self.sidebar.place_buttons() {
             let controller = Rc::clone(self);
@@ -2449,26 +2659,6 @@ impl BrowserController {
             button.add_controller(gesture);
         }
 
-        for (project_id, button) in self.sidebar.project_buttons() {
-            let controller = Rc::clone(self);
-            button.connect_clicked(move |_| controller.open_project(project_id));
-
-            let Some(project) = projects.iter().find(|p| p.id == project_id).cloned() else {
-                continue;
-            };
-            let controller = Rc::clone(self);
-            let gesture = gtk::GestureClick::new();
-            gesture.set_button(3);
-            gesture.connect_pressed(move |gesture, _, x, y| {
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-                let Some(widget) = gesture.widget() else {
-                    return;
-                };
-                controller.show_project_context_menu(project.clone(), widget, x, y);
-            });
-            button.add_controller(gesture);
-        }
-
         self.refresh_search_tag_buttons(PaneSlot::Primary);
         self.refresh_search_tag_buttons(PaneSlot::Secondary);
         self.refresh_search_tag_buttons(PaneSlot::Tertiary);
@@ -2480,8 +2670,7 @@ impl BrowserController {
 
     fn open_project(self: &Rc<Self>, project_id: i64) {
         let slot = self.active_slot();
-        if matches!(self.current_view_for(slot), PaneView::ProjectLanding(id) if id == project_id)
-        {
+        if matches!(self.current_view_for(slot), PaneView::ProjectLanding(id) if id == project_id) {
             return;
         }
         let current = self.current_view_for(slot);
@@ -2617,15 +2806,29 @@ impl BrowserController {
         pane.search_revealer.set_reveal_child(is_search);
 
         let is_activity_log = matches!(self.current_view_for(slot), PaneView::ActivityLog);
-        let is_project_landing =
-            matches!(self.current_view_for(slot), PaneView::ProjectLanding(_));
+        let is_project_landing = matches!(self.current_view_for(slot), PaneView::ProjectLanding(_));
+        let is_project_manager = matches!(self.current_view_for(slot), PaneView::ProjectManager);
         let is_tag_manager = matches!(self.current_view_for(slot), PaneView::TagManager);
-        pane.file_grid
-            .root
-            .set_visible(!is_activity_log && !is_project_landing && !is_tag_manager);
+        let is_space_viewer = matches!(self.current_view_for(slot), PaneView::SpaceViewer { .. });
+        pane.file_grid.root.set_visible(
+            !is_activity_log
+                && !is_project_landing
+                && !is_project_manager
+                && !is_tag_manager
+                && !is_space_viewer,
+        );
         pane.activity_log_panel.root.set_visible(is_activity_log);
-        pane.project_landing_panel.root.set_visible(is_project_landing);
+        pane.project_landing_panel
+            .root
+            .set_visible(is_project_landing);
+        pane.project_manager_panel
+            .root
+            .set_visible(is_project_manager);
         pane.tag_manager_panel.root.set_visible(is_tag_manager);
+        pane.space_viewer_panel.root.set_visible(is_space_viewer);
+        if !is_space_viewer {
+            pane.space_viewer_panel.cancel_scan();
+        }
 
         match self.current_view_for(slot) {
             PaneView::Search(query) => {
@@ -2691,7 +2894,19 @@ impl BrowserController {
                 pane.tag_filter_revealer.set_visible(false);
                 self.sync_filter_button_state(slot);
             }
+            PaneView::ProjectManager => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
+            }
             PaneView::TagManager => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
+            }
+            PaneView::SpaceViewer { .. } => {
                 pane.view_strip.set_visible(false);
                 pane.tag_filter_revealer.set_reveal_child(false);
                 pane.tag_filter_revealer.set_visible(false);
@@ -2713,7 +2928,9 @@ impl BrowserController {
             PaneView::ProjectLanding(project_id) => {
                 self.load_project_landing_view(slot, project_id)
             }
+            PaneView::ProjectManager => self.load_project_manager_view(slot),
             PaneView::TagManager => self.load_tag_manager_view(slot),
+            PaneView::SpaceViewer { .. } => self.load_space_viewer_view(slot),
         }
     }
 
@@ -2942,6 +3159,34 @@ impl BrowserController {
                     .set_active(!self.holding_tray.root.reveals_child());
                 true
             }
+            WindowCommand::TrayAddSelection => {
+                self.add_selection_to_holding_tray(self.active_slot());
+                true
+            }
+            WindowCommand::TrayMoveToProject => {
+                self.show_tray_project_dialog(TrayProjectAction::Move);
+                true
+            }
+            WindowCommand::TrayCopyToProject => {
+                self.show_tray_project_dialog(TrayProjectAction::Copy);
+                true
+            }
+            WindowCommand::TrayTag => {
+                self.show_tray_tag_preview();
+                true
+            }
+            WindowCommand::TrayTrash => {
+                self.show_tray_trash_preview();
+                true
+            }
+            WindowCommand::TrayCopyPaths => {
+                self.copy_holding_tray_paths();
+                true
+            }
+            WindowCommand::TrayClear => {
+                self.clear_holding_tray();
+                true
+            }
             WindowCommand::NewTab => {
                 self.open_new_tab(None);
                 true
@@ -3048,14 +3293,18 @@ impl BrowserController {
         }
 
         let modifiers = relevant_modifiers(modifiers);
-        if modifiers.contains(gdk::ModifierType::CONTROL_MASK) && key_char(key) == Some('c') {
+        if modifiers == gdk::ModifierType::CONTROL_MASK && key_char(key) == Some('c') {
             self.copy_holding_tray_paths();
             return true;
         }
 
-        if modifiers.contains(gdk::ModifierType::CONTROL_MASK) && key_char(key) == Some('v') {
+        if modifiers == gdk::ModifierType::CONTROL_MASK && key_char(key) == Some('v') {
             self.paste_file_clipboard_into_holding_tray();
             return true;
+        }
+
+        if !modifiers.is_empty() {
+            return false;
         }
 
         match key {
@@ -3738,9 +3987,11 @@ impl BrowserController {
         self.primary_sort_field.set(tab.primary_sort_field);
         self.primary_sort_direction.set(tab.primary_sort_direction);
         self.secondary_sort_field.set(tab.secondary_sort_field);
-        self.secondary_sort_direction.set(tab.secondary_sort_direction);
+        self.secondary_sort_direction
+            .set(tab.secondary_sort_direction);
         self.tertiary_sort_field.set(tab.tertiary_sort_field);
-        self.tertiary_sort_direction.set(tab.tertiary_sort_direction);
+        self.tertiary_sort_direction
+            .set(tab.tertiary_sort_direction);
         for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
             self.set_view_mode(slot, self.view_mode_cell(slot).get());
             self.sync_show_hidden_button_state(slot);
@@ -4584,7 +4835,10 @@ impl BrowserController {
                 PaneView::Trash => "Unable to read Trash.",
                 PaneView::Search(_) => "Search failed.",
                 PaneView::ActivityLog => "Unable to load activity log.",
-                PaneView::ProjectLanding(_) | PaneView::TagManager => "",
+                PaneView::ProjectLanding(_)
+                | PaneView::ProjectManager
+                | PaneView::TagManager
+                | PaneView::SpaceViewer { .. } => "",
             });
 
         let display_path = match self.current_view_for(slot) {
@@ -4969,7 +5223,12 @@ impl BrowserController {
         );
     }
 
-    fn finish_trash_load(self: &Rc<Self>, slot: PaneSlot, generation: u64, mut items: Vec<FileItem>) {
+    fn finish_trash_load(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        generation: u64,
+        mut items: Vec<FileItem>,
+    ) {
         if !self.is_current_load(slot, generation) {
             return;
         }
@@ -5967,9 +6226,23 @@ impl BrowserController {
                     .show_folder("Project", display_label, None, None, "Project");
                 self.preview.set_action_state(false, false, false);
             }
+            PaneView::ProjectManager => {
+                self.preview
+                    .show_folder("Projects", display_label, None, None, "Project Manager");
+                self.preview.set_action_state(false, false, false);
+            }
             PaneView::TagManager => {
                 self.preview
                     .show_folder("Tags", display_label, None, None, "Tag Manager");
+                self.preview.set_action_state(false, false, false);
+            }
+            PaneView::SpaceViewer { root } => {
+                let name = root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Space Viewer".to_string());
+                self.preview
+                    .show_folder(&name, display_label, None, None, "Space Viewer");
                 self.preview.set_action_state(false, false, false);
             }
         }
@@ -6849,11 +7122,7 @@ impl BrowserController {
         let project_buttons = projects
             .iter()
             .map(|project| {
-                let button = gtk::CheckButton::with_label(&format!(
-                    "{}  {}",
-                    format_path(&project.root_path, &self.places.home),
-                    project.name
-                ));
+                let button = gtk::CheckButton::with_label(&project.name);
                 button.set_halign(Align::Start);
                 if let Some(first) = &first_project_button {
                     button.set_group(Some(first));
@@ -6862,12 +7131,7 @@ impl BrowserController {
                     first_project_button = Some(button.clone());
                 }
                 project_box.append(&button);
-                (
-                    project.id,
-                    project.name.clone(),
-                    project.root_path.clone(),
-                    button,
-                )
+                (project.id, project.name.clone(), button)
             })
             .collect::<Vec<_>>();
 
@@ -6879,25 +7143,24 @@ impl BrowserController {
         let host = self.modal_host.clone();
         let controller = Rc::clone(self);
         let plan_btn = build_modal_button("Preview", ButtonKind::Primary, move || {
-            if let Some((project_id, project_name, project_root, _)) = project_buttons
+            if let Some((project_id, project_name, _)) = project_buttons
                 .iter()
-                .find(|(_, _, _, button)| button.is_active())
+                .find(|(_, _, button)| button.is_active())
             {
-                let plan = project_action_plan(action, &paths, project_name, project_root);
                 let project_id = *project_id;
                 let controller_for_plan = Rc::clone(&controller);
                 let paths_for_plan = paths.clone();
-                controller.show_action_plan(plan, move || {
-                    controller_for_plan.send_paths_to_project(
-                        paths_for_plan.clone(),
-                        project_id,
-                        action.transfer_kind(),
-                        Some(TrayCompletion {
-                            action: action.title().to_string(),
-                            clear_successful_paths: action == TrayProjectAction::Move,
-                        }),
-                    );
-                });
+                let project_name = project_name.clone();
+                controller.send_paths_to_project(
+                    paths_for_plan.clone(),
+                    project_id,
+                    action.transfer_kind(),
+                    Some(TrayCompletion {
+                        action: action.title().to_string(),
+                        clear_successful_paths: action == TrayProjectAction::Move,
+                    }),
+                );
+                let _ = (project_name, controller_for_plan);
             }
             host.hide();
         });
@@ -8105,12 +8368,23 @@ impl BrowserController {
             return;
         }
 
-        let result = self.metadata.borrow_mut().create_project(&name, &path);
+        let result = self.metadata.borrow_mut().create_project(&name, None);
         match result {
             Ok(project) => {
+                // Auto-pin the chosen folder as the first destination
+                let path_str = path.to_string_lossy().to_string();
+                let dest_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Root")
+                    .to_string();
+                let _ = self
+                    .metadata
+                    .borrow_mut()
+                    .add_project_destination(project.id, &dest_name, &path_str);
                 self.refresh_metadata_sidebar();
                 self.status
-                    .set_message(&format!("Pinned project: {}.", project.name));
+                    .set_message(&format!("Created project: {}.", project.name));
             }
             Err(error) => self.show_error_dialog("Project Save Failed", &error),
         }
@@ -8312,11 +8586,7 @@ impl BrowserController {
         let project_buttons = projects
             .iter()
             .map(|project| {
-                let button = gtk::CheckButton::with_label(&format!(
-                    "{}  {}",
-                    format_path(&project.root_path, &self.places.home),
-                    project.name
-                ));
+                let button = gtk::CheckButton::with_label(&project.name);
                 button.set_halign(Align::Start);
                 if let Some(first) = &first_project_button {
                     button.set_group(Some(first));
@@ -8387,19 +8657,24 @@ impl BrowserController {
             return;
         };
 
-        let destination_root = match self
+        let first_pin = self
             .metadata
             .borrow()
             .list_project_destinations(project.id)
             .ok()
-            .and_then(|destinations| {
-                destinations
-                    .into_iter()
-                    .find(|destination| destination.relative_path.is_empty())
-            }) {
-            Some(destination) => project.root_path.join(destination.relative_path),
-            None => project.root_path.clone(),
+            .and_then(|mut dests| {
+                dests.retain(|d| !d.path.is_empty());
+                dests.into_iter().next()
+            });
+
+        let Some(pin) = first_pin else {
+            self.modal_host.show_error(
+                "No Pinned Folders",
+                "Pin a folder to this project before sending files to it.",
+            );
+            return;
         };
+        let destination_root = PathBuf::from(&pin.path);
 
         if self.plan_mode_active.get() && completion.is_none() {
             let is_copy = matches!(kind, ProjectTransferKind::Copy);
@@ -8663,7 +8938,8 @@ impl BrowserController {
                 let source_type = source
                     .query_file_type(gio::FileQueryInfoFlags::NONE, None::<&gio::Cancellable>);
                 if source_type == gio::FileType::Directory {
-                    match copy_path_recursively(&source, &destination, overwrite) {
+                    let cancellable = gio::Cancellable::new();
+                    match copy_path_recursively(&source, &destination, &cancellable, overwrite) {
                         Ok(()) => {
                             let mut result = result.borrow_mut();
                             result.success_count += 1;
@@ -8854,7 +9130,9 @@ impl BrowserController {
             | PaneView::Search(_)
             | PaneView::ActivityLog
             | PaneView::ProjectLanding(_)
-            | PaneView::TagManager => None,
+            | PaneView::ProjectManager
+            | PaneView::TagManager
+            | PaneView::SpaceViewer { .. } => None,
         }
     }
 
@@ -9434,13 +9712,14 @@ impl BrowserController {
         let active = match self.current_view_for(self.active_slot()) {
             PaneView::Tag(_) => Some(SidebarTarget::Tags),
             PaneView::TagManager => Some(SidebarTarget::Tags),
+            PaneView::ProjectLanding(_) | PaneView::ProjectManager => Some(SidebarTarget::Projects),
             PaneView::Triage { .. } => Some(SidebarTarget::Triage),
             PaneView::SystemDrives => Some(SidebarTarget::SystemDrives),
             PaneView::Recent => Some(SidebarTarget::Recent),
             PaneView::Trash => Some(SidebarTarget::Trash),
             PaneView::ActivityLog => Some(SidebarTarget::ActivityLog),
             PaneView::Search(_) => Some(SidebarTarget::Search),
-            PaneView::ProjectLanding(id) => Some(SidebarTarget::Project(id)),
+            PaneView::SpaceViewer { .. } => Some(SidebarTarget::SpaceViewer),
             PaneView::Directory(_) => {
                 let current = self.current_dir_for(self.active_slot());
                 self.user_places
@@ -9448,13 +9727,6 @@ impl BrowserController {
                     .iter()
                     .find(|place| current.starts_with(&place.folder_path))
                     .map(|place| SidebarTarget::Place(place.id))
-                    .or_else(|| {
-                        self.projects
-                            .borrow()
-                            .iter()
-                            .find(|project| current.starts_with(&project.root_path))
-                            .map(|project| SidebarTarget::Project(project.id))
-                    })
                     .or_else(|| {
                         current
                             .starts_with(&self.places.home)
@@ -10324,6 +10596,7 @@ impl BrowserController {
             let src_path = src.clone();
             let dst_path = dst.clone();
             let src_display = src_display.clone();
+            let cancellable_for_copy = cancellable_clone.clone();
             glib::MainContext::default().spawn_local(async move {
                 let src_file = gio::File::for_path(&src_path);
                 let dst_file = gio::File::for_path(&dst_path);
@@ -10331,6 +10604,7 @@ impl BrowserController {
                     copy_path_recursively(
                         &src_file,
                         &dst_file,
+                        &cancellable_for_copy,
                         flags.contains(gio::FileCopyFlags::OVERWRITE),
                     )
                 })
@@ -10400,6 +10674,7 @@ fn add_unique_tray_items(existing: &mut Vec<FileItem>, incoming: Vec<FileItem>) 
     added
 }
 
+#[allow(dead_code)]
 fn project_action_plan(
     action: TrayProjectAction,
     paths: &[PathBuf],
@@ -10547,6 +10822,13 @@ fn builtin_command(action_id: &str) -> Option<WindowCommand> {
         "toggle_sidebar" => Some(WindowCommand::ToggleSidebar),
         "toggle_preview" => Some(WindowCommand::TogglePreview),
         "toggle_holding_tray" => Some(WindowCommand::ToggleHoldingTray),
+        "tray_add_selection" => Some(WindowCommand::TrayAddSelection),
+        "tray_move_to_project" => Some(WindowCommand::TrayMoveToProject),
+        "tray_copy_to_project" => Some(WindowCommand::TrayCopyToProject),
+        "tray_tag" => Some(WindowCommand::TrayTag),
+        "tray_trash" => Some(WindowCommand::TrayTrash),
+        "tray_copy_paths" => Some(WindowCommand::TrayCopyPaths),
+        "tray_clear" => Some(WindowCommand::TrayClear),
         "new_tab" => Some(WindowCommand::NewTab),
         "close_tab" => Some(WindowCommand::CloseTab),
         "toggle_split" => Some(WindowCommand::ToggleSplit),
@@ -10680,6 +10962,7 @@ fn action_availability(
             | PaneView::Recent
             | PaneView::Search(_)
             | PaneView::ActivityLog
+            | PaneView::SpaceViewer { .. }
     );
     let can_paste_files =
         has_file_clipboard && matches!(view, PaneView::Directory(_) | PaneView::Triage { .. });
@@ -11557,7 +11840,15 @@ fn tab_title_for_view(view: &PaneView, path: &Path) -> String {
         }
         PaneView::ActivityLog => "Activity Log".to_string(),
         PaneView::ProjectLanding(_) => "Project".to_string(),
+        PaneView::ProjectManager => "Projects".to_string(),
         PaneView::TagManager => "Tags".to_string(),
+        PaneView::SpaceViewer { root } => {
+            let folder = root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Space Viewer".to_string());
+            format!("Space: {folder}")
+        }
     }
 }
 
@@ -11582,7 +11873,9 @@ fn view_display_label(view: &PaneView, home: &Path) -> String {
         }
         PaneView::ActivityLog => "Activity Log".to_string(),
         PaneView::ProjectLanding(_) => "Project".to_string(),
+        PaneView::ProjectManager => "Projects".to_string(),
         PaneView::TagManager => "Tags".to_string(),
+        PaneView::SpaceViewer { root } => format!("Space: {}", format_path(root, home)),
     }
 }
 
@@ -11716,24 +12009,13 @@ fn resolve_launch(
                 .find(|project| project.name.eq_ignore_ascii_case(project_name))
         });
         return match project {
-            Some(project) if is_launchable_directory(&project.root_path) => LaunchResolution {
-                primary_dir: project.root_path.clone(),
-                primary_view: PaneView::Directory(project.root_path),
+            Some(project) => LaunchResolution {
+                primary_dir: places.home.clone(),
+                primary_view: PaneView::ProjectLanding(project.id),
                 secondary_dir: places.home.clone(),
                 tertiary_dir: places.home.clone(),
                 pane_layout: PaneLayout::Single,
                 notice: None,
-            },
-            Some(project) => LaunchResolution {
-                primary_dir: places.home.clone(),
-                primary_view: PaneView::Directory(places.home.clone()),
-                secondary_dir: places.home.clone(),
-                tertiary_dir: places.home.clone(),
-                pane_layout: PaneLayout::Single,
-                notice: Some(format!(
-                    "Project '{}' points to a missing folder. Opened Home instead.",
-                    project.name
-                )),
             },
             None => LaunchResolution {
                 primary_dir: places.home.clone(),
@@ -11822,10 +12104,14 @@ fn next_copy_path(destination: &Path) -> PathBuf {
 fn copy_path_recursively(
     source: &gio::File,
     destination: &gio::File,
+    cancellable: &gio::Cancellable,
     overwrite: bool,
 ) -> Result<(), glib::Error> {
-    let source_type =
-        source.query_file_type(gio::FileQueryInfoFlags::NONE, None::<&gio::Cancellable>);
+    if cancellable.is_cancelled() {
+        return Err(glib::Error::new(gio::IOErrorEnum::Cancelled, "Cancelled."));
+    }
+
+    let source_type = source.query_file_type(gio::FileQueryInfoFlags::NONE, Some(cancellable));
     if source_type != gio::FileType::Directory {
         return source.copy(
             destination,
@@ -11834,18 +12120,20 @@ fn copy_path_recursively(
             } else {
                 gio::FileCopyFlags::NONE
             },
-            None::<&gio::Cancellable>,
+            Some(cancellable),
             None::<&mut dyn FnMut(i64, i64)>,
         );
     }
 
-    if destination.query_exists(None::<&gio::Cancellable>) {
+    if destination.query_exists(Some(cancellable)) {
         let destination_type =
-            destination.query_file_type(gio::FileQueryInfoFlags::NONE, None::<&gio::Cancellable>);
+            destination.query_file_type(gio::FileQueryInfoFlags::NONE, Some(cancellable));
         if destination_type != gio::FileType::Directory {
             if overwrite {
-                destination.delete(None::<&gio::Cancellable>)?;
-                destination.make_directory_with_parents(None::<&gio::Cancellable>)?;
+                return Err(glib::Error::new(
+                    gio::IOErrorEnum::Exists,
+                    "Cannot safely replace a file with a folder.",
+                ));
             } else {
                 return Err(glib::Error::new(
                     gio::IOErrorEnum::Exists,
@@ -11854,19 +12142,22 @@ fn copy_path_recursively(
             }
         }
     } else {
-        destination.make_directory_with_parents(None::<&gio::Cancellable>)?;
+        destination.make_directory_with_parents(Some(cancellable))?;
     }
 
     let enumerator = source.enumerate_children(
         DIRECTORY_ATTRIBUTES,
         gio::FileQueryInfoFlags::NONE,
-        None::<&gio::Cancellable>,
+        Some(cancellable),
     )?;
 
-    while let Some(info) = enumerator.next_file(None::<&gio::Cancellable>)? {
+    while let Some(info) = enumerator.next_file(Some(cancellable))? {
+        if cancellable.is_cancelled() {
+            return Err(glib::Error::new(gio::IOErrorEnum::Cancelled, "Cancelled."));
+        }
         let child_source = source.child(&info.name());
         let child_destination = destination.child(&info.name());
-        copy_path_recursively(&child_source, &child_destination, overwrite)?;
+        copy_path_recursively(&child_source, &child_destination, cancellable, overwrite)?;
     }
 
     Ok(())
@@ -11964,18 +12255,8 @@ fn is_executable(_path: &Path) -> bool {
     false
 }
 
-fn fnv1a_64(data: &[u8]) -> u64 {
-    let mut h: u64 = 14695981039346656037;
-    for b in data {
-        h ^= *b as u64;
-        h = h.wrapping_mul(1099511628211);
-    }
-    h
-}
-
 fn compute_duplicate_set_from_dir(dir: &Path) -> std::collections::HashSet<PathBuf> {
     use std::collections::HashMap;
-    use std::io::Read;
 
     let Ok(entries) = std::fs::read_dir(dir) else {
         return std::collections::HashSet::new();
@@ -11997,13 +12278,9 @@ fn compute_duplicate_set_from_dir(dir: &Path) -> std::collections::HashSet<PathB
         }
         let mut by_hash: HashMap<u64, Vec<PathBuf>> = HashMap::new();
         for path in &paths {
-            let Ok(mut file) = std::fs::File::open(path) else {
-                continue;
-            };
-            let mut buf = vec![0u8; 65536];
-            let n = file.read(&mut buf).unwrap_or(0);
-            let hash = fnv1a_64(&buf[..n]);
-            by_hash.entry(hash).or_default().push(path.clone());
+            if let Some(hash) = hash_file_contents(path) {
+                by_hash.entry(hash).or_default().push(path.clone());
+            }
         }
         for (_hash, group) in by_hash {
             if group.len() >= 2 {
@@ -12012,6 +12289,30 @@ fn compute_duplicate_set_from_dir(dir: &Path) -> std::collections::HashSet<PathB
         }
     }
     duplicates
+}
+
+fn hash_file_contents(path: &Path) -> Option<u64> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hash = 14695981039346656037u64;
+    let mut buf = [0u8; 65536];
+
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            return Some(hash);
+        }
+        hash = fnv1a_continue(hash, &buf[..n]);
+    }
+}
+
+fn fnv1a_continue(mut hash: u64, data: &[u8]) -> u64 {
+    for b in data {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash
 }
 
 fn detect_terminal_command() -> Option<Vec<OsString>> {
@@ -12271,6 +12572,31 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_detection_requires_full_file_match() {
+        let root = temp_test_dir("duplicates");
+        fs::create_dir_all(&root).unwrap();
+        let same_prefix_a = root.join("same-prefix-a.bin");
+        let same_prefix_b = root.join("same-prefix-b.bin");
+        let duplicate_a = root.join("duplicate-a.bin");
+        let duplicate_b = root.join("duplicate-b.bin");
+
+        let mut first = vec![b'a'; 65_536];
+        first.extend_from_slice(b"tail-a");
+        let mut second = vec![b'a'; 65_536];
+        second.extend_from_slice(b"tail-b");
+        fs::write(&same_prefix_a, &first).unwrap();
+        fs::write(&same_prefix_b, &second).unwrap();
+        fs::write(&duplicate_a, b"identical full contents").unwrap();
+        fs::write(&duplicate_b, b"identical full contents").unwrap();
+
+        let duplicates = compute_duplicate_set_from_dir(&root);
+        assert!(!duplicates.contains(&same_prefix_a));
+        assert!(!duplicates.contains(&same_prefix_b));
+        assert!(duplicates.contains(&duplicate_a));
+        assert!(duplicates.contains(&duplicate_b));
+    }
+
+    #[test]
     fn pane_layout_cycles_and_reports_visible_slots() {
         assert_eq!(PaneLayout::Single.next(), PaneLayout::Two);
         assert_eq!(PaneLayout::Two.next(), PaneLayout::Three);
@@ -12286,6 +12612,7 @@ mod tests {
     fn window_shortcuts_dispatch_standard_commands() {
         let ctrl = gdk::ModifierType::CONTROL_MASK;
         let ctrl_shift = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
+        let ctrl_alt = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK;
 
         assert_eq!(
             window_command_from_key(gdk::Key::c, ctrl),
@@ -12316,8 +12643,36 @@ mod tests {
             Some(WindowCommand::ToggleSidebar)
         );
         assert_eq!(
-            window_command_from_key(gdk::Key::h, ctrl | gdk::ModifierType::ALT_MASK),
+            window_command_from_key(gdk::Key::h, ctrl_alt),
             Some(WindowCommand::ToggleHoldingTray)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::a, ctrl_alt),
+            Some(WindowCommand::TrayAddSelection)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::m, ctrl_alt),
+            Some(WindowCommand::TrayMoveToProject)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::c, ctrl_alt),
+            Some(WindowCommand::TrayCopyToProject)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::t, ctrl_alt),
+            Some(WindowCommand::TrayTag)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::Delete, ctrl_alt),
+            Some(WindowCommand::TrayTrash)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::p, ctrl_alt),
+            Some(WindowCommand::TrayCopyPaths)
+        );
+        assert_eq!(
+            window_command_from_key(gdk::Key::k, ctrl_alt),
+            Some(WindowCommand::TrayClear)
         );
         assert_eq!(
             window_command_from_key(gdk::Key::t, ctrl),
@@ -12404,9 +12759,7 @@ mod tests {
     fn resolve_launch_uses_existing_project_case_insensitively() {
         let places = test_places();
         let mut metadata = MetadataStore::open_in_memory().unwrap();
-        let project_root = places.home.join("documents").join("workspace");
-        fs::create_dir_all(&project_root).unwrap();
-        metadata.create_project("Alpha", &project_root).unwrap();
+        let project = metadata.create_project("Alpha", Some("#00e5ff")).unwrap();
 
         let launch = LaunchConfig {
             project: Some("alpha".to_string()),
@@ -12414,7 +12767,11 @@ mod tests {
         };
 
         let resolution = resolve_launch(&launch, &places, &metadata);
-        assert_eq!(resolution.primary_dir, project_root);
+        assert_eq!(resolution.primary_dir, places.home);
+        assert_eq!(
+            resolution.primary_view,
+            PaneView::ProjectLanding(project.id)
+        );
         assert!(resolution.notice.is_none());
     }
 

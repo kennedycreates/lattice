@@ -1,8 +1,22 @@
-/target/
+# Rust build output
+target/
 
-# Local agent/editor state
+# Local agent workflow files
+AGENTS.md
+CLAUDE.md
+JOURNAL.md
 .claude/
 .codex
+.codex/
+
+# Local environment and logs
+.env
+.env.*
+*.log
+
+# Editor and OS noise
 .DS_Store
+*~
+*.bak
 *.swp
 *.swo

@@ -28,3 +28,6 @@ jobs:
 
       - name: Verify build
         run: cargo check
+
+      - name: Verify test build
+        run: cargo test --no-run
