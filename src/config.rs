@@ -339,18 +339,49 @@ fn write_example_config(path: &PathBuf) {
 }
 
 const EXAMPLE_CONFIG: &str = r#"# Lattice config
-# This file is generated on first run. Uncomment and edit examples as needed.
+# This file is generated on first run. Uncomment and edit entries as needed.
+# Existing config files are not rewritten automatically.
 
+# Theme name. "default" loads Lattice's bundled theme. Other names load
+# ~/.config/lattice/themes/<name>.css when present.
 theme = "default"
 
-# Built-in keyboard shortcuts can be changed here. Set a value to "" to disable it.
-# Use names like Ctrl+N, Ctrl+Shift+N, Alt+Left, Delete, F2, Ctrl+Page_Down.
+# Built-in keyboard shortcuts. Uncomment a line to override its default.
+# Set a shortcut to "" to disable it.
+# Supported key names include letters, Delete, Escape, Left, Right, Up, Down,
+# Page_Up, Page_Down, F1-F12, and Backslash.
+# Supported modifiers are Ctrl, Shift, and Alt, joined with "+".
 [shortcuts]
+# copy_selection = "Ctrl+C"
+# cut_selection = "Ctrl+X"
+# paste_clipboard = "Ctrl+V"
+# copy_path = "Ctrl+Shift+C"
 # new_folder = "Ctrl+N"
 # new_text_document = "Ctrl+Shift+N"
+# rename = "F2"
+# trash = "Delete"
+# search = "Ctrl+F"
+# filter_tags = "Ctrl+G"
+# focus_path = "Ctrl+L"
+# refresh = "Ctrl+R"
+# show_hidden = "Ctrl+H"
 # toggle_sidebar = "Ctrl+B"
 # toggle_preview = "Ctrl+P"
 # toggle_holding_tray = "Ctrl+Alt+H"
+# new_tab = "Ctrl+T"
+# close_tab = "Ctrl+W"
+# toggle_split = "Ctrl+Backslash"
+# previous_tab = "Ctrl+Page_Up"
+# next_tab = "Ctrl+Page_Down"
+# back = "Alt+Left"
+# forward = "Alt+Right"
+# up = "Alt+Up"
+# cycle_pane = "F6"
+# escape = "Escape"
+# view_icons = "Ctrl+1"
+# view_list = "Ctrl+2"
+# toggle_plan_mode = "Ctrl+Shift+P"
+# empty_trash = "Ctrl+Shift+Delete"
 # tray_add_selection = "Ctrl+Alt+A"
 # tray_move_to_project = "Ctrl+Alt+M"
 # tray_copy_to_project = "Ctrl+Alt+C"
@@ -358,24 +389,64 @@ theme = "default"
 # tray_trash = "Ctrl+Alt+Delete"
 # tray_copy_paths = "Ctrl+Alt+P"
 # tray_clear = "Ctrl+Alt+K"
-# rename = "F2"
-# trash = "Delete"
-# empty_trash = "Ctrl+Shift+Delete"
+#
+# Custom actions can also be bound with custom.<id>.
 # custom.open_in_gimp = "Ctrl+Alt+G"
 # custom.compress_here = "Ctrl+Alt+Z"
+# custom.open_terminal_at_selection = "Ctrl+Alt+O"
 
-# Right-click menu order. Use "separator" for dividers and "custom.<id>" for custom actions.
-[context_menu]
-# file = ["open", "open_with", "separator", "add_to_holding_tray", "custom.open_in_gimp", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
-# folder = ["open", "open_new_tab", "open_in_pane", "separator", "add_to_holding_tray", "custom.compress_here", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
-# background = ["new_folder", "new_text_document", "separator", "custom.compress_here", "pin_place", "pin_project", "terminal_here", "copy_path"]
-
-# Custom actions never run through a shell. Each argv entry is passed as a separate argument.
-# {paths} expands selected paths into separate arguments.
-# {path} expands the first selected path.
-# {cwd} expands the active folder.
+# Right-click menu order. Uncomment one of these arrays to replace the default
+# menu for that context. Unknown entries are ignored.
 #
-# Example: Open selected images in GIMP.
+# Shared item entries:
+#   separator, open, rename, bulk_rename, duplicate, copy_path,
+#   add_to_holding_tray, terminal_here, send_to_project, add_tag, remove_tag,
+#   move_to_trash, delete_permanently, custom.<id>
+#
+# File-only entries:
+#   open_with
+#
+# Folder-only entries:
+#   open_new_tab, open_in_pane, triage_folder, pin_place, pin_project
+#
+# Background entries:
+#   new_folder, new_text_document, pin_place, pin_project, terminal_here,
+#   copy_path, custom.<id>
+#
+# Conditional entries are skipped when they do not apply. For example,
+# bulk_rename appears only with two or more selected items; open_in_pane adapts
+# to the current pane layout; custom actions appear only in their contexts.
+[context_menu]
+# file = ["open", "open_with", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# background = ["new_folder", "new_text_document", "separator", "pin_place", "pin_project", "terminal_here", "copy_path"]
+#
+# Example with custom actions inserted:
+# file = ["open", "open_with", "separator", "custom.open_in_gimp", "add_to_holding_tray", "separator", "rename", "copy_path", "terminal_here", "separator", "move_to_trash"]
+# folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "separator", "custom.compress_here", "pin_place", "pin_project", "terminal_here"]
+# background = ["new_folder", "new_text_document", "separator", "custom.open_terminal_at_selection", "terminal_here", "copy_path"]
+
+# Custom actions never run through a shell. Each argv entry is passed as a
+# separate argument, so shell syntax such as pipes, globs, and "$VAR" is not
+# expanded unless you explicitly run a shell as argv[0].
+#
+# Fields:
+#   id              ASCII letters, numbers, "_" and "-" only. Used by
+#                   custom.<id> menu entries and shortcuts.
+#   label           Text shown in menus and status messages.
+#   argv            Command and arguments to spawn.
+#   shortcut        Optional key binding. Same syntax as [shortcuts].
+#   contexts        Any of "file", "folder", "background".
+#   needs_selection If true, the action will not run without selected items.
+#
+# Placeholders:
+#   {paths} expands selected paths into separate argv entries.
+#   {path} expands the first selected path, or disappears if none is selected.
+#   {cwd} expands the active folder.
+#   Embedded {path} and {cwd} are replaced inside ordinary argument strings.
+#   Embedded {paths} is not expanded; use "{paths}" as a whole argv entry.
+
+# Example: open selected images in GIMP.
 #[[custom_actions]]
 #id = "open_in_gimp"
 #label = "Open in GIMP"
@@ -383,8 +454,8 @@ theme = "default"
 #shortcut = "Ctrl+Alt+G"
 #contexts = ["file"]
 #needs_selection = true
-#
-# Example: open File Roller's create-archive flow for selected files in the current folder.
+
+# Example: open File Roller's create-archive flow for selected files.
 #[[custom_actions]]
 #id = "compress_here"
 #label = "Compress Here"
@@ -392,6 +463,15 @@ theme = "default"
 #shortcut = "Ctrl+Alt+Z"
 #contexts = ["file", "folder"]
 #needs_selection = true
+
+# Example: run a shell command in the active folder.
+#[[custom_actions]]
+#id = "open_terminal_at_selection"
+#label = "Terminal at Selection"
+#argv = ["sh", "-lc", "cd \"${1:-$PWD}\" && exec ${TERMINAL:-x-terminal-emulator}", "sh", "{path}"]
+#shortcut = "Ctrl+Alt+O"
+#contexts = ["file", "folder", "background"]
+#needs_selection = false
 "#;
 
 #[cfg(test)]
@@ -429,5 +509,44 @@ contexts = ["file"]
         );
         assert_eq!(config.custom_actions.len(), 1);
         assert_eq!(config.custom_actions[0].argv, vec!["gimp", "{paths}"]);
+    }
+
+    #[test]
+    fn generated_example_documents_supported_config_surface() {
+        for shortcut in default_shortcuts().keys() {
+            assert!(
+                EXAMPLE_CONFIG.contains(&format!("# {shortcut} = ")),
+                "missing shortcut example for {shortcut}"
+            );
+        }
+
+        for entry in [
+            "open",
+            "open_with",
+            "open_new_tab",
+            "open_in_pane",
+            "triage_folder",
+            "add_to_holding_tray",
+            "rename",
+            "bulk_rename",
+            "duplicate",
+            "copy_path",
+            "terminal_here",
+            "pin_place",
+            "pin_project",
+            "send_to_project",
+            "add_tag",
+            "remove_tag",
+            "move_to_trash",
+            "delete_permanently",
+            "new_folder",
+            "new_text_document",
+            "custom.<id>",
+        ] {
+            assert!(
+                EXAMPLE_CONFIG.contains(entry),
+                "missing context menu entry documentation for {entry}"
+            );
+        }
     }
 }
