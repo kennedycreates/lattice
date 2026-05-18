@@ -46,9 +46,6 @@ Install common build/runtime dependencies:
 # Debian / Ubuntu
 sudo apt install cargo libgtk-4-dev desktop-file-utils
 
-# Fedora
-sudo dnf install cargo gtk4-devel desktop-file-utils gtk-update-icon-cache
-
 # Arch Linux
 sudo pacman -S rust gtk4 desktop-file-utils
 ```
