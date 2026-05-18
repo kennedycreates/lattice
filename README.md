@@ -1,6 +1,6 @@
 # Lattice
 
-Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. It is designed for polished custom desktops such as labwc, GNOME, COSMIC, Sway, and other GTK-capable environments.
+Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. The supported distribution families are Ubuntu-based systems and Arch-based systems.
 
 ## Features
 
@@ -32,22 +32,76 @@ Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. It is des
 - Bundled `default` and `high-contrast` themes
 - User themes in `~/.config/lattice/themes/`
 
+## Supported Systems
+
+Lattice is documented and supported for:
+
+- Ubuntu-based systems: Ubuntu, Pop!_OS, Linux Mint, and similar derivatives
+- Arch-based systems: Arch Linux, CachyOS, EndeavourOS, and similar derivatives
+
+Other Linux distributions may work if they provide equivalent GTK4, GIO/GVfs, UDisks, Polkit, Rust, font, desktop-entry, and icon-cache packages, but they are not covered by this README.
+
 ## Requirements
 
-- Linux with a GTK4-capable desktop session
+- A GTK4-capable Linux desktop session
 - Rust stable `1.75+`
 - GTK4 development libraries
-- `update-desktop-database` from `desktop-file-utils` for launcher database refresh
+- GIO/GVfs, UDisks2, and Polkit for Trash and System Drives integration
+- Fontconfig with Noto/DejaVu-compatible sans fallback, emoji fonts, and a monospace font
+- `update-desktop-database` from `desktop-file-utils`
 - `gtk-update-icon-cache` for icon cache refresh
 
-Install common build/runtime dependencies:
+### Ubuntu-Based Dependencies
 
 ```sh
-# Debian / Ubuntu
-sudo apt install cargo libgtk-4-dev desktop-file-utils
+sudo apt update
+sudo apt install \
+  build-essential \
+  cargo \
+  desktop-file-utils \
+  fonts-dejavu-core \
+  fonts-jetbrains-mono \
+  fonts-noto-color-emoji \
+  fonts-noto-core \
+  git \
+  gvfs \
+  gtk-update-icon-cache \
+  libglib2.0-bin \
+  libgtk-4-dev \
+  pkg-config \
+  polkitd \
+  udisks2
+```
 
-# Arch Linux
-sudo pacman -S rust gtk4 desktop-file-utils
+Optional filesystem support packages for removable or external drives:
+
+```sh
+sudo apt install exfatprogs dosfstools ntfs-3g btrfs-progs xfsprogs
+```
+
+### Arch-Based Dependencies
+
+```sh
+sudo pacman -Syu --needed \
+  base-devel \
+  desktop-file-utils \
+  git \
+  gtk4 \
+  gtk-update-icon-cache \
+  gvfs \
+  noto-fonts \
+  noto-fonts-emoji \
+  pkgconf \
+  polkit \
+  rust \
+  ttf-jetbrains-mono \
+  udisks2
+```
+
+Optional filesystem support packages for removable or external drives:
+
+```sh
+sudo pacman -Syu --needed exfatprogs dosfstools ntfs-3g btrfs-progs xfsprogs
 ```
 
 ## Build From Source
@@ -62,7 +116,13 @@ The release binary is written to `target/release/lattice`.
 
 ## Install
 
-Use this after `cargo build --release` when installing for all users:
+Build first:
+
+```sh
+cargo build --release
+```
+
+Then install for all users:
 
 ```sh
 sudo install -m 755 target/release/lattice /usr/local/bin/lattice
@@ -82,6 +142,12 @@ sudo install -Dm 644 themes/high-contrast.css \
 
 sudo update-desktop-database /usr/local/share/applications/
 sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
+```
+
+Make sure `/usr/local/bin` is in your `PATH`:
+
+```sh
+command -v lattice
 ```
 
 ### Set as Default Folder Opener
@@ -179,9 +245,7 @@ The desktop entry ID is `com.lattice.filemanager.desktop`. The application icon 
 
 From your Lattice source repository:
 
-```fish
-cd ~/Development/lattice
-
+```sh
 git status
 git pull --ff-only
 
@@ -220,17 +284,17 @@ Updating Lattice does not remove your user config, metadata, projects, tags, rec
 
 Optional backup before updating:
 
-```fish
-set stamp (date +%Y%m%d-%H%M%S)
+```sh
+stamp="$(date +%Y%m%d-%H%M%S)"
 
-test -d ~/.config/lattice; and cp -a ~/.config/lattice ~/.config/lattice.backup.$stamp
-test -d ~/.local/share/lattice; and cp -a ~/.local/share/lattice ~/.local/share/lattice.backup.$stamp
+[ -d "$HOME/.config/lattice" ] && cp -a "$HOME/.config/lattice" "$HOME/.config/lattice.backup.$stamp"
+[ -d "$HOME/.local/share/lattice" ] && cp -a "$HOME/.local/share/lattice" "$HOME/.local/share/lattice.backup.$stamp"
 ```
 
 Verify the installed app:
 
-```fish
-which lattice
+```sh
+command -v lattice
 xdg-mime query default inode/directory
 ```
 
@@ -243,6 +307,65 @@ com.lattice.filemanager.desktop
 If the launcher icon or app entry does not update immediately in COSMIC/GNOME, log out and back in or restart the desktop session.
 
 `cargo run` is for development and testing. Your daily-use installed copy should come from the release binary installed to `/usr/local/bin/lattice`.
+
+## Troubleshooting
+
+### Missing Window Buttons
+
+Lattice includes its own client-side minimize, maximize/restore, and close buttons in the top titlebar. Desktops or compositors that do not provide external window decorations, including some Arch/CachyOS/KDE/Wayland setups, should still show usable window controls inside the app.
+
+### Font Warnings
+
+Lattice uses font stacks rather than requiring a single UI font. The bundled themes prefer `Inter` when it exists, then fall back to `Noto Sans`, `DejaVu Sans`, and the system sans-serif default. Path and text-preview surfaces prefer `JetBrains Mono`, then `Noto Sans Mono`, `DejaVu Sans Mono`, and the system monospace default.
+
+Install the recommended runtime fonts:
+
+```sh
+# Ubuntu-based
+sudo apt update
+sudo apt install fonts-dejavu-core fonts-jetbrains-mono fonts-noto-color-emoji fonts-noto-core
+
+# Arch-based
+sudo pacman -Syu --needed noto-fonts noto-fonts-emoji ttf-jetbrains-mono
+```
+
+If font warnings still appear, launch from a terminal and check the fallback that Fontconfig is selecting:
+
+```sh
+lattice
+fc-match "Inter"
+fc-match "Noto Sans"
+fc-match "JetBrains Mono"
+fc-match "monospace"
+fc-cache -fv
+```
+
+### Trash or System Drives Missing
+
+Lattice reads Trash through GIO/GVfs (`trash:///`) and discovers drives through GIO's volume monitor. Missing GVfs, UDisks2, or Polkit can prevent GTK/GIO apps from seeing Trash or system drives. After installing those packages, log out/in or reboot so the desktop services are available to your session.
+
+Install the recommended desktop storage plumbing:
+
+```sh
+# Ubuntu-based
+sudo apt update
+sudo apt install gvfs udisks2 polkitd
+
+# Arch-based
+sudo pacman -Syu --needed gvfs udisks2 polkit
+```
+
+Useful diagnostics:
+
+```sh
+gio list trash:///
+gio trash --list
+gio mount -l
+udisksctl status
+lsblk -f
+```
+
+Some filesystems and mounts do not support Trash. Lattice keeps Move to Trash as the default delete action and reports unsupported-trash failures clearly; Permanent Delete remains available only through the explicit confirmation flow.
 
 ## Uninstall
 

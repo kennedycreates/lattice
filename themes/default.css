@@ -34,8 +34,7 @@
 window {
     background-color: #0f0e0c;
     color: #e8dcc8;
-    font-family: "Linux Libertine", "EB Garamond", "Palatino Linotype",
-                 "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     font-size: 13px;
 }
 
@@ -79,6 +78,40 @@ headerbar button:hover,
 headerbar windowcontrols button {
     padding: 2px;
     margin: 0 2px;
+}
+
+.lattice-window-controls {
+    margin-left: 8px;
+}
+
+.lattice-window-control-button {
+    -gtk-icon-size: 14px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #b89e78;
+    margin: 0 1px;
+    min-height: 24px;
+    min-width: 26px;
+    padding: 2px;
+}
+
+.lattice-window-control-button:hover {
+    background: linear-gradient(180deg, #34282d 0%, #2d2627 100%);
+    border-color: #c8407068;
+    color: #d9a98d;
+}
+
+.lattice-window-control-button:active {
+    background: #171412;
+    border-color: #c84070;
+    color: #d6a0b4;
+}
+
+.lattice-window-close-button:hover {
+    background: linear-gradient(180deg, #5a1427 0%, #3a101d 100%);
+    border-color: #c84070;
+    color: #ffe4ec;
 }
 
 .top-toolbar {
@@ -181,7 +214,7 @@ headerbar windowcontrols button {
     color: #e8dcc8;
     padding: 3px 10px;
     min-height: 26px;
-    font-family: "Courier New", "Courier", "Liberation Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
     font-size: 12px;
 }
 
@@ -226,7 +259,7 @@ headerbar windowcontrols button {
     color: #c4ae88;
     font-size: 12px;
     font-weight: 500;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .toolbar-path-current {
@@ -301,7 +334,7 @@ headerbar windowcontrols button {
     color: #b89e78;
     padding: 6px 12px 6px 14px;
     font-size: 13px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     transition: background 100ms ease, color 100ms ease;
 }
 
@@ -430,7 +463,7 @@ headerbar windowcontrols button {
 .browser-pane-path {
     color: #b89e78;
     font-size: 12px;
-    font-family: "Courier New", "Courier", "Liberation Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 .pane-view-btn {
@@ -500,7 +533,7 @@ headerbar windowcontrols button {
     color: #e8dcc8;
     font-size: 12px;
     font-weight: 600;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     letter-spacing: 0.4px;
 }
 
@@ -526,7 +559,7 @@ headerbar windowcontrols button {
     color: #b89e78;
     padding: 3px 10px;
     font-size: 11px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .pane-filter-button:hover {
@@ -583,7 +616,7 @@ headerbar windowcontrols button {
 .search-scope-label {
     color: #806040;
     font-size: 11px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .search-chip-row {
@@ -606,7 +639,7 @@ headerbar windowcontrols button {
     color: #b89e78;
     padding: 2px 9px;
     font-size: 11px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     min-height: 22px;
     transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
 }
@@ -665,7 +698,7 @@ headerbar windowcontrols button {
 .op-label {
     color: #c8b898;
     font-size: 12px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     font-weight: 500;
 }
 
@@ -714,7 +747,7 @@ headerbar windowcontrols button {
 .op-detail {
     color: #806040;
     font-size: 11px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .op-row-failed .op-detail {
@@ -783,7 +816,7 @@ headerbar windowcontrols button {
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1.16;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .file-card-kind {
@@ -791,6 +824,12 @@ headerbar windowcontrols button {
     font-size: 8.5px;
     font-style: italic;
     letter-spacing: 0.2px;
+}
+
+.file-card-detail {
+    color: #806040;
+    font-size: 10px;
+    margin-top: -1px;
 }
 
 .file-thumb {
@@ -832,14 +871,14 @@ headerbar windowcontrols button {
 
 .drag-preview-title {
     color: #fff4dc;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     font-size: 13px;
     font-weight: 700;
 }
 
 .drag-preview-detail {
     color: #c9962e;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     font-size: 10.5px;
     font-style: italic;
 }
@@ -896,7 +935,7 @@ headerbar windowcontrols button {
     font-size: 8px;
     font-weight: 600;
     letter-spacing: 0.3px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .file-tag-chip-muted {
@@ -951,7 +990,7 @@ flowboxchild:selected > .file-card-shell.drop-hover > .file-card,
     color: #806040;
     font-size: 15px;
     font-style: italic;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     letter-spacing: 0.3px;
     opacity: 0.8;
 }
@@ -1053,7 +1092,7 @@ label.preview-icon.file-type-unknown { color: #806040; background: radial-gradie
 .preview-meta-value {
     color: #cfb496;
     font-size: 12px;
-    font-family: "Courier New", "Courier", "Liberation Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 .preview-path-value {
@@ -1087,7 +1126,7 @@ label.preview-icon.file-type-unknown { color: #806040; background: radial-gradie
 .status-path {
     color: #806040;
     font-size: 11px;
-    font-family: "Courier New", "Courier", "Liberation Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 .status-message {
@@ -1216,7 +1255,7 @@ popover.context-menu.background > contents {
     color: #e8dcc8;
     font-size: 15px;
     font-weight: 700;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     letter-spacing: 0.4px;
 }
 
@@ -1259,7 +1298,7 @@ popover.context-menu.background > contents {
     color: #e8c870;
     padding: 6px 18px;
     font-size: 13px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     min-height: 32px;
     transition: background 120ms ease, border-color 120ms ease;
 }
@@ -1287,7 +1326,7 @@ popover.context-menu.background > contents {
     color: #e06878;
     padding: 6px 18px;
     font-size: 13px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     min-height: 32px;
     transition: background 120ms ease, border-color 120ms ease;
 }
@@ -1309,7 +1348,7 @@ popover.context-menu.background > contents {
     color: #806040;
     padding: 6px 16px;
     font-size: 13px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     min-height: 32px;
     transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
@@ -1401,7 +1440,7 @@ tooltip {
 tooltip > label {
     color: #e8dcc8;
     font-size: 12px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .app-tooltip-popover {
@@ -1429,7 +1468,7 @@ tooltip > label {
 .app-tooltip-label {
     color: #e8dcc8;
     font-size: 12px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 /* ── Bulk Rename dialog ───────────────────────────────────────────────── */
@@ -1728,7 +1767,7 @@ tooltip > label {
     font-weight: 700;
     letter-spacing: 0.9px;
     text-transform: uppercase;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .tf-mode-btn {
@@ -1792,7 +1831,7 @@ tooltip > label {
     font-size: 11px;
     padding: 1px 8px;
     margin: 0 2px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
 }
 
 .tf-sep {
@@ -1827,7 +1866,7 @@ tooltip > label {
     border-radius: 12px;
     color: #9888cc;
     font-size: 12px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     padding: 3px 12px;
     min-height: 26px;
     transition: background 120ms ease, border-color 120ms ease, color 120ms ease,
@@ -1871,7 +1910,7 @@ tooltip > label {
     color: #5a4878;
     font-size: 12px;
     font-style: italic;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     margin-top: 4px;
 }
 
@@ -2325,7 +2364,15 @@ flowboxchild:hover > .file-card-shell.drop-hover > .file-card,
 .file-list-name {
     color: #e8dcc8;
     font-size: 13px;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
+    padding-left: 6px;
+    padding-right: 14px;
+}
+
+.file-list-detail {
+    color: #806040;
+    font-size: 11px;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
     padding-left: 6px;
     padding-right: 14px;
 }
@@ -2333,14 +2380,14 @@ flowboxchild:hover > .file-card-shell.drop-hover > .file-card,
 .file-list-size {
     color: #9a7359;
     font-size: 11px;
-    font-family: "Courier New", "Liberation Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
     padding-right: 10px;
 }
 
 .file-list-date {
     color: #7a6850;
     font-size: 11px;
-    font-family: "Courier New", "Liberation Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 @keyframes lattice-list-row-in {
@@ -2387,14 +2434,14 @@ flowboxchild:hover > .file-card-shell.drop-hover > .file-card,
     font-size: 18px;
     font-weight: 700;
     color: #e8dcc8;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     letter-spacing: 0.3px;
 }
 
 .landing-project-path {
     font-size: 11px;
     color: #806040;
-    font-family: "Courier New", "Liberation Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 .landing-actions {
@@ -2543,7 +2590,7 @@ flowboxchild:hover > .file-card-shell.drop-hover > .file-card,
     font-size: 14px;
     font-weight: 700;
     color: #e0d4c0;
-    font-family: "Linux Libertine", "Palatino", "Georgia", serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     letter-spacing: 0.2px;
 }
 

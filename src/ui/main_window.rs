@@ -50,6 +50,8 @@ const TERMINAL_ENV_VAR: &str = "LATTICE_TERMINAL";
 const TEXT_PREVIEW_LIMIT_BYTES: usize = 64 * 1024;
 const TEXT_PREVIEW_DISPLAY_CHARS: usize = 4_000;
 const TRIAGE_LARGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
+const TRASH_GVFS_DIAGNOSTIC: &str = "Trash support may require GVfs. On Arch/CachyOS, install gvfs, udisks2, and polkit, then log out/in or reboot.\n\nTroubleshooting:\nsudo pacman -Syu --needed gvfs udisks2 polkit\ngio list trash:///\ngio trash --list\ngio mount -l";
+const DRIVES_GVFS_DIAGNOSTIC: &str = "No system drives found through GIO/GVfs.\n\nInstall gvfs, udisks2, and polkit, then log out/in or reboot.\n\nTroubleshooting:\nsudo pacman -Syu --needed gvfs udisks2 polkit\ngio mount -l\nudisksctl status\nlsblk -f";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaneSlot {
@@ -639,7 +641,7 @@ impl MainWindow {
             .build();
 
         window.add_css_class("app-window");
-        window.set_titlebar(Some(&build_titlebar()));
+        window.set_titlebar(Some(&build_titlebar(&window)));
 
         let places = Places::discover();
         let toolbar = Toolbar::build();
@@ -706,9 +708,10 @@ impl MainWindow {
     }
 }
 
-fn build_titlebar() -> HeaderBar {
+fn build_titlebar(window: &ApplicationWindow) -> HeaderBar {
     let titlebar = HeaderBar::new();
-    titlebar.set_show_title_buttons(true);
+    titlebar.set_show_title_buttons(false);
+    titlebar.add_css_class("lattice-titlebar");
 
     let title = Label::new(Some("Lattice"));
     title.add_css_class("title");
@@ -717,7 +720,68 @@ fn build_titlebar() -> HeaderBar {
     title.set_width_chars("Lattice".chars().count() as i32);
     titlebar.set_title_widget(Some(&title));
 
+    let controls = build_window_controls(window);
+    titlebar.pack_end(&controls);
+
     titlebar
+}
+
+fn build_window_controls(window: &ApplicationWindow) -> GtkBox {
+    let controls = GtkBox::new(Orientation::Horizontal, 2);
+    controls.add_css_class("lattice-window-controls");
+
+    let minimize_button = window_control_button("window-minimize-symbolic", "Minimize");
+    {
+        let window = window.clone();
+        minimize_button.connect_clicked(move |_| window.minimize());
+    }
+    controls.append(&minimize_button);
+
+    let maximize_button = window_control_button("window-maximize-symbolic", "Maximize / Restore");
+    sync_maximize_button(&maximize_button, window.is_maximized());
+    {
+        let window = window.clone();
+        maximize_button.connect_clicked(move |_| {
+            if window.is_maximized() {
+                window.unmaximize();
+            } else {
+                window.maximize();
+            }
+        });
+    }
+    {
+        let maximize_button = maximize_button.clone();
+        window.connect_maximized_notify(move |window| {
+            sync_maximize_button(&maximize_button, window.is_maximized());
+        });
+    }
+    controls.append(&maximize_button);
+
+    let close_button = window_control_button("window-close-symbolic", "Close");
+    close_button.add_css_class("lattice-window-close-button");
+    {
+        let window = window.clone();
+        close_button.connect_clicked(move |_| window.close());
+    }
+    controls.append(&close_button);
+
+    controls
+}
+
+fn window_control_button(icon_name: &str, tooltip: &str) -> Button {
+    let button = Button::builder().icon_name(icon_name).build();
+    button.add_css_class("lattice-window-control-button");
+    button.set_tooltip_text(Some(tooltip));
+    button
+}
+
+fn sync_maximize_button(button: &Button, is_maximized: bool) {
+    let icon_name = if is_maximized {
+        "view-restore-symbolic"
+    } else {
+        "window-maximize-symbolic"
+    };
+    button.set_icon_name(icon_name);
 }
 
 #[derive(Clone)]
@@ -1480,6 +1544,10 @@ impl BrowserController {
 
     fn open_space_viewer(self: &Rc<Self>) {
         let slot = self.active_slot();
+        if matches!(self.current_view_for(slot), PaneView::SpaceViewer { .. }) {
+            return;
+        }
+        self.save_dir_to_history_if_in_directory(slot);
         let dir = self.current_dir_for(slot).to_path_buf();
         self.current_view_cell(slot)
             .replace(PaneView::SpaceViewer { root: dir });
@@ -1550,6 +1618,7 @@ impl BrowserController {
 
     fn open_activity_log(self: &Rc<Self>) {
         let slot = self.active_slot();
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_view_cell(slot).replace(PaneView::ActivityLog);
         self.sync_active_tab_state();
         if slot == PaneSlot::Primary {
@@ -1563,6 +1632,7 @@ impl BrowserController {
         if matches!(self.current_view_for(slot), PaneView::ProjectManager) {
             return;
         }
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_view_cell(slot)
             .replace(PaneView::ProjectManager);
         self.sync_active_tab_state();
@@ -1727,6 +1797,7 @@ impl BrowserController {
         if matches!(self.current_view_for(slot), PaneView::TagManager) {
             return;
         }
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_view_cell(slot).replace(PaneView::TagManager);
         self.sync_active_tab_state();
         if slot == PaneSlot::Primary {
@@ -2609,6 +2680,8 @@ impl BrowserController {
                 path: trash_path,
                 kind,
                 is_dir: info.file_type() == gio::FileType::Directory,
+                is_openable: true,
+                detail: None,
                 size_bytes: (info.size() >= 0).then_some(info.size() as u64),
                 modified_unix: info.modification_date_time().map(|value| value.to_unix()),
                 tags: Vec::new(),
@@ -2673,11 +2746,7 @@ impl BrowserController {
         if matches!(self.current_view_for(slot), PaneView::ProjectLanding(id) if id == project_id) {
             return;
         }
-        let current = self.current_view_for(slot);
-        if let PaneView::Directory(path) = current {
-            self.back_history_cell(slot).borrow_mut().push(path);
-            self.forward_history_cell(slot).borrow_mut().clear();
-        }
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_view_cell(slot)
             .replace(PaneView::ProjectLanding(project_id));
         self.sync_active_tab_state();
@@ -2702,6 +2771,7 @@ impl BrowserController {
         };
 
         let slot = self.active_slot();
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_view_cell(slot)
             .replace(PaneView::Tag(tag.clone()));
         self.sync_active_tab_state();
@@ -2725,6 +2795,7 @@ impl BrowserController {
             self.duplicate_set_cell(slot).replace(None);
             self.set_duplicate_scan_pending(slot, false);
         }
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_dir_cell(slot).replace(root.clone());
         self.current_view_cell(slot).replace(PaneView::Triage {
             root: root.clone(),
@@ -3636,6 +3707,16 @@ impl BrowserController {
         }
     }
 
+    // Save the current directory to back history when entering a tool view from a directory.
+    // Tool-to-tool transitions are intentionally ignored so back always returns to the last
+    // real folder, not a phantom home path set by a previous tool.
+    fn save_dir_to_history_if_in_directory(&self, slot: PaneSlot) {
+        if let PaneView::Directory(path) = self.current_view_for(slot) {
+            self.back_history_cell(slot).borrow_mut().push(path);
+            self.forward_history_cell(slot).borrow_mut().clear();
+        }
+    }
+
     fn forward_history_cell(&self, slot: PaneSlot) -> &RefCell<Vec<PathBuf>> {
         match slot {
             PaneSlot::Primary => &self.forward_history,
@@ -3722,6 +3803,7 @@ impl BrowserController {
             PaneView::Triage { root, .. } => Some(root),
             PaneView::Search(query) => Some(query.scope_dir),
             PaneView::ActivityLog => Some(self.current_dir_for(slot)),
+            PaneView::SpaceViewer { root, .. } => Some(root),
             _ => None,
         }
     }
@@ -4186,15 +4268,14 @@ impl BrowserController {
 
     fn go_back(self: &Rc<Self>) {
         let slot = self.active_slot();
-        if !self.is_directory_view(slot) {
-            self.status
-                .set_message("Back is only available in directory views.");
-            return;
-        }
         let previous = self.back_history_cell(slot).borrow_mut().pop();
         if let Some(path) = previous {
-            let current = self.current_dir_for(slot);
-            self.forward_history_cell(slot).borrow_mut().push(current);
+            // Only push to forward history when leaving a real directory so that
+            // going forward after returning from a tool doesn't land on a phantom path.
+            if self.is_directory_view(slot) {
+                let current = self.current_dir_for(slot);
+                self.forward_history_cell(slot).borrow_mut().push(current);
+            }
             self.current_dir_cell(slot).replace(path.clone());
             self.current_view_cell(slot)
                 .replace(PaneView::Directory(path.clone()));
@@ -4867,6 +4948,7 @@ impl BrowserController {
 
     fn open_system_drives(self: &Rc<Self>) {
         let slot = self.active_slot();
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_dir_cell(slot)
             .replace(self.places.home.clone());
         self.current_view_cell(slot).replace(PaneView::SystemDrives);
@@ -4911,18 +4993,14 @@ impl BrowserController {
         }
 
         let listing = collect_mounted_volume_items();
+        let diagnostics = drive_listing_status_message(&listing);
         let items = listing.items;
         self.items_cell(slot).replace(items.clone());
 
         if items.is_empty() {
-            let empty_message = if listing.skipped_non_local > 0 {
-                "No mounted local drives are available to browse."
-            } else {
-                "No mounted drives or volumes are available."
-            };
             self.pane_widgets(slot)
                 .file_grid
-                .set_empty_message(empty_message);
+                .set_empty_message(DRIVES_GVFS_DIAGNOSTIC);
         } else {
             self.pane_widgets(slot).file_grid.set_items(&items);
             self.attach_context_handlers(slot);
@@ -4935,14 +5013,29 @@ impl BrowserController {
             self.toolbar.show_breadcrumb_mode();
             self.update_navigation_state();
             self.update_action_state();
-            self.show_empty_selection_preview(slot, &display_label, items.len());
+            if items.is_empty() && self.preview_visible.get() {
+                self.preview
+                    .show_error("System Drives", DRIVES_GVFS_DIAGNOSTIC);
+                self.preview.set_action_state(false, false, false);
+            } else {
+                self.show_empty_selection_preview(slot, &display_label, items.len());
+            }
             self.status.set_counts(items.len(), 0);
-            self.refresh_preview();
+            if let Some(message) = diagnostics {
+                self.status.set_message(&message);
+            } else if items.is_empty() {
+                self.status
+                    .set_message("No system drives found through GIO/GVfs.");
+            }
+            if !items.is_empty() {
+                self.refresh_preview();
+            }
         }
     }
 
     fn open_recent(self: &Rc<Self>) {
         let slot = self.active_slot();
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_dir_cell(slot)
             .replace(self.places.home.clone());
         self.current_view_cell(slot).replace(PaneView::Recent);
@@ -5048,6 +5141,7 @@ impl BrowserController {
 
     fn open_trash(self: &Rc<Self>) {
         let slot = self.active_slot();
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_dir_cell(slot)
             .replace(self.places.home.clone());
         self.current_view_cell(slot).replace(PaneView::Trash);
@@ -5196,6 +5290,8 @@ impl BrowserController {
                                     name: info.display_name().to_string(),
                                     path,
                                     is_dir: info.file_type() == gio::FileType::Directory,
+                                    is_openable: true,
+                                    detail: None,
                                     kind,
                                     size_bytes: (info.size() >= 0).then_some(info.size() as u64),
                                     modified_unix: info
@@ -5244,7 +5340,7 @@ impl BrowserController {
         if items.is_empty() {
             self.pane_widgets(slot)
                 .file_grid
-                .set_empty_message("Trash is empty");
+                .set_empty_message("Trash is empty.");
         } else {
             self.pane_widgets(slot).file_grid.set_items(&items);
             self.attach_context_handlers(slot);
@@ -5279,15 +5375,22 @@ impl BrowserController {
         self.items_cell(slot).borrow_mut().clear();
         self.pane_widgets(slot)
             .file_grid
-            .set_empty_message("Trash is unavailable on this system.");
+            .set_empty_message(TRASH_GVFS_DIAGNOSTIC);
 
         let display_label = self.display_label_for(slot);
         self.pane_widgets(slot).path_label.set_label(&display_label);
         if slot == self.active_slot() {
-            self.preview
-                .show_error("Trash", &friendly_error_detail(error));
+            self.preview.show_error(
+                "Trash",
+                &format!(
+                    "{}\n\n{}",
+                    friendly_error_detail(error),
+                    TRASH_GVFS_DIAGNOSTIC
+                ),
+            );
             self.status.set_counts(0, 0);
-            self.status.set_message("Trash is unavailable");
+            self.status
+                .set_message("Trash is unavailable; GVfs may be missing.");
             self.status.set_path(&display_label);
             self.toolbar.set_breadcrumb_path(&display_label);
             self.toolbar.show_breadcrumb_mode();
@@ -5621,6 +5724,7 @@ impl BrowserController {
     }
 
     fn open_search(self: &Rc<Self>, slot: PaneSlot, query: SearchQuery) {
+        self.save_dir_to_history_if_in_directory(slot);
         self.current_dir_cell(slot).replace(query.scope_dir.clone());
         self.current_view_cell(slot)
             .replace(PaneView::Search(query.clone()));
@@ -6066,6 +6170,8 @@ impl BrowserController {
                                 ),
                                 path,
                                 is_dir: info.file_type() == gio::FileType::Directory,
+                                is_openable: true,
+                                detail: None,
                                 size_bytes: (info.size() >= 0).then_some(info.size() as u64),
                                 modified_unix: info
                                     .modification_date_time()
@@ -6325,76 +6431,89 @@ impl BrowserController {
             PaneView::SystemDrives | PaneView::Recent
         ) {
             // Drives / Recent: open group
-            append_menu_button(&menu_box, "Open", Some("document-open-symbolic"), false, {
-                let controller = Rc::clone(self);
-                let item = item.clone();
-                move || controller.open_item_in_slot(slot, &item)
-            });
-            append_menu_button(
-                &menu_box,
-                "Open in New Tab",
-                Some("tab-new-symbolic"),
-                false,
-                {
+            if item.is_openable {
+                append_menu_button(&menu_box, "Open", Some("document-open-symbolic"), false, {
                     let controller = Rc::clone(self);
                     let item = item.clone();
-                    move || controller.open_new_tab(Some(item.path.clone()))
-                },
-            );
-            if self.pane_layout.get() != PaneLayout::Single {
+                    move || controller.open_item_in_slot(slot, &item)
+                });
                 append_menu_button(
                     &menu_box,
-                    "Open in Other Pane",
-                    Some("window-new-symbolic"),
+                    "Open in New Tab",
+                    Some("tab-new-symbolic"),
                     false,
                     {
                         let controller = Rc::clone(self);
                         let item = item.clone();
-                        move || controller.open_folder_in_other_pane(slot, item.path.clone())
+                        move || controller.open_new_tab(Some(item.path.clone()))
+                    },
+                );
+                if self.pane_layout.get() != PaneLayout::Single {
+                    append_menu_button(
+                        &menu_box,
+                        "Open in Other Pane",
+                        Some("window-new-symbolic"),
+                        false,
+                        {
+                            let controller = Rc::clone(self);
+                            let item = item.clone();
+                            move || controller.open_folder_in_other_pane(slot, item.path.clone())
+                        },
+                    );
+                } else {
+                    append_menu_button(
+                        &menu_box,
+                        "Open in Split Pane",
+                        Some("window-new-symbolic"),
+                        false,
+                        {
+                            let controller = Rc::clone(self);
+                            let item = item.clone();
+                            move || controller.open_folder_in_split(item.path.clone())
+                        },
+                    );
+                }
+                // File / project group
+                append_menu_sep(&menu_box);
+                append_menu_button(
+                    &menu_box,
+                    "Pin as Project",
+                    Some("starred-symbolic"),
+                    false,
+                    {
+                        let controller = Rc::clone(self);
+                        let item = item.clone();
+                        move || controller.show_pin_project_dialog(item.path.clone())
+                    },
+                );
+                append_menu_button(&menu_box, "Copy Path", Some("edit-copy-symbolic"), false, {
+                    let controller = Rc::clone(self);
+                    let item = item.clone();
+                    move || controller.copy_paths_to_clipboard(vec![item.path.clone()])
+                });
+                append_menu_button(
+                    &menu_box,
+                    "Terminal Here",
+                    Some("utilities-terminal-symbolic"),
+                    false,
+                    {
+                        let controller = Rc::clone(self);
+                        let item = item.clone();
+                        move || controller.open_terminal_for_path(item.path.clone(), true)
                     },
                 );
             } else {
-                append_menu_button(
-                    &menu_box,
-                    "Open in Split Pane",
-                    Some("window-new-symbolic"),
-                    false,
-                    {
-                        let controller = Rc::clone(self);
-                        let item = item.clone();
-                        move || controller.open_folder_in_split(item.path.clone())
-                    },
-                );
+                let note = Label::new(Some(
+                    item.detail
+                        .as_deref()
+                        .unwrap_or("This item is not mounted or directly openable."),
+                ));
+                note.set_margin_start(8);
+                note.set_margin_end(8);
+                note.set_halign(gtk::Align::Start);
+                note.add_css_class("context-note");
+                menu_box.append(&note);
             }
-            // File / project group
-            append_menu_sep(&menu_box);
-            append_menu_button(
-                &menu_box,
-                "Pin as Project",
-                Some("starred-symbolic"),
-                false,
-                {
-                    let controller = Rc::clone(self);
-                    let item = item.clone();
-                    move || controller.show_pin_project_dialog(item.path.clone())
-                },
-            );
-            append_menu_button(&menu_box, "Copy Path", Some("edit-copy-symbolic"), false, {
-                let controller = Rc::clone(self);
-                let item = item.clone();
-                move || controller.copy_paths_to_clipboard(vec![item.path.clone()])
-            });
-            append_menu_button(
-                &menu_box,
-                "Terminal Here",
-                Some("utilities-terminal-symbolic"),
-                false,
-                {
-                    let controller = Rc::clone(self);
-                    let item = item.clone();
-                    move || controller.open_terminal_for_path(item.path.clone(), true)
-                },
-            );
         } else {
             // Normal directory view
             let entries = self.item_context_entries(item.is_dir);
@@ -7670,6 +7789,15 @@ impl BrowserController {
     }
 
     fn open_item_in_slot(self: &Rc<Self>, slot: PaneSlot, item: &FileItem) {
+        if !item.is_openable {
+            let detail = item
+                .detail
+                .as_deref()
+                .unwrap_or("This item is not directly openable.");
+            self.status.set_message(&format!("{}: {detail}", item.name));
+            return;
+        }
+
         if item.is_dir {
             self.navigate_to(slot, item.path.clone(), true);
         } else {
@@ -9319,7 +9447,7 @@ impl BrowserController {
                         errors_clone.borrow_mut().push(format!(
                             "{}: {}",
                             current_path.display(),
-                            e.message()
+                            trash_operation_error_detail(e)
                         ));
                     }
                     _ => {}
@@ -9666,6 +9794,7 @@ impl BrowserController {
     fn selected_paths_for(&self, slot: PaneSlot) -> Vec<PathBuf> {
         self.selected_items_for(slot)
             .into_iter()
+            .filter(|item| !item.path.as_os_str().is_empty())
             .map(|item| item.path)
             .collect()
     }
@@ -9684,25 +9813,22 @@ impl BrowserController {
     }
 
     fn update_navigation_state(&self) {
-        let is_directory = self.is_directory_view(self.active_slot());
-        self.toolbar.back_button.set_sensitive(
-            is_directory
-                && !self
-                    .back_history_cell(self.active_slot())
-                    .borrow()
-                    .is_empty(),
-        );
-        self.toolbar.forward_button.set_sensitive(
-            is_directory
-                && !self
-                    .forward_history_cell(self.active_slot())
-                    .borrow()
-                    .is_empty(),
-        );
+        let slot = self.active_slot();
+        let is_directory = self.is_directory_view(slot);
+        // Back works from any view — tool views save to history so the user can always
+        // return to the last real folder regardless of which tool they switched to.
+        self.toolbar
+            .back_button
+            .set_sensitive(!self.back_history_cell(slot).borrow().is_empty());
+        // Forward stays directory-only: after returning from a tool the forward slot is
+        // intentionally empty so pressing forward doesn't land on a phantom path.
+        self.toolbar
+            .forward_button
+            .set_sensitive(is_directory && !self.forward_history_cell(slot).borrow().is_empty());
         self.toolbar.up_button.set_sensitive(
             is_directory
                 && self
-                    .current_dir_for(self.active_slot())
+                    .current_dir_for(slot)
                     .parent()
                     .map(Path::exists)
                     .unwrap_or(false),
@@ -11357,6 +11483,8 @@ fn match_entry(
         name: e.fname.clone(),
         path: e.path.clone(),
         is_dir: e.is_dir,
+        is_openable: true,
+        detail: None,
         kind,
         size_bytes: if e.is_dir { None } else { Some(e.size) },
         modified_unix: Some(e.modified_secs),
@@ -11738,6 +11866,11 @@ fn sort_items(items: &mut [FileItem]) {
 
 struct MountedVolumeListing {
     items: Vec<FileItem>,
+    gio_mounts: usize,
+    unmounted_volumes: usize,
+    detected_drives: usize,
+    fallback_mounts: usize,
+    skipped_inaccessible: usize,
     skipped_non_local: usize,
 }
 
@@ -11750,6 +11883,10 @@ fn collect_mounted_volume_items() -> MountedVolumeListing {
     let monitor = gio::VolumeMonitor::get();
     let mut items = Vec::new();
     let mut seen_paths = HashSet::new();
+    let mut seen_volume_names = HashSet::new();
+    let mut gio_mounts = 0usize;
+    let mut unmounted_volumes = 0usize;
+    let mut detected_drives = 0usize;
     let mut skipped_non_local = 0usize;
 
     for mount in monitor.mounts() {
@@ -11763,11 +11900,16 @@ fn collect_mounted_volume_items() -> MountedVolumeListing {
             continue;
         }
 
+        gio_mounts += 1;
+        seen_volume_names.insert(mount.name().to_string());
+        let detail = format!("Mounted: {}", path.display());
         items.push(FileItem {
             name: mount.name().to_string(),
             path,
             kind: FileKind::Folder,
             is_dir: true,
+            is_openable: true,
+            detail: Some(detail),
             size_bytes: None,
             modified_unix: None,
             tags: Vec::new(),
@@ -11775,11 +11917,189 @@ fn collect_mounted_volume_items() -> MountedVolumeListing {
         });
     }
 
+    for volume in monitor.volumes() {
+        if let Some(mount) = volume.get_mount() {
+            seen_volume_names.insert(mount.name().to_string());
+            continue;
+        }
+
+        let name = volume.name().to_string();
+        if !seen_volume_names.insert(name.clone()) {
+            continue;
+        }
+
+        unmounted_volumes += 1;
+        items.push(FileItem {
+            name,
+            path: PathBuf::new(),
+            kind: FileKind::Folder,
+            is_dir: false,
+            is_openable: false,
+            detail: Some("Unmounted volume (mounting not implemented)".to_string()),
+            size_bytes: None,
+            modified_unix: None,
+            tags: Vec::new(),
+            original_path: None,
+        });
+    }
+
+    for drive in monitor.connected_drives() {
+        let name = drive.name().to_string();
+        if drive.volumes().is_empty() && seen_volume_names.insert(name.clone()) {
+            detected_drives += 1;
+            let state = if drive.has_media() {
+                "Drive detected (no mounted volume)"
+            } else {
+                "Drive detected (no media mounted)"
+            };
+            items.push(FileItem {
+                name,
+                path: PathBuf::new(),
+                kind: FileKind::Folder,
+                is_dir: false,
+                is_openable: false,
+                detail: Some(state.to_string()),
+                size_bytes: None,
+                modified_unix: None,
+                tags: Vec::new(),
+                original_path: None,
+            });
+        }
+    }
+
+    let fallback = collect_fallback_mounted_locations(&mut seen_paths);
+    let fallback_mounts = fallback.items.len();
+    let skipped_inaccessible = fallback.skipped_inaccessible;
+    items.extend(fallback.items);
+
     sort_items(&mut items);
 
     MountedVolumeListing {
         items,
+        gio_mounts,
+        unmounted_volumes,
+        detected_drives,
+        fallback_mounts,
+        skipped_inaccessible,
         skipped_non_local,
+    }
+}
+
+struct FallbackMountListing {
+    items: Vec<FileItem>,
+    skipped_inaccessible: usize,
+}
+
+fn collect_fallback_mounted_locations(seen_paths: &mut HashSet<PathBuf>) -> FallbackMountListing {
+    let user_name = glib::user_name();
+    let candidates = [
+        PathBuf::from("/run/media").join(user_name),
+        PathBuf::from("/media"),
+        PathBuf::from("/mnt"),
+    ];
+
+    let mut items = Vec::new();
+    let mut skipped_inaccessible = 0usize;
+
+    for base in candidates {
+        let base_file = gio::File::for_path(&base);
+        if !base_file.query_exists(None::<&gio::Cancellable>) {
+            continue;
+        }
+
+        let enumerator = match base_file.enumerate_children(
+            "standard::name,standard::display-name,standard::type,standard::is-hidden",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            None::<&gio::Cancellable>,
+        ) {
+            Ok(enumerator) => enumerator,
+            Err(_) => {
+                skipped_inaccessible += 1;
+                continue;
+            }
+        };
+
+        loop {
+            let next = match enumerator.next_file(None::<&gio::Cancellable>) {
+                Ok(next) => next,
+                Err(_) => {
+                    skipped_inaccessible += 1;
+                    break;
+                }
+            };
+
+            let Some(info) = next else { break };
+            if info.is_hidden() || info.file_type() != gio::FileType::Directory {
+                continue;
+            }
+
+            let path = base.join(info.name());
+            if !seen_paths.insert(path.clone()) {
+                continue;
+            }
+
+            items.push(FileItem {
+                name: info.display_name().to_string(),
+                path: path.clone(),
+                kind: FileKind::Folder,
+                is_dir: true,
+                is_openable: true,
+                detail: Some(format!("Mounted Locations: {}", path.display())),
+                size_bytes: None,
+                modified_unix: None,
+                tags: Vec::new(),
+                original_path: None,
+            });
+        }
+    }
+
+    FallbackMountListing {
+        items,
+        skipped_inaccessible,
+    }
+}
+
+fn drive_listing_status_message(listing: &MountedVolumeListing) -> Option<String> {
+    let mut parts = Vec::new();
+
+    if listing.gio_mounts > 0 {
+        parts.push(format!("{} GIO mount(s)", listing.gio_mounts));
+    }
+    if listing.unmounted_volumes > 0 {
+        parts.push(format!(
+            "{} unmounted volume(s); mounting is not implemented",
+            listing.unmounted_volumes
+        ));
+    }
+    if listing.fallback_mounts > 0 {
+        parts.push(format!(
+            "{} fallback mounted location(s)",
+            listing.fallback_mounts
+        ));
+    }
+    if listing.detected_drives > 0 {
+        parts.push(format!(
+            "{} drive(s) detected without mounted volumes",
+            listing.detected_drives
+        ));
+    }
+    if listing.skipped_non_local > 0 {
+        parts.push(format!(
+            "{} non-local mount(s) skipped",
+            listing.skipped_non_local
+        ));
+    }
+    if listing.skipped_inaccessible > 0 {
+        parts.push(format!(
+            "{} mounted-location folder(s) inaccessible",
+            listing.skipped_inaccessible
+        ));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
     }
 }
 
@@ -11801,6 +12121,8 @@ fn collect_recent_folder_items(
             path,
             kind: FileKind::Folder,
             is_dir: true,
+            is_openable: true,
+            detail: None,
             size_bytes: None,
             modified_unix: None,
             tags: Vec::new(),
@@ -12403,6 +12725,8 @@ mod tests {
             path,
             kind: FileKind::Text,
             is_dir: false,
+            is_openable: true,
+            detail: None,
             size_bytes: None,
             modified_unix: None,
             tags: Vec::new(),
@@ -12864,6 +13188,22 @@ fn friendly_error(error: &glib::Error) -> (&'static str, String) {
 fn friendly_error_detail(error: &glib::Error) -> String {
     let (title, detail) = friendly_error(error);
     format!("{title}: {detail}")
+}
+
+fn trash_operation_error_detail(error: &glib::Error) -> String {
+    let base = friendly_error_detail(error);
+    match error.kind::<gio::IOErrorEnum>() {
+        Some(gio::IOErrorEnum::NotSupported) => format!(
+            "{base}. This filesystem or mount may not support Trash. Permanent Delete is available only through the explicit confirmation flow."
+        ),
+        Some(gio::IOErrorEnum::NotMounted) => {
+            format!("{base}. The mount may have disappeared or is not available.")
+        }
+        Some(gio::IOErrorEnum::PermissionDenied) => {
+            format!("{base}. Check mount permissions or GVfs/portal access.")
+        }
+        _ => format!("{base}. {TRASH_GVFS_DIAGNOSTIC}"),
+    }
 }
 
 fn format_modified_time(time: Option<glib::DateTime>) -> Option<String> {

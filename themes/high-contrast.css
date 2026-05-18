@@ -27,7 +27,7 @@
 window {
     background-color: #000000;
     color: #ffffff;
-    font-family: "Inter", "Cantarell", "Noto Sans", sans-serif;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
     font-size: 13px;
 }
 
@@ -70,6 +70,40 @@ headerbar button:hover,
 headerbar windowcontrols button {
     padding: 2px;
     margin: 0 2px;
+}
+
+.lattice-window-controls {
+    margin-left: 8px;
+}
+
+.lattice-window-control-button {
+    -gtk-icon-size: 14px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #cccccc;
+    margin: 0 1px;
+    min-height: 24px;
+    min-width: 26px;
+    padding: 2px;
+}
+
+.lattice-window-control-button:hover {
+    background-color: #1e1e1e;
+    border-color: #00ffff;
+    color: #00ffff;
+}
+
+.lattice-window-control-button:active {
+    background-color: #2a2a2a;
+    border-color: #00ffff;
+    color: #ffffff;
+}
+
+.lattice-window-close-button:hover {
+    background-color: #55111d;
+    border-color: #ff3355;
+    color: #ffffff;
 }
 
 /* ── Top toolbar ─────────────────────────────────────────── */
@@ -146,7 +180,7 @@ headerbar windowcontrols button {
     color: #ffffff;
     padding: 3px 10px;
     min-height: 26px;
-    font-family: "JetBrains Mono", "Fira Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 .toolbar-path text,
@@ -363,7 +397,7 @@ headerbar windowcontrols button {
 .browser-pane-path {
     color: #888888;
     font-size: 12px;
-    font-family: "JetBrains Mono", "Fira Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 .browser-pane-active .browser-pane-header {
@@ -527,6 +561,12 @@ headerbar windowcontrols button {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.6px;
+}
+
+.file-card-detail {
+    color: #888888;
+    font-size: 10px;
+    margin-top: -1px;
 }
 
 .file-card-tags {
@@ -772,7 +812,7 @@ label.preview-icon.file-type-unknown { color: #888888; background: radial-gradie
 .preview-meta-value {
     color: #cccccc;
     font-size: 12px;
-    font-family: "JetBrains Mono", "Fira Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 .preview-path-value {
@@ -805,7 +845,7 @@ label.preview-icon.file-type-unknown { color: #888888; background: radial-gradie
 .status-path {
     color: #888888;
     font-size: 11px;
-    font-family: "JetBrains Mono", "Fira Mono", monospace;
+    font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
 }
 
 .status-message {
@@ -1036,8 +1076,9 @@ tooltip {
 
 .file-list-icon { font-size: 15px; min-width: 36px; line-height: 1; color: #ffffff; }
 .file-list-name { color: #ffffff; font-size: 13px; padding-left: 6px; padding-right: 14px; }
-.file-list-size { color: #aaaaaa; font-size: 11px; font-family: monospace; padding-right: 10px; }
-.file-list-date { color: #888888; font-size: 11px; font-family: monospace; }
+.file-list-detail { color: #888888; font-size: 11px; font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace; padding-left: 6px; padding-right: 14px; }
+.file-list-size { color: #aaaaaa; font-size: 11px; font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace; padding-right: 10px; }
+.file-list-date { color: #888888; font-size: 11px; font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace; }
 
 .file-list > row.dragging > .file-list-row-inner { opacity: 0.4; }
 
@@ -1070,7 +1111,7 @@ tooltip {
 .landing-header { background-color: #0a0a0a; }
 .landing-project-icon { font-size: 32px; margin-right: 4px; }
 .landing-project-name { font-size: 18px; font-weight: 700; color: #ffffff; letter-spacing: 0.3px; }
-.landing-project-path { font-size: 11px; color: #888888; font-family: monospace; }
+.landing-project-path { font-size: 11px; color: #888888; font-family: "JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace; }
 .landing-actions { margin-top: 10px; }
 .landing-action-btn { background: #141414; border: 1px solid #333333; border-radius: 6px; color: #ffffff; padding: 4px 12px; font-size: 12.5px; transition: background 120ms ease, border-color 120ms ease; }
 .landing-action-btn:hover { background: #1e1e1e; border-color: #00ffff; color: #00ffff; }

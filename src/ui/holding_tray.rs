@@ -215,10 +215,7 @@ where
     let remove_button = Button::from_icon_name("window-close-symbolic");
     remove_button.add_css_class("holding-tray-remove");
     remove_button.add_css_class("toolbar-icon-btn");
-    super::attach_tooltip(
-        &remove_button,
-        "Remove item (Delete)",
-    );
+    super::attach_tooltip(&remove_button, "Remove item (Delete)");
     let path = item.path.clone();
     remove_button.connect_clicked(move |_| on_remove(path.clone()));
     row.append(&remove_button);

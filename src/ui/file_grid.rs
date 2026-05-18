@@ -166,6 +166,8 @@ pub struct FileItem {
     pub path: PathBuf,
     pub kind: FileKind,
     pub is_dir: bool,
+    pub is_openable: bool,
+    pub detail: Option<String>,
     pub size_bytes: Option<u64>,
     pub modified_unix: Option<i64>,
     pub tags: Vec<TagRecord>,
@@ -187,6 +189,8 @@ impl FileItem {
             name: info.display_name().to_string(),
             path,
             is_dir: info.file_type() == FileType::Directory,
+            is_openable: true,
+            detail: None,
             kind,
             size_bytes: (info.size() >= 0).then_some(info.size() as u64),
             modified_unix: info
@@ -608,6 +612,19 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
     name.set_justify(gtk::Justification::Center);
     card.append(&name);
 
+    if let Some(detail_text) = &file.detail {
+        let detail = Label::new(Some(detail_text));
+        detail.add_css_class("file-card-detail");
+        detail.set_halign(gtk::Align::Center);
+        detail.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        detail.set_single_line_mode(true);
+        detail.set_width_chars(FILE_CARD_NAME_MAX_WIDTH_CHARS);
+        detail.set_max_width_chars(FILE_CARD_NAME_MAX_WIDTH_CHARS);
+        detail.set_size_request(FILE_CARD_WIDTH - 10, -1);
+        detail.set_justify(gtk::Justification::Center);
+        card.append(&detail);
+    }
+
     let tags = Box::new(Orientation::Horizontal, 4);
     tags.add_css_class("file-card-tags");
     tags.set_halign(gtk::Align::Center);
@@ -651,16 +668,35 @@ fn build_list_row(file: &FileItem) -> ListBoxRow {
     icon.set_xalign(0.5);
     inner.append(&icon);
 
+    let name_box = Box::new(Orientation::Vertical, 1);
+    name_box.set_hexpand(true);
+    name_box.set_halign(Align::Fill);
+    name_box.set_valign(Align::Center);
+    name_box.set_size_request(1, -1);
+
     let name = Label::new(Some(&file.name));
     name.add_css_class("file-list-name");
-    name.set_hexpand(true);
     name.set_halign(Align::Start);
     name.set_valign(Align::Center);
     name.set_size_request(1, -1);
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
     name.set_single_line_mode(true);
     name.set_xalign(0.0);
-    inner.append(&name);
+    name_box.append(&name);
+
+    if let Some(detail_text) = &file.detail {
+        let detail = Label::new(Some(detail_text));
+        detail.add_css_class("file-list-detail");
+        detail.set_halign(Align::Start);
+        detail.set_valign(Align::Center);
+        detail.set_size_request(1, -1);
+        detail.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        detail.set_single_line_mode(true);
+        detail.set_xalign(0.0);
+        name_box.append(&detail);
+    }
+
+    inner.append(&name_box);
 
     let size_text = if file.is_dir {
         String::new()

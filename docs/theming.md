@@ -67,6 +67,15 @@ theme = "my-theme"
 All stable CSS classes Lattice applies to its widgets. These are safe to target
 in any theme — they will not change between releases within a major version.
 
+## Font stacks
+
+Bundled themes use fallback stacks instead of requiring a single nonstandard font:
+
+- Main UI: `"Inter", "Noto Sans", "DejaVu Sans", sans-serif`
+- Paths, code, file sizes, dates, and text previews: `"JetBrains Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace`
+
+Do not rely on special icon fonts for interface controls. Prefer GTK symbolic icon names or bundled image assets.
+
 ### Layout regions
 
 | Class | Element | Notes |
@@ -85,6 +94,15 @@ in any theme — they will not change between releases within a major version.
 | `.preview-host` | Container that holds the preview pane region | |
 | `.preview-pane` | Right preview panel | |
 | `.status-bar` | Bottom status strip | |
+
+### Window controls
+
+| Class | Notes |
+|-------|-------|
+| `.lattice-titlebar` | Client-side GTK headerbar |
+| `.lattice-window-controls` | Container for built-in minimize, maximize/restore, and close controls |
+| `.lattice-window-control-button` | Shared compact titlebar control button |
+| `.lattice-window-close-button` | Close button danger/hover variant |
 
 ### Toolbar buttons
 
