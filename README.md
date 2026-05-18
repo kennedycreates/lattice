@@ -178,6 +178,75 @@ See [docs/desktop-setup.md](docs/desktop-setup.md) for labwc keybindings, Waybar
 
 The desktop entry ID is `com.lattice.filemanager.desktop`. The application icon name is `lattice`.
 
+## Update an Existing Install
+
+From your Lattice source repository:
+
+```fish
+cd ~/Development/lattice
+
+git status
+git pull --ff-only
+
+cargo fmt --check
+cargo check
+cargo build --release
+
+sudo install -m 755 target/release/lattice /usr/local/bin/lattice
+
+sudo install -Dm 644 com.lattice.filemanager.desktop \
+  /usr/local/share/applications/com.lattice.filemanager.desktop
+
+sudo install -Dm 644 icons/lattice-icon.png \
+  /usr/local/share/lattice/icons/lattice-icon.png
+
+sudo install -Dm 644 icons/lattice-icon.png \
+  /usr/local/share/icons/hicolor/256x256/apps/lattice.png
+
+sudo install -Dm 644 themes/default.css \
+  /usr/local/share/lattice/themes/default.css
+
+sudo install -Dm 644 themes/high-contrast.css \
+  /usr/local/share/lattice/themes/high-contrast.css
+
+sudo update-desktop-database /usr/local/share/applications/
+sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
+```
+
+Updating Lattice does not remove your user config, metadata, projects, tags, receipts, or cache. Those live under:
+
+```text
+~/.config/lattice/
+~/.local/share/lattice/
+~/.cache/lattice/
+```
+
+Optional backup before updating:
+
+```fish
+set stamp (date +%Y%m%d-%H%M%S)
+
+test -d ~/.config/lattice; and cp -a ~/.config/lattice ~/.config/lattice.backup.$stamp
+test -d ~/.local/share/lattice; and cp -a ~/.local/share/lattice ~/.local/share/lattice.backup.$stamp
+```
+
+Verify the installed app:
+
+```fish
+which lattice
+xdg-mime query default inode/directory
+```
+
+The expected default folder opener is:
+
+```text
+com.lattice.filemanager.desktop
+```
+
+If the launcher icon or app entry does not update immediately in COSMIC/GNOME, log out and back in or restart the desktop session.
+
+`cargo run` is for development and testing. Your daily-use installed copy should come from the release binary installed to `/usr/local/bin/lattice`.
+
 ## Uninstall
 
 ```sh
