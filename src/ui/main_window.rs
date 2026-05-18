@@ -5734,11 +5734,13 @@ impl BrowserController {
         let show_hidden = self.show_hidden_cell(slot).get();
         glib::MainContext::default().spawn_local(async move {
             let query_clone = query.clone();
+            let query_name_lower = query_clone.name.to_lowercase();
             let raw = gio::spawn_blocking(move || {
                 let mut results = Vec::new();
                 search_directory_blocking(
                     &query_clone.scope_dir,
                     &query_clone,
+                    &query_name_lower,
                     show_hidden,
                     0,
                     &mut results,
@@ -11202,6 +11204,7 @@ struct SearchEntry {
 fn search_directory_blocking(
     dir: &Path,
     query: &SearchQuery,
+    query_name_lower: &str,
     show_hidden: bool,
     depth: u32,
     results: &mut Vec<FileItem>,
@@ -11267,7 +11270,7 @@ fn search_directory_blocking(
         if cancelled.load(Ordering::Relaxed) || results.len() >= MAX_SEARCH_RESULTS {
             return;
         }
-        if let Some(item) = match_entry(e, query, now_secs) {
+        if let Some(item) = match_entry(e, query, query_name_lower, now_secs) {
             results.push(item);
         }
     }
@@ -11277,18 +11280,31 @@ fn search_directory_blocking(
         if cancelled.load(Ordering::Relaxed) || results.len() >= MAX_SEARCH_RESULTS {
             return;
         }
-        if let Some(item) = match_entry(e, query, now_secs) {
+        if let Some(item) = match_entry(e, query, query_name_lower, now_secs) {
             results.push(item);
         }
         if query.recursive {
-            search_directory_blocking(&e.path, query, show_hidden, depth + 1, results, cancelled);
+            search_directory_blocking(
+                &e.path,
+                query,
+                query_name_lower,
+                show_hidden,
+                depth + 1,
+                results,
+                cancelled,
+            );
         }
     }
 }
 
-fn match_entry(e: &SearchEntry, query: &SearchQuery, now_secs: i64) -> Option<FileItem> {
+fn match_entry(
+    e: &SearchEntry,
+    query: &SearchQuery,
+    query_name_lower: &str,
+    now_secs: i64,
+) -> Option<FileItem> {
     // Name filter
-    if !query.name.is_empty() && !e.fname.to_lowercase().contains(&query.name.to_lowercase()) {
+    if !query_name_lower.is_empty() && !e.fname.to_lowercase().contains(query_name_lower) {
         return None;
     }
 

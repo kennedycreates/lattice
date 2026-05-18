@@ -9,7 +9,7 @@ use std::rc::Rc;
 const CACHE_SIZE: i32 = 128;
 
 /// Maximum thumbnail loads running concurrently per pane.
-const MAX_CONCURRENT: u32 = 6;
+const MAX_CONCURRENT: u32 = 3;
 
 #[derive(Clone, Debug)]
 pub enum ThumbnailKind {

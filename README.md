@@ -65,36 +65,7 @@ The release binary is written to `target/release/lattice`.
 
 ## Install
 
-### Per-User Install
-
-Use this when installing for the current account only:
-
-```sh
-mkdir -p ~/.local/bin
-install -m 755 target/release/lattice ~/.local/bin/lattice
-
-install -Dm 644 com.lattice.filemanager.desktop \
-  ~/.local/share/applications/com.lattice.filemanager.desktop
-
-install -Dm 644 icons/lattice-icon.png \
-  ~/.local/share/lattice/icons/lattice-icon.png
-install -Dm 644 icons/lattice-icon.png \
-  ~/.local/share/icons/hicolor/256x256/apps/lattice.png
-
-install -Dm 644 themes/default.css \
-  ~/.local/share/lattice/themes/default.css
-install -Dm 644 themes/high-contrast.css \
-  ~/.local/share/lattice/themes/high-contrast.css
-
-update-desktop-database ~/.local/share/applications/
-gtk-update-icon-cache ~/.local/share/icons/hicolor/
-```
-
-Make sure `~/.local/bin` is in `PATH`.
-
-### System-Wide Install
-
-Use this when installing for all users:
+Use this after `cargo build --release` when installing for all users:
 
 ```sh
 sudo install -m 755 target/release/lattice /usr/local/bin/lattice
@@ -131,17 +102,42 @@ com.lattice.filemanager.desktop
 
 ## Run
 
+Installed binary:
+
 ```sh
-lattice                                             # home directory
-lattice --path /some/folder                         # specific folder
-lattice /some/folder                                # positional shorthand
-lattice --downloads                                 # Downloads Triage view
-lattice --project "My Project"                      # project landing page
-lattice --split ~/Downloads ~/Documents             # two-panel split
-lattice --split ~/Downloads ~/Documents ~/Pictures  # three-panel split
+lattice
+lattice ~/Documents
+lattice --path ~/Documents
+lattice --downloads
+lattice --project "My Project"
+lattice --split ~/Downloads ~/Documents
+lattice --split ~/Downloads ~/Documents ~/Pictures
 ```
 
-If `--path` or `--project` cannot resolve to a readable folder, Lattice falls back to the home directory.
+From the source tree:
+
+```sh
+cargo run -- ~/Documents
+cargo run -- --downloads
+cargo run -- --project "My Project"
+cargo run -- --split ~/Downloads ~/Documents
+```
+
+Launch options:
+
+| Command | Result |
+| --- | --- |
+| `lattice` | Open Home. |
+| `lattice <folder>` | Open a folder using positional shorthand. |
+| `lattice --path <folder>` | Open a specific folder. |
+| `lattice --downloads` | Open Downloads Triage. |
+| `lattice --project "<name>"` | Open a project landing page by project name, case-insensitive. |
+| `lattice --split <left> <right>` | Open a two-pane layout. |
+| `lattice --split <left> <middle> <right>` | Open a three-pane layout. |
+
+If multiple launch modes are provided, Lattice resolves them in this order: `--split`, then `--path` or a positional folder, then `--downloads`, then `--project`. Invalid or unreadable folders fall back to Home with a status message. A missing project name opens Home with a status message.
+
+Unknown flags are ignored. Options that take values print a terminal warning when the value is missing.
 
 ## Configuration
 
@@ -184,19 +180,6 @@ The desktop entry ID is `com.lattice.filemanager.desktop`. The application icon 
 
 ## Uninstall
 
-Per-user install:
-
-```sh
-rm -f ~/.local/bin/lattice
-rm -f ~/.local/share/applications/com.lattice.filemanager.desktop
-rm -f ~/.local/share/icons/hicolor/256x256/apps/lattice.png
-rm -rf ~/.local/share/lattice
-update-desktop-database ~/.local/share/applications/
-gtk-update-icon-cache ~/.local/share/icons/hicolor/
-```
-
-System-wide install:
-
 ```sh
 sudo rm -f /usr/local/bin/lattice
 sudo rm -f /usr/local/share/applications/com.lattice.filemanager.desktop
@@ -208,58 +191,6 @@ sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
 
 User data is not removed by those commands. Lattice stores config in `~/.config/lattice/` and metadata in `~/.local/share/lattice/metadata.db`.
 
-## Project Structure
-
-```text
-lattice/
-  Cargo.toml
-  Cargo.lock
-  LICENSE
-  README.md
-  com.lattice.filemanager.desktop
-  icons/
-    lattice-icon.png
-  src/
-    main.rs
-    app.rs
-    config.rs
-    launch.rs
-    metadata.rs
-    action_plan.rs
-    thumbnail.rs
-    ui/
-      main_window.rs
-      toolbar.rs
-      sidebar.rs
-      file_grid.rs
-      preview_pane.rs
-      status_bar.rs
-      tab_strip.rs
-      search_panel.rs
-      tag_filter.rs
-      tag_panel.rs
-      project_manager_panel.rs
-      project_landing_panel.rs
-      space_viewer_panel.rs
-      ops_panel.rs
-      holding_tray.rs
-      activity_log_panel.rs
-      plan_queue_panel.rs
-      conflict_resolver.rs
-      bulk_rename.rs
-      modal_host.rs
-  themes/
-    default.css
-    high-contrast.css
-  docs/
-    agent_rules.md
-    desktop-setup.md
-    metadata.md
-    modal_architecture.md
-    product_brief.md
-    theming.md
-```
-
 ## Development
 
 ```sh
@@ -268,6 +199,6 @@ cargo check
 cargo run
 ```
 
-During development, `cargo run` auto-installs the desktop entry and icon into `~/.local/share/` when they are newer than the installed copies. Manual install is still required for release-style testing of the binary, bundled themes, and system-wide paths.
+During development, `cargo run` refreshes the desktop entry and icon under the current account when the source copies are newer. Use the install steps above for release-style testing of the binary, bundled themes, and system-wide paths.
 
 The project uses GitHub Actions (`.github/workflows/ci.yml`) for `cargo fmt --check` and `cargo check` on every push.

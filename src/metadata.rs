@@ -761,11 +761,16 @@ impl MetadataStore {
     }
 
     fn initialize(&mut self) -> Result<(), String> {
+        self.conn
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|error| error.to_string())?;
+
         let version = self
             .conn
             .pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0))
             .map_err(|error| error.to_string())?;
         if version >= DB_SCHEMA_VERSION {
+            self.ensure_indexes()?;
             return Ok(());
         }
 
@@ -852,7 +857,23 @@ impl MetadataStore {
         self.conn
             .pragma_update(None, "user_version", DB_SCHEMA_VERSION)
             .map_err(|error| error.to_string())?;
+        self.ensure_indexes()?;
         Ok(())
+    }
+
+    fn ensure_indexes(&self) -> Result<(), String> {
+        self.conn
+            .execute_batch(
+                "
+                CREATE INDEX IF NOT EXISTS idx_file_tags_file_path ON file_tags(file_path);
+                CREATE INDEX IF NOT EXISTS idx_file_tags_tag_id ON file_tags(tag_id);
+                CREATE INDEX IF NOT EXISTS idx_project_destinations_project_id ON project_destinations(project_id);
+                CREATE INDEX IF NOT EXISTS idx_recent_locations_last_visited ON recent_locations(last_visited_unix DESC);
+                CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp ON activity_log(timestamp_ms DESC);
+                CREATE INDEX IF NOT EXISTS idx_activity_log_items_activity_id ON activity_log_items(activity_id, item_index, id);
+                ",
+            )
+            .map_err(|error| error.to_string())
     }
 
     fn project_by_id(&self, id: i64) -> Result<Option<ProjectRecord>, String> {

@@ -15,7 +15,9 @@ pub fn on_activate(app: &Application, launch: &LaunchConfig) {
     }
     let config = AppConfig::load();
     load_css(&config.theme);
-    install_dev_assets();
+    if cfg!(debug_assertions) {
+        install_dev_assets();
+    }
     let window = MainWindow::new(app, launch, config);
     setup_icon(&window);
     window.present();
