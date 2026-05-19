@@ -1,3 +1,4 @@
+use crate::metadata::{Shape, TintRecord};
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Button, Entry, Label, Orientation, ToggleButton};
 use std::cell::{Cell, RefCell};
@@ -91,6 +92,9 @@ pub struct SearchQuery {
     pub age: SearchAgeFilter,
     pub size: SearchSizeFilter,
     pub tag_id: Option<i64>,
+    pub tint_id: Option<i64>,
+    pub shape: Option<Shape>,
+    pub default_mark_only: bool,
     pub scope_dir: std::path::PathBuf,
     pub recursive: bool,
 }
@@ -103,6 +107,9 @@ impl SearchQuery {
             age: SearchAgeFilter::Any,
             size: SearchSizeFilter::Any,
             tag_id: None,
+            tint_id: None,
+            shape: None,
+            default_mark_only: false,
             scope_dir,
             recursive: true,
         }
@@ -114,6 +121,9 @@ impl SearchQuery {
             && self.age == SearchAgeFilter::Any
             && self.size == SearchSizeFilter::Any
             && self.tag_id.is_none()
+            && self.tint_id.is_none()
+            && self.shape.is_none()
+            && !self.default_mark_only
     }
 }
 
@@ -128,8 +138,18 @@ pub struct SearchPanel {
     pub size_buttons: Vec<(SearchSizeFilter, Button)>,
     pub tag_row: GtkBox,
     tag_buttons: RefCell<Vec<(i64, Button)>>,
+    pub mark_row: GtkBox,
+    mark_buttons: RefCell<Vec<(MarkChip, Button)>>,
     /// True while sync_from_query is running; suppresses connect_changed.
     updating: Cell<bool>,
+}
+
+#[derive(Clone)]
+pub enum MarkChip {
+    AnyMark,
+    DefaultMark,
+    Tint(i64),
+    Shape(Shape),
 }
 
 impl SearchPanel {
@@ -213,6 +233,11 @@ impl SearchPanel {
         tag_row.set_visible(false);
         root.append(&tag_row);
 
+        // ── Row 5: mark chips (populated dynamically) ─────────────────
+        let mark_row = chip_row();
+        mark_row.set_visible(false);
+        root.append(&mark_row);
+
         Self {
             root,
             name_entry,
@@ -223,6 +248,8 @@ impl SearchPanel {
             size_buttons,
             tag_row,
             tag_buttons: RefCell::new(Vec::new()),
+            mark_row,
+            mark_buttons: RefCell::new(Vec::new()),
             updating: Cell::new(false),
         }
     }
@@ -247,6 +274,17 @@ impl SearchPanel {
         }
         for (id, btn) in self.tag_buttons.borrow().iter() {
             set_chip_active(btn, Some(*id) == query.tag_id);
+        }
+        for (chip, btn) in self.mark_buttons.borrow().iter() {
+            let active = match chip {
+                MarkChip::AnyMark => {
+                    !query.default_mark_only && query.tint_id.is_none() && query.shape.is_none()
+                }
+                MarkChip::DefaultMark => query.default_mark_only,
+                MarkChip::Tint(id) => query.tint_id == Some(*id),
+                MarkChip::Shape(s) => query.shape.as_ref().map_or(false, |qs| qs == s),
+            };
+            set_chip_active(btn, active);
         }
         self.updating.set(false);
     }
@@ -282,6 +320,57 @@ impl SearchPanel {
 
     pub fn tag_buttons(&self) -> Vec<(i64, Button)> {
         self.tag_buttons.borrow().clone()
+    }
+
+    pub fn set_tints(&self, tints: &[TintRecord]) {
+        clear_box(&self.mark_row);
+        let mut chips: Vec<(MarkChip, Button)> = Vec::new();
+
+        let label = Label::new(Some("Mark:"));
+        label.add_css_class("search-chip-label");
+        self.mark_row.append(&label);
+
+        let any_btn = chip_button("Any Mark");
+        any_btn.add_css_class("active");
+        self.mark_row.append(&any_btn);
+        chips.push((MarkChip::AnyMark, any_btn));
+
+        let default_btn = chip_button("Beige □");
+        self.mark_row.append(&default_btn);
+        chips.push((MarkChip::DefaultMark, default_btn));
+
+        for tint in tints {
+            let btn = chip_button(&tint.name);
+            self.mark_row.append(&btn);
+            chips.push((MarkChip::Tint(tint.id), btn));
+        }
+
+        let shape_sep = Label::new(Some("Shape:"));
+        shape_sep.add_css_class("search-chip-label");
+        shape_sep.set_margin_start(8);
+        self.mark_row.append(&shape_sep);
+
+        for shape in &[
+            Shape::Circle,
+            Shape::Square,
+            Shape::Triangle,
+            Shape::Pentagon,
+            Shape::Hexagon,
+            Shape::Octagon,
+            Shape::Trapezoid,
+        ] {
+            let btn = chip_button(shape.glyph());
+            super::attach_tooltip(&btn, shape.display_name());
+            self.mark_row.append(&btn);
+            chips.push((MarkChip::Shape(*shape), btn));
+        }
+
+        self.mark_row.set_visible(true);
+        self.mark_buttons.replace(chips);
+    }
+
+    pub fn mark_buttons(&self) -> Vec<(MarkChip, Button)> {
+        self.mark_buttons.borrow().clone()
     }
 }
 

@@ -305,7 +305,7 @@ headerbar windowcontrols button {
 
 .tab-chip {
     background-color: transparent;
-    border-bottom: 2px solid transparent;
+    border-bottom: 3px solid transparent;
     border-radius: 0;
     padding: 0 2px 0 0;
 }
@@ -429,7 +429,7 @@ headerbar windowcontrols button {
 
 .pane-view-btn {
     background: transparent;
-    border: none;
+    border: 1px solid transparent;
     box-shadow: none;
     min-width: 24px;
     min-height: 24px;
@@ -926,7 +926,6 @@ scrollbar slider {
     min-width: 6px;
     min-height: 40px;
     margin: 2px;
-    transition: background 100ms ease;
 }
 
 scrollbar slider:hover {
@@ -955,31 +954,6 @@ tooltip {
     color: #ffffff;
     font-size: 12px;
 }
-
-/* ── Bulk Rename dialog ───────────────────────────────────── */
-
-.bulk-rename-mode-btn { border: 2px solid #606060; background: #000; color: #ccc; padding: 5px 18px; border-radius: 4px; }
-.bulk-rename-mode-btn:checked { border-color: #ffff00; color: #ffff00; background: #111; }
-.bulk-rename-mode-btn > check { min-width: 0; min-height: 0; opacity: 0; margin: 0; padding: 0; }
-.bulk-rename-field-label { color: #cccccc; font-size: 12px; }
-.bulk-rename-spin { background: #000; border: 2px solid #606060; color: #fff; min-width: 80px; padding: 4px 8px; }
-.bulk-rename-sep { background-color: #606060; min-height: 2px; }
-.bulk-rename-section-label { color: #cccccc; font-size: 11px; }
-.bulk-rename-preview-scroll { background: #000; border: 2px solid #606060; min-height: 180px; }
-.bulk-rename-preview { background: transparent; }
-.bulk-rename-preview > row { background: transparent; padding: 0; }
-.bulk-rename-row { border-bottom: 1px solid #333; }
-.bulk-rename-row-conflict { background: #330000; }
-.bulk-rename-old { color: #999; font-size: 12px; }
-.bulk-rename-arrow { color: #666; font-size: 12px; }
-.bulk-rename-new { color: #00ff00; font-size: 12px; }
-.bulk-rename-new-unchanged { color: #666; font-size: 12px; font-style: italic; }
-.bulk-rename-new-conflict { color: #ff4444; font-size: 12px; }
-.bulk-rename-conflict-icon { color: #ff4444; font-size: 12px; }
-.bulk-rename-warn { color: #ff4444; font-size: 12px; }
-.dialog-btn-accept { background: #002200; border: 2px solid #00aa00; color: #00ff00; padding: 5px 14px; border-radius: 4px; }
-.dialog-btn-accept:hover { background: #004400; }
-.dialog-btn-accept:disabled { background: transparent; border-color: #333; color: #555; }
 
 /* ── Tag Filter Panel ────────────────────────────────────── */
 .tf-panel { background: #0a000f; border-bottom: 2px solid #880088; }
@@ -1176,3 +1150,37 @@ tooltip {
 .tm-delete-btn:hover { color: #ff3355; background: #ff335518; }
 .tm-empty { color: #888888; font-size: 13px; font-style: italic; padding: 28px 18px; }
 .tm-color-popover .tm-swatch-popover-row { padding: 6px 8px; }
+
+/* ── Bulk Naming Panel ─────────────────────────────────────── */
+.bn-panel { background: #000000; }
+.bn-recipe-wrap, .bn-footer { background: #080808; border-color: #333333; padding: 8px 12px; }
+.bn-toolbar { background: #080808; border-bottom: 1px solid #333333; padding: 6px 10px; }
+.bn-filter-dropdown { min-width: 84px; }
+.bn-icon-button { background: #050505; border: 1px solid #555555; border-radius: 4px; color: #888888; padding: 3px 6px; min-width: 0; }
+.bn-icon-button:hover { border-color: #00ffff; color: #00ffff; }
+.bn-recipe-header { background: #060606; border-bottom: 1px solid #222222; padding: 1px 12px; }
+.bn-recipe-toggle { background: transparent; border: none; box-shadow: none; color: #555555; font-size: 10px; font-weight: 800; text-transform: uppercase; padding: 4px 0; outline: none; }
+.bn-recipe-toggle:hover { color: #00ffff; background: transparent; }
+.bn-recipe-wrap { border-bottom: 1px solid #333333; }
+.bn-footer { border-top: 1px solid #333333; }
+.bn-title { color: #ffffff; font-size: 16px; font-weight: 800; }
+.bn-summary, .bn-row-status, .bn-empty { color: #888888; font-size: 11px; }
+.bn-toggle, .bn-recipe-button { background: #050505; border: 1px solid #555555; border-radius: 4px; color: #cccccc; padding: 3px 8px; font-size: 11px; font-weight: 700; }
+.bn-toggle:hover, .bn-recipe-button:hover { border-color: #00ffff; color: #00ffff; }
+.bn-filter-entry, .bn-recipe-entry, .bn-name-entry { background: #000000; border: 1px solid #555555; border-radius: 4px; color: #ffffff; padding: 4px 8px; caret-color: #00ffff; }
+.bn-filter-entry:focus, .bn-recipe-entry:focus, .bn-name-entry:focus { border-color: #00ffff; }
+.bn-ops-row { margin-top: 2px; }
+.bn-ops-chip { background: #050505; border: 1px solid #555555; border-radius: 4px; color: #cccccc; padding: 3px 8px; font-size: 10.5px; font-weight: 700; }
+.bn-ops-chip:hover { border-color: #00ffff; color: #00ffff; }
+.bn-list, .bn-scroll { background: #000000; }
+.bn-list { margin: 8px 10px; }
+.bn-row { background: transparent; border-bottom: 1px solid #333333; }
+.bn-row-body { padding: 7px 8px; }
+.bn-row:hover { background: #111111; }
+.bn-row-conflict { background: #220008; }
+.bn-row-mark { color: #00ffff; font-size: 15px; }
+.bn-current-name { color: #ffffff; font-size: 12px; }
+.bn-status-conflict { color: #ff3355; }
+.bn-entry-conflict { border-color: #ff3355; }
+.bn-apply-button { background: #00ffff; border: 1px solid #ffffff; border-radius: 4px; color: #000000; font-size: 12px; font-weight: 900; padding: 5px 12px; }
+.bn-apply-button:disabled { opacity: 0.45; }

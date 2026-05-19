@@ -1,40 +1,19 @@
 use crate::metadata::TagRecord;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, Entry, EventControllerKey, Label, Orientation, Popover, Revealer,
+    Align, Box as GtkBox, Button, Entry, EventControllerKey, Label, Orientation, Revealer,
     RevealerTransitionType, ScrolledWindow, Stack,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-pub const TAG_PALETTE: [(&str, &str); 8] = [
-    ("#00e5ff", "tag-color-0"),
-    ("#10b981", "tag-color-1"),
-    ("#f59e0b", "tag-color-2"),
-    ("#ff4b6e", "tag-color-3"),
-    ("#a855f7", "tag-color-4"),
-    ("#38bdf8", "tag-color-5"),
-    ("#22c55e", "tag-color-6"),
-    ("#f97316", "tag-color-7"),
-];
-
-pub fn tag_color_class(color: Option<&str>) -> &'static str {
-    let Some(c) = color else { return "tag-color-0" };
-    TAG_PALETTE
-        .iter()
-        .find(|(hex, _)| hex.eq_ignore_ascii_case(c))
-        .map(|(_, class)| *class)
-        .unwrap_or("tag-color-0")
-}
-
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 struct Callbacks {
     on_tag_clicked: RefCell<Option<Box<dyn Fn(i64)>>>,
-    on_tag_created: RefCell<Option<Box<dyn Fn(String, String)>>>,
+    on_tag_created: RefCell<Option<Box<dyn Fn(String)>>>,
     on_tag_renamed: RefCell<Option<Box<dyn Fn(i64, String)>>>,
-    on_tag_recolored: RefCell<Option<Box<dyn Fn(i64, String)>>>,
     on_tag_deleted: RefCell<Option<Box<dyn Fn(i64)>>>,
 }
 
@@ -44,7 +23,6 @@ impl Callbacks {
             on_tag_clicked: RefCell::new(None),
             on_tag_created: RefCell::new(None),
             on_tag_renamed: RefCell::new(None),
-            on_tag_recolored: RefCell::new(None),
             on_tag_deleted: RefCell::new(None),
         }
     }
@@ -57,7 +35,6 @@ struct Inner {
     empty_hint: Label,
     create_revealer: Revealer,
     create_name_entry: Entry,
-    create_color_selected: RefCell<String>,
     cbs: Callbacks,
 }
 
@@ -105,26 +82,6 @@ impl TagManagerPanel {
         create_name_entry.set_placeholder_text(Some("Tag name…"));
         create_row.append(&create_name_entry);
 
-        // 8-color swatch row
-        let swatch_row = GtkBox::new(Orientation::Horizontal, 6);
-        swatch_row.add_css_class("tm-swatch-row");
-
-        let create_color_selected = RefCell::new(TAG_PALETTE[0].0.to_string());
-        let mut create_swatch_btns: Vec<(String, Button)> = Vec::new();
-
-        for (i, (hex, _)) in TAG_PALETTE.iter().enumerate() {
-            let btn = Button::new();
-            btn.add_css_class("tm-swatch-btn");
-            btn.add_css_class(&format!("tm-swatch-{}", i));
-            if i == 0 {
-                btn.add_css_class("selected");
-            }
-            swatch_row.append(&btn);
-            create_swatch_btns.push((hex.to_string(), btn));
-        }
-
-        create_row.append(&swatch_row);
-
         let create_actions = GtkBox::new(Orientation::Horizontal, 6);
         create_actions.add_css_class("tm-create-actions");
 
@@ -164,27 +121,8 @@ impl TagManagerPanel {
             empty_hint,
             create_revealer: create_revealer.clone(),
             create_name_entry: create_name_entry.clone(),
-            create_color_selected,
             cbs: Callbacks::new(),
         });
-
-        // ── Wire create swatch buttons ──────────────────────────────────────────
-        for (idx, (hex, btn)) in create_swatch_btns.iter().enumerate() {
-            let hex = hex.clone();
-            let inner = Rc::clone(&inner);
-            let all_btns: Vec<Button> = create_swatch_btns.iter().map(|(_, b)| b.clone()).collect();
-            btn.connect_clicked(move |clicked| {
-                *inner.create_color_selected.borrow_mut() = hex.clone();
-                for (i, b) in all_btns.iter().enumerate() {
-                    if i == idx {
-                        b.add_css_class("selected");
-                    } else {
-                        b.remove_css_class("selected");
-                    }
-                }
-                let _ = clicked;
-            });
-        }
 
         // ── Wire new-tag button ─────────────────────────────────────────────────
         {
@@ -256,16 +194,12 @@ impl TagManagerPanel {
         *self.inner.cbs.on_tag_clicked.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn connect_tag_created<F: Fn(String, String) + 'static>(&self, f: F) {
+    pub fn connect_tag_created<F: Fn(String) + 'static>(&self, f: F) {
         *self.inner.cbs.on_tag_created.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_tag_renamed<F: Fn(i64, String) + 'static>(&self, f: F) {
         *self.inner.cbs.on_tag_renamed.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_tag_recolored<F: Fn(i64, String) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_tag_recolored.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_tag_deleted<F: Fn(i64) + 'static>(&self, f: F) {
@@ -281,24 +215,16 @@ fn fire_create(inner: &Rc<Inner>) {
     if name.is_empty() {
         return;
     }
-    let color = inner.create_color_selected.borrow().clone();
     inner.create_revealer.set_reveal_child(false);
     inner.create_name_entry.set_text("");
     if let Some(cb) = inner.cbs.on_tag_created.borrow().as_ref() {
-        cb(name, color);
+        cb(name);
     }
 }
 
 fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 6);
     row.add_css_class("tm-row");
-
-    // Color dot
-    let dot = Label::new(Some("●"));
-    dot.add_css_class("tm-dot");
-    dot.add_css_class(tag_color_class(tag.color.as_deref()));
-    dot.set_valign(Align::Center);
-    row.append(&dot);
 
     // Name stack (label / entry)
     let name_stack = Stack::new();
@@ -400,65 +326,6 @@ fn build_tag_row(tag: &TagRecord, count: usize, inner: &Rc<Inner>) -> GtkBox {
         });
         name_entry.add_controller(key_ctrl);
     }
-
-    // Color change button → Popover with swatch row
-    let color_btn = Button::with_label("●");
-    color_btn.add_css_class("tm-color-btn");
-    color_btn.add_css_class(tag_color_class(tag.color.as_deref()));
-    {
-        let tag_id = tag.id;
-        let inner = Rc::clone(inner);
-        let color_btn_ref = color_btn.clone();
-        let current_color = tag
-            .color
-            .clone()
-            .unwrap_or_else(|| TAG_PALETTE[0].0.to_string());
-
-        color_btn.connect_clicked(move |btn| {
-            let popover = Popover::new();
-            popover.add_css_class("tm-color-popover");
-            popover.set_has_arrow(true);
-
-            let swatch_row = GtkBox::new(Orientation::Horizontal, 6);
-            swatch_row.add_css_class("tm-swatch-popover-row");
-
-            for (i, (hex, _)) in TAG_PALETTE.iter().enumerate() {
-                let swatch = Button::new();
-                swatch.add_css_class("tm-swatch-btn");
-                swatch.add_css_class(&format!("tm-swatch-{}", i));
-                if hex.eq_ignore_ascii_case(&current_color) {
-                    swatch.add_css_class("selected");
-                }
-                let hex_str = hex.to_string();
-                let inner = Rc::clone(&inner);
-                let popover_ref = popover.clone();
-                let color_btn_inner = color_btn_ref.clone();
-                swatch.connect_clicked(move |_| {
-                    popover_ref.popdown();
-                    // Update the color button's own CSS class
-                    for (_, c) in TAG_PALETTE.iter() {
-                        color_btn_inner.remove_css_class(c);
-                    }
-                    color_btn_inner.add_css_class(tag_color_class(Some(&hex_str)));
-                    if let Some(cb) = inner.cbs.on_tag_recolored.borrow().as_ref() {
-                        cb(tag_id, hex_str.clone());
-                    }
-                });
-                swatch_row.append(&swatch);
-            }
-
-            popover.set_child(Some(&swatch_row));
-            popover.set_parent(btn);
-            popover.popup();
-
-            // Auto-unparent when closed
-            let popover_clone = popover.clone();
-            popover.connect_closed(move |_| {
-                popover_clone.unparent();
-            });
-        });
-    }
-    row.append(&color_btn);
 
     // Delete button
     let delete_btn = Button::with_label("🗑");

@@ -122,6 +122,8 @@ fn kind_icon(kind: &OpKind) -> &'static str {
         OpKind::NewFolder => "📁",
         OpKind::NewFile => "📄",
         OpKind::SendToProject { .. } => "🗂",
+        OpKind::PaintMark { .. } => "🎨",
+        OpKind::ResetMark { .. } => "◻",
     }
 }
 

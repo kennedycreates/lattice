@@ -1,3 +1,4 @@
+use crate::metadata::Shape;
 use crate::ui::file_grid::FileKind;
 use gio::FileType;
 use gtk::cairo;
@@ -42,16 +43,26 @@ enum SpaceView {
     Breakdown,
     TopItems,
     Categories,
+    ByTint,
+    ByShape,
 }
 
 impl SpaceView {
-    const ALL: &'static [SpaceView] = &[Self::Breakdown, Self::TopItems, Self::Categories];
+    const ALL: &'static [SpaceView] = &[
+        Self::Breakdown,
+        Self::TopItems,
+        Self::Categories,
+        Self::ByTint,
+        Self::ByShape,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Self::Breakdown => "BREAKDOWN",
             Self::TopItems => "TOP ITEMS",
             Self::Categories => "CATEGORIES",
+            Self::ByTint => "BY TINT",
+            Self::ByShape => "BY SHAPE",
         }
     }
 
@@ -60,6 +71,8 @@ impl SpaceView {
             Self::Breakdown => "breakdown",
             Self::TopItems => "top_items",
             Self::Categories => "categories",
+            Self::ByTint => "by_tint",
+            Self::ByShape => "by_shape",
         }
     }
 }
@@ -83,6 +96,23 @@ pub struct CategoryStat {
 #[derive(Clone, Debug)]
 pub struct FileStat {
     pub path: PathBuf,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct TintStat {
+    pub tint_id: i64,
+    pub name: String,
+    pub color: String,
+    pub count: u64,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShapeStat {
+    pub shape: Shape,
+    pub count: u64,
     pub bytes: u64,
 }
 
@@ -427,6 +457,7 @@ struct Callbacks {
     on_add_to_tray: RefCell<Option<Box<dyn Fn(Vec<PathBuf>)>>>,
     on_copy_path: RefCell<Option<Box<dyn Fn(PathBuf)>>>,
     on_trash: RefCell<Option<Box<dyn Fn(PathBuf)>>>,
+    on_scan_complete: RefCell<Option<Box<dyn Fn(PathBuf)>>>,
 }
 
 struct Inner {
@@ -478,6 +509,12 @@ struct Inner {
 
     // categories
     categories_box: GtkBox,
+
+    // by tint / by shape
+    tint_list: GtkBox,
+    shape_list: GtkBox,
+    mark_stats_by_tint: RefCell<Vec<TintStat>>,
+    mark_stats_by_shape: RefCell<Vec<ShapeStat>>,
 
     cbs: Callbacks,
 }
@@ -660,6 +697,28 @@ impl SpaceViewerPanel {
         cat_outer.append(&categories_box);
         view_stack.add_named(&scrolled_view(&cat_outer), Some("categories"));
 
+        // BY TINT
+        let tint_outer = GtkBox::new(Orientation::Vertical, 0);
+        let tint_heading = Label::new(Some("BY TINT"));
+        tint_heading.add_css_class("sv-section-heading");
+        tint_heading.set_halign(Align::Start);
+        tint_outer.append(&tint_heading);
+        let tint_list = GtkBox::new(Orientation::Vertical, 0);
+        tint_list.set_margin_bottom(12);
+        tint_outer.append(&tint_list);
+        view_stack.add_named(&scrolled_view(&tint_outer), Some("by_tint"));
+
+        // BY SHAPE
+        let shape_outer = GtkBox::new(Orientation::Vertical, 0);
+        let shape_heading = Label::new(Some("BY SHAPE"));
+        shape_heading.add_css_class("sv-section-heading");
+        shape_heading.set_halign(Align::Start);
+        shape_outer.append(&shape_heading);
+        let shape_list = GtkBox::new(Orientation::Vertical, 0);
+        shape_list.set_margin_bottom(12);
+        shape_outer.append(&shape_list);
+        view_stack.add_named(&scrolled_view(&shape_outer), Some("by_shape"));
+
         root.append(&view_stack);
 
         let inner = Rc::new(Inner {
@@ -696,12 +755,17 @@ impl SpaceViewerPanel {
             files_list,
             dirs_list,
             categories_box,
+            tint_list,
+            shape_list,
+            mark_stats_by_tint: RefCell::new(Vec::new()),
+            mark_stats_by_shape: RefCell::new(Vec::new()),
             cbs: Callbacks {
                 on_open: RefCell::new(None),
                 on_reveal: RefCell::new(None),
                 on_add_to_tray: RefCell::new(None),
                 on_copy_path: RefCell::new(None),
                 on_trash: RefCell::new(None),
+                on_scan_complete: RefCell::new(None),
             },
         });
 
@@ -920,6 +984,10 @@ impl SpaceViewerPanel {
         clear_box(&self.inner.dirs_list);
         clear_box(&self.inner.legend_box);
         clear_box(&self.inner.categories_box);
+        clear_box(&self.inner.tint_list);
+        clear_box(&self.inner.shape_list);
+        self.inner.mark_stats_by_tint.borrow_mut().clear();
+        self.inner.mark_stats_by_shape.borrow_mut().clear();
         self.inner.chart_segments.borrow_mut().clear();
         self.inner.chart_area.queue_draw();
 
@@ -944,7 +1012,11 @@ impl SpaceViewerPanel {
             if panel.inner.generation.get() != gen {
                 return;
             }
+            let scan_root = result.root.clone();
             panel.apply_result(result);
+            if let Some(cb) = panel.inner.cbs.on_scan_complete.borrow().as_ref() {
+                cb(scan_root);
+            }
         });
     }
 
@@ -1211,6 +1283,51 @@ impl SpaceViewerPanel {
     pub fn connect_trash_file<F: Fn(PathBuf) + 'static>(&self, f: F) {
         *self.inner.cbs.on_trash.borrow_mut() = Some(Box::new(f));
     }
+
+    pub fn connect_scan_complete<F: Fn(PathBuf) + 'static>(&self, f: F) {
+        *self.inner.cbs.on_scan_complete.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn set_mark_stats(&self, by_tint: Vec<TintStat>, by_shape: Vec<ShapeStat>) {
+        *self.inner.mark_stats_by_tint.borrow_mut() = by_tint;
+        *self.inner.mark_stats_by_shape.borrow_mut() = by_shape;
+        self.rebuild_tint_list();
+        self.rebuild_shape_list();
+    }
+
+    fn rebuild_tint_list(&self) {
+        clear_box(&self.inner.tint_list);
+        let stats = self.inner.mark_stats_by_tint.borrow();
+        if stats.is_empty() {
+            self.inner
+                .tint_list
+                .append(&empty_hint("No marked files in this folder."));
+            return;
+        }
+        let max_count = stats.iter().map(|s| s.count).max().unwrap_or(1).max(1);
+        for stat in stats.iter() {
+            self.inner
+                .tint_list
+                .append(&build_mark_stat_row_tint(stat, max_count));
+        }
+    }
+
+    fn rebuild_shape_list(&self) {
+        clear_box(&self.inner.shape_list);
+        let stats = self.inner.mark_stats_by_shape.borrow();
+        if stats.is_empty() {
+            self.inner
+                .shape_list
+                .append(&empty_hint("No marked files in this folder."));
+            return;
+        }
+        let max_count = stats.iter().map(|s| s.count).max().unwrap_or(1).max(1);
+        for stat in stats.iter() {
+            self.inner
+                .shape_list
+                .append(&build_mark_stat_row_shape(stat, max_count));
+        }
+    }
 }
 
 // ─── pie chart ────────────────────────────────────────────────────────────────
@@ -1380,4 +1497,84 @@ fn clear_box(b: &GtkBox) {
     while let Some(child) = b.first_child() {
         b.remove(&child);
     }
+}
+
+fn build_mark_stat_row_tint(stat: &TintStat, max_count: u64) -> GtkBox {
+    let row = GtkBox::new(Orientation::Vertical, 2);
+    row.add_css_class("sv-bar-row");
+    row.add_css_class("sv-mark-row");
+
+    let top = GtkBox::new(Orientation::Horizontal, 6);
+    let chip = DrawingArea::new();
+    chip.set_content_width(12);
+    chip.set_content_height(12);
+    chip.set_valign(Align::Center);
+    {
+        let color = stat.color.clone();
+        chip.set_draw_func(move |_, cr, w, h| {
+            if let Ok(rgba) = gtk::gdk::RGBA::parse(&color) {
+                cr.set_source_rgba(
+                    rgba.red() as f64,
+                    rgba.green() as f64,
+                    rgba.blue() as f64,
+                    1.0,
+                );
+                cr.rectangle(0.0, 0.0, w as f64, h as f64);
+                let _ = cr.fill();
+            }
+        });
+    }
+    chip.add_css_class("sv-mark-color-chip");
+    top.append(&chip);
+    let name_lbl = Label::new(Some(&stat.name));
+    name_lbl.add_css_class("sv-bar-name");
+    name_lbl.set_halign(Align::Start);
+    name_lbl.set_hexpand(true);
+    top.append(&name_lbl);
+    let count_lbl = Label::new(Some(&format!(
+        "{}  ·  {}",
+        stat.count,
+        format_size(stat.bytes)
+    )));
+    count_lbl.add_css_class("sv-bar-size");
+    top.append(&count_lbl);
+    row.append(&top);
+
+    let bar = ProgressBar::new();
+    bar.add_css_class("sv-bar-progress");
+    bar.set_fraction(stat.count as f64 / max_count as f64);
+    bar.set_margin_start(20);
+    row.append(&bar);
+    row
+}
+
+fn build_mark_stat_row_shape(stat: &ShapeStat, max_count: u64) -> GtkBox {
+    let row = GtkBox::new(Orientation::Vertical, 2);
+    row.add_css_class("sv-bar-row");
+    row.add_css_class("sv-mark-row");
+
+    let top = GtkBox::new(Orientation::Horizontal, 6);
+    let glyph_lbl = Label::new(Some(stat.shape.glyph()));
+    glyph_lbl.add_css_class("sv-mark-shape-glyph");
+    top.append(&glyph_lbl);
+    let name_lbl = Label::new(Some(stat.shape.display_name()));
+    name_lbl.add_css_class("sv-bar-name");
+    name_lbl.set_halign(Align::Start);
+    name_lbl.set_hexpand(true);
+    top.append(&name_lbl);
+    let count_lbl = Label::new(Some(&format!(
+        "{}  ·  {}",
+        stat.count,
+        format_size(stat.bytes)
+    )));
+    count_lbl.add_css_class("sv-bar-size");
+    top.append(&count_lbl);
+    row.append(&top);
+
+    let bar = ProgressBar::new();
+    bar.add_css_class("sv-bar-progress");
+    bar.set_fraction(stat.count as f64 / max_count as f64);
+    bar.set_margin_start(20);
+    row.append(&bar);
+    row
 }

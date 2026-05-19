@@ -1,9 +1,7 @@
 use crate::metadata::{ProjectDestinationRecord, ProjectRecord};
-use crate::ui::tag_panel::tag_color_class;
 use gtk::prelude::*;
 use gtk::{
     Align, Box as GtkBox, Button, FlowBox, GestureClick, Label, Orientation, ScrolledWindow,
-    Separator,
 };
 use std::path::PathBuf;
 
@@ -17,15 +15,16 @@ impl ProjectLandingPanel {
     pub fn build() -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("project-landing");
-        root.set_vexpand(true);
+        root.set_vexpand(false);
         root.set_hexpand(true);
         root.set_visible(false);
 
         let scroll = ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .vexpand(true)
+            .vexpand(false)
             .hexpand(true)
+            .max_content_height(220)
             .build();
 
         let inner = GtkBox::new(Orientation::Vertical, 0);
@@ -36,16 +35,14 @@ impl ProjectLandingPanel {
         Self { root, inner }
     }
 
-    pub fn populate<FBack, FNav, FRemove, FPin>(
+    pub fn populate<FNav, FRemove, FPin>(
         &self,
-        project: &ProjectRecord,
+        _project: &ProjectRecord,
         destinations: &[ProjectDestinationRecord],
-        on_back: FBack,
         on_navigate: FNav,
         on_remove_pin: FRemove,
         on_pin_folder: FPin,
     ) where
-        FBack: Fn() + 'static,
         FNav: Fn(PathBuf) + Clone + 'static,
         FRemove: Fn(i64) + Clone + 'static,
         FPin: Fn() + 'static,
@@ -54,12 +51,6 @@ impl ProjectLandingPanel {
             self.inner.remove(&child);
         }
 
-        self.inner.append(&build_header(project, on_back));
-
-        let sep = Separator::new(Orientation::Horizontal);
-        sep.add_css_class("landing-sep");
-        self.inner.append(&sep);
-
         self.inner.append(&build_pins_section(
             destinations,
             on_navigate,
@@ -67,41 +58,6 @@ impl ProjectLandingPanel {
             on_pin_folder,
         ));
     }
-}
-
-fn build_header<FBack>(project: &ProjectRecord, on_back: FBack) -> GtkBox
-where
-    FBack: Fn() + 'static,
-{
-    let section = GtkBox::new(Orientation::Vertical, 8);
-    section.add_css_class("landing-section");
-    section.add_css_class("landing-header");
-
-    // Back breadcrumb
-    let back_btn = Button::with_label("← Projects");
-    back_btn.add_css_class("landing-back-btn");
-    back_btn.set_halign(Align::Start);
-    back_btn.connect_clicked(move |_| on_back());
-    section.append(&back_btn);
-
-    // Title row: color dot + name
-    let title_row = GtkBox::new(Orientation::Horizontal, 10);
-    title_row.set_valign(Align::Center);
-
-    let dot = Label::new(Some("●"));
-    dot.add_css_class("landing-project-dot");
-    dot.add_css_class(tag_color_class(project.color.as_deref()));
-    dot.set_valign(Align::Center);
-    title_row.append(&dot);
-
-    let name_label = Label::new(Some(&project.name));
-    name_label.add_css_class("landing-project-name");
-    name_label.set_halign(Align::Start);
-    name_label.set_hexpand(true);
-    title_row.append(&name_label);
-
-    section.append(&title_row);
-    section
 }
 
 fn build_pins_section<FNav, FRemove, FPin>(
@@ -129,7 +85,7 @@ where
     pin_btn.add_css_class("landing-add-btn");
     pin_btn.set_valign(Align::Center);
     pin_btn.connect_clicked(move |_| on_pin_folder());
-    crate::ui::attach_tooltip(&pin_btn, "Pin a folder to this project");
+    crate::ui::attach_tooltip(&pin_btn, "Pin a folder to this palette");
     heading_row.append(&pin_btn);
 
     section.append(&heading_row);

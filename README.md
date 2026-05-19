@@ -5,20 +5,23 @@ Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. The suppo
 ## Features
 
 **Navigation**
-- Icon grid with folder-first sorting, per-pane hidden-file toggle, and icon/list view switch
+- Icon grid with folder-first sorting, per-pane hidden-file toggle, per-pane Shape badge visibility, and icon/list view switch
 - Tabbed browsing with two- and three-panel split view
 - Back, Up, Refresh, and a breadcrumb location bar with inline path editing and autocomplete
-- Sidebar: Home, user-pinned Places, System Drives, Recent, Trash, Search, Space Viewer, Triage, Activity Log, Tags, and Projects
+- Sidebar: Home, user-pinned Places, System Drives, Recent, Trash, Palettes, Tints & Tags, Search, Space Viewer, Triage, Bulk Naming, and Activity Log
 
 **File Operations**
-- Copy, move, rename, new folder, new text document, and move to trash
+- Copy, move, rename, visual bulk naming, new folder, new text document, and move to trash
 - Batched conflict resolver before copy/move operations begin, with Keep Both, Replace, and Skip choices
 - Drag and drop within and between panes, and onto sidebar targets
 - Holding Tray for staging files from multiple locations before batch actions
+- Bulk Naming: full-pane bulk rename workspace with tint, shape, tag, kind, and name filters; spreadsheet-style manual edits; recipe buttons for find/replace, prefix, suffix, numbering, and case cleanup; live conflict blocking before files are renamed
 
 **Workspace**
-- Projects: user-defined named collections with a color; manage them in the Project Manager panel and pin folders to each project landing page
-- Tags: create, rename, recolor, delete, and filter folder views by tag
+- Tints, Shapes, and Marks: global color categories managed with a visual color picker plus fixed shape categories; every file/folder resolves to one Mark, defaulting to Beige + Square when no explicit mark exists. Tint glow stays visible while each pane can independently hide or show the small Shape badge overlay.
+- **Painting Mode**: a dedicated paint-style marking mode toggled from the toolbar. When active, a compact tool strip appears with a Tint selector, Shape selector, and four tools — Brush (click or drag to mark files), Eraser (reset to Beige Square), Eyedropper (pick a mark from a file), and Fill Selection (mark all selected files at once). A Paint Contents toggle makes folder painting apply recursively; recursive operations show a confirmation dialog and run off the GTK main thread. All painting operations log to the Activity Log with counts and names ("Marked 12 items Cyan Triangle").
+- Tags: secondary text labels; create, rename, delete, and filter folder views by tag
+- **Palette Boards**: open any Palette to enter a spatial board — add file, folder, or note cards; move and resize cards freely; draw weak (dashed) or strong (solid) links between cards; all card geometry and links persist across sessions; removing a card never deletes the underlying file
 - Space Viewer: disk usage analysis for the active folder — total size, file/folder counts, pie chart by file type, ranked largest files and subfolders, three scan depths (folder only, one level deep, full recursive with cancellation), and row actions (open, reveal, add to Holding Tray, copy path, move to trash)
 - Downloads Triage: Images, Videos, Archives, Documents, Large Files, Today, This Week, This Month, and Older filters
 - Folder search with name, kind, date, size, and tag filters; current-folder or recursive scope
@@ -132,7 +135,7 @@ sudo install -Dm 644 com.lattice.filemanager.desktop \
 
 sudo install -Dm 644 icons/lattice-icon.png \
   /usr/local/share/lattice/icons/lattice-icon.png
-sudo install -Dm 644 icons/lattice-icon.png \
+sudo install -Dm 644 icons/lattice.png \
   /usr/local/share/icons/hicolor/256x256/apps/lattice.png
 
 sudo install -Dm 644 themes/default.css \
@@ -172,7 +175,7 @@ lattice
 lattice ~/Documents
 lattice --path ~/Documents
 lattice --downloads
-lattice --project "My Project"
+lattice --project "My Palette"
 lattice --split ~/Downloads ~/Documents
 lattice --split ~/Downloads ~/Documents ~/Pictures
 ```
@@ -182,7 +185,7 @@ From the source tree:
 ```sh
 cargo run -- ~/Documents
 cargo run -- --downloads
-cargo run -- --project "My Project"
+cargo run -- --project "My Palette"
 cargo run -- --split ~/Downloads ~/Documents
 ```
 
@@ -194,11 +197,11 @@ Launch options:
 | `lattice <folder>` | Open a folder using positional shorthand. |
 | `lattice --path <folder>` | Open a specific folder. |
 | `lattice --downloads` | Open Downloads Triage. |
-| `lattice --project "<name>"` | Open a project landing page by project name, case-insensitive. |
+| `lattice --project "<name>"` | Open a palette landing page by name, case-insensitive. Legacy flag name retained for compatibility. |
 | `lattice --split <left> <right>` | Open a two-pane layout. |
 | `lattice --split <left> <middle> <right>` | Open a three-pane layout. |
 
-If multiple launch modes are provided, Lattice resolves them in this order: `--split`, then `--path` or a positional folder, then `--downloads`, then `--project`. Invalid or unreadable folders fall back to Home with a status message. A missing project name opens Home with a status message.
+If multiple launch modes are provided, Lattice resolves them in this order: `--split`, then `--path` or a positional folder, then `--downloads`, then `--project`. Invalid or unreadable folders fall back to Home with a status message. A missing palette name opens Home with a status message.
 
 Unknown flags are ignored. Options that take values print a terminal warning when the value is missing.
 
@@ -261,7 +264,7 @@ sudo install -Dm 644 com.lattice.filemanager.desktop \
 sudo install -Dm 644 icons/lattice-icon.png \
   /usr/local/share/lattice/icons/lattice-icon.png
 
-sudo install -Dm 644 icons/lattice-icon.png \
+sudo install -Dm 644 icons/lattice.png \
   /usr/local/share/icons/hicolor/256x256/apps/lattice.png
 
 sudo install -Dm 644 themes/default.css \
@@ -274,7 +277,7 @@ sudo update-desktop-database /usr/local/share/applications/
 sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
 ```
 
-Updating Lattice does not remove your user config, metadata, projects, tags, receipts, or cache. Those live under:
+Updating Lattice does not remove your user config, metadata, palettes, tags, receipts, or cache. Those live under:
 
 ```text
 ~/.config/lattice/
@@ -313,6 +316,18 @@ If the launcher icon or app entry does not update immediately in COSMIC/GNOME, l
 ### Missing Window Buttons
 
 Lattice includes its own client-side minimize, maximize/restore, and close buttons in the top titlebar. Desktops or compositors that do not provide external window decorations, including some Arch/CachyOS/KDE/Wayland setups, should still show usable window controls inside the app.
+
+### Stretched Launcher Icon
+
+If the launcher icon looks stretched after an older install, reinstall the current square hicolor icon and refresh the icon cache:
+
+```sh
+sudo install -Dm 644 icons/lattice.png \
+  /usr/local/share/icons/hicolor/256x256/apps/lattice.png
+sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
+```
+
+Some desktops cache launcher icons aggressively. If the icon does not update immediately, log out/in or restart the desktop session.
 
 ### Font Warnings
 

@@ -125,7 +125,6 @@ The following dialogs were converted from `gtk::Dialog` / `gtk::AlertDialog`
 to `ModalHost` in the M0 → M1 refactor:
 
 - Single-file Rename
-- Bulk Rename
 - New Folder
 - Pin as Project
 - Add Tag

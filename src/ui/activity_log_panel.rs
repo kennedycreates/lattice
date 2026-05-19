@@ -227,6 +227,8 @@ fn op_icon(operation: &str) -> &'static str {
         "new_file" => "📄",
         "holding_tray" => "▣",
         "send_to_project" => "🗂",
+        "paint_mark" => "🎨",
+        "erase_mark" => "◻",
         _ => "·",
     }
 }

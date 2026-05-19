@@ -1,16 +1,26 @@
-use crate::metadata::TagRecord;
+use crate::metadata::{Shape, TagRecord};
 use crate::thumbnail::{ThumbnailKind, ThumbnailTarget};
 use gio::FileType;
 use glib::SourceId;
+use gtk::cairo;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, FlowBox, Label, ListBox, ListBoxRow, Orientation, Overlay, Picture, ScrolledWindow,
-    Stack,
+    Align, Box, DrawingArea, FlowBox, Label, ListBox, ListBoxRow, Orientation, Overlay, Picture,
+    ScrolledWindow, Stack,
 };
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
+
+struct MarkRef {
+    icon_card: Box,
+    icon_overlay: Overlay,
+    list_row: ListBoxRow,
+    list_overlay: Overlay,
+    shape: Shape,
+    tint_color: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -23,6 +33,7 @@ const FILE_CARD_WIDTH: i32 = 112;
 const FILE_CARD_HEIGHT: i32 = 136;
 const FILE_CARD_THUMB_SIZE: i32 = 56;
 const FILE_CARD_MEDIA_SIZE: i32 = 60;
+const FILE_CARD_MEDIA_OVERLAY_WIDTH: i32 = FILE_CARD_WIDTH - 10;
 const FILE_CARD_NAME_MAX_WIDTH_CHARS: i32 = 16;
 const FILE_CARD_TAGS_HEIGHT: i32 = 13;
 const FILE_GRID_MARGIN: i32 = 8;
@@ -173,6 +184,12 @@ pub struct FileItem {
     pub tags: Vec<TagRecord>,
     /// Original path before trashing, populated for items loaded from trash:///
     pub original_path: Option<PathBuf>,
+    /// Tint id from metadata enrichment — drives CSS glow class mark-tint-{id}
+    pub mark_tint_id: i64,
+    /// Tint color from metadata enrichment — drives the Shape badge fill.
+    pub mark_tint_color: Option<String>,
+    /// Shape from metadata enrichment — drives badge and CSS class mark-shape-{shape}
+    pub mark_shape: Shape,
 }
 
 impl FileItem {
@@ -198,6 +215,9 @@ impl FileItem {
                 .and_then(|value| Some(value.to_unix())),
             tags: Vec::new(),
             original_path: None,
+            mark_tint_id: 0,
+            mark_tint_color: None,
+            mark_shape: Shape::DEFAULT,
         })
     }
 }
@@ -210,8 +230,10 @@ pub struct FileGrid {
     content_stack: Stack,
     empty_state: Label,
     pub view_mode: Cell<ViewMode>,
+    show_shape_badges: Cell<bool>,
     thumb_targets: RefCell<Vec<ThumbnailTarget>>,
     exit_timer: Rc<RefCell<Option<SourceId>>>,
+    mark_refs: Rc<RefCell<Vec<MarkRef>>>,
 }
 
 impl FileGrid {
@@ -273,8 +295,10 @@ impl FileGrid {
             content_stack,
             empty_state,
             view_mode: Cell::new(ViewMode::Icons),
+            show_shape_badges: Cell::new(true),
             thumb_targets: RefCell::new(Vec::new()),
             exit_timer: Rc::new(RefCell::new(None)),
+            mark_refs: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -284,6 +308,27 @@ impl FileGrid {
             ViewMode::Icons => "icons",
             ViewMode::List => "list",
         });
+    }
+
+    pub fn set_shape_badges_visible(&self, visible: bool) {
+        if self.show_shape_badges.get() == visible {
+            return;
+        }
+        self.show_shape_badges.set(visible);
+        for mark_ref in self.mark_refs.borrow().iter() {
+            set_icon_badge_visible(
+                &mark_ref.icon_overlay,
+                mark_ref.shape,
+                mark_ref.tint_color.as_deref(),
+                visible,
+            );
+            set_list_badge_visible(
+                &mark_ref.list_overlay,
+                mark_ref.shape,
+                mark_ref.tint_color.as_deref(),
+                visible,
+            );
+        }
     }
 
     pub fn grab_focus_on_active(&self) {
@@ -353,22 +398,60 @@ impl FileGrid {
         }
 
         let mut targets = Vec::new();
+        let mut refs: Vec<MarkRef> = Vec::with_capacity(items.len());
+        let show_shape_badges = self.show_shape_badges.get();
+
         for (index, item) in items.iter().enumerate() {
-            let (card, target) = build_card(item);
+            let (card, icon_overlay, target) = build_card(item, show_shape_badges);
             card.add_css_class("card-anim");
             card.add_css_class(&format!("card-delay-{}", index.min(15)));
+            // card is the shell; the actual .file-card box is its first child
+            let icon_card = card
+                .first_child()
+                .and_then(|w| w.downcast::<Box>().ok())
+                .unwrap_or_else(|| card.clone());
             self.flow.append(&card);
             if let Some(t) = target {
                 targets.push(t);
             }
-        }
-        *self.thumb_targets.borrow_mut() = targets;
-
-        for (index, item) in items.iter().enumerate() {
-            let row = build_list_row(item);
+            // Build the list row here too so we can store both refs together
+            let (row, list_overlay) = build_list_row(item, show_shape_badges);
             row.add_css_class("list-row-anim");
             row.add_css_class(&format!("card-delay-{}", index.min(15)));
             self.list_box.append(&row);
+            refs.push(MarkRef {
+                icon_card,
+                icon_overlay,
+                list_row: row,
+                list_overlay,
+                shape: item.mark_shape,
+                tint_color: item.mark_tint_color.clone(),
+            });
+        }
+        *self.thumb_targets.borrow_mut() = targets;
+        *self.mark_refs.borrow_mut() = refs;
+    }
+
+    /// Update the mark CSS classes and shape badge for a single item in place.
+    pub fn update_item_mark(
+        &self,
+        index: usize,
+        tint_id: i64,
+        tint_color: Option<&str>,
+        shape: Shape,
+    ) {
+        let mut refs = self.mark_refs.borrow_mut();
+        let Some(r) = refs.get_mut(index) else { return };
+        update_mark_css(&r.icon_card, tint_id, shape);
+        update_mark_css(&r.list_row, tint_id, shape);
+        r.shape = shape;
+        r.tint_color = tint_color.map(ToOwned::to_owned);
+        if self.show_shape_badges.get() {
+            replace_icon_badge(&r.icon_overlay, shape, tint_color);
+            replace_list_badge(&r.list_overlay, shape, tint_color);
+        } else {
+            remove_shape_badge(&r.icon_overlay);
+            remove_shape_badge(&r.list_overlay);
         }
     }
 
@@ -519,10 +602,11 @@ impl FileGrid {
         while let Some(row) = self.list_box.row_at_index(0) {
             self.list_box.remove(&row);
         }
+        self.mark_refs.borrow_mut().clear();
     }
 }
 
-fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
+fn build_card(file: &FileItem, show_shape_badge: bool) -> (Box, Overlay, Option<ThumbnailTarget>) {
     let shell = Box::new(Orientation::Vertical, 0);
     shell.add_css_class("file-card-shell");
     shell.set_size_request(FILE_CARD_WIDTH, FILE_CARD_HEIGHT);
@@ -533,6 +617,8 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
     let card = Box::new(Orientation::Vertical, 2);
     card.add_css_class("file-card");
     card.add_css_class(file.kind.css_class());
+    card.add_css_class(&format!("mark-tint-{}", file.mark_tint_id));
+    card.add_css_class(&format!("mark-shape-{}", file.mark_shape.as_str()));
     card.set_size_request(FILE_CARD_WIDTH, FILE_CARD_HEIGHT);
     card.set_hexpand(false);
     card.set_vexpand(true);
@@ -543,7 +629,7 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
     let media = Box::new(Orientation::Vertical, 0);
     media.add_css_class("file-card-media");
     media.set_size_request(FILE_CARD_MEDIA_SIZE, FILE_CARD_MEDIA_SIZE);
-    media.set_halign(Align::Center);
+    media.set_halign(Align::Fill);
     media.set_valign(Align::Start);
 
     // For image, video, and audio files slot a Stack so we can crossfade in
@@ -597,7 +683,23 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
         None
     };
 
-    card.append(&media);
+    // Use the full card content width so the shape badge can occupy the
+    // upper-right card space instead of covering the icon/thumbnail.
+    let media_overlay = Overlay::new();
+    media_overlay.set_size_request(FILE_CARD_MEDIA_OVERLAY_WIDTH, FILE_CARD_MEDIA_SIZE);
+    media_overlay.set_halign(Align::Center);
+    media_overlay.set_valign(Align::Start);
+    media_overlay.set_child(Some(&media));
+
+    if show_shape_badge {
+        add_icon_badge(
+            &media_overlay,
+            file.mark_shape,
+            file.mark_tint_color.as_deref(),
+        );
+    }
+
+    card.append(&media_overlay);
 
     let name = Label::new(Some(&file.name));
     name.add_css_class("file-card-name");
@@ -648,13 +750,15 @@ fn build_card(file: &FileItem) -> (Box, Option<ThumbnailTarget>) {
     }
     card.append(&tags);
 
-    (shell, thumb_target)
+    (shell, media_overlay, thumb_target)
 }
 
-fn build_list_row(file: &FileItem) -> ListBoxRow {
+fn build_list_row(file: &FileItem, show_shape_badge: bool) -> (ListBoxRow, Overlay) {
     let row = ListBoxRow::new();
     row.add_css_class("file-list-row");
     row.add_css_class(file.kind.css_class());
+    row.add_css_class(&format!("mark-tint-{}", file.mark_tint_id));
+    row.add_css_class(&format!("mark-shape-{}", file.mark_shape.as_str()));
 
     let inner = Box::new(Orientation::Horizontal, 0);
     inner.add_css_class("file-list-row-inner");
@@ -666,7 +770,21 @@ fn build_list_row(file: &FileItem) -> ListBoxRow {
     icon.set_valign(Align::Center);
     icon.set_size_request(36, -1);
     icon.set_xalign(0.5);
-    inner.append(&icon);
+
+    let icon_overlay = Overlay::new();
+    icon_overlay.set_size_request(36, -1);
+    icon_overlay.set_valign(Align::Fill);
+    icon_overlay.set_child(Some(&icon));
+
+    if show_shape_badge {
+        add_list_badge(
+            &icon_overlay,
+            file.mark_shape,
+            file.mark_tint_color.as_deref(),
+        );
+    }
+
+    inner.append(&icon_overlay);
 
     let name_box = Box::new(Orientation::Vertical, 1);
     name_box.set_hexpand(true);
@@ -735,7 +853,173 @@ fn build_list_row(file: &FileItem) -> ListBoxRow {
     inner.append(&date);
 
     row.set_child(Some(&inner));
-    row
+    (row, icon_overlay)
+}
+
+// ── Mark CSS and badge helpers ─────────────────────────────────────────────────
+
+fn update_mark_css(widget: &impl gtk::prelude::WidgetExt, tint_id: i64, shape: Shape) {
+    for class in widget.css_classes() {
+        let s = class.as_str();
+        if s.starts_with("mark-tint-") || s.starts_with("mark-shape-") {
+            widget.remove_css_class(s);
+        }
+    }
+    widget.add_css_class(&format!("mark-tint-{tint_id}"));
+    widget.add_css_class(&format!("mark-shape-{}", shape.as_str()));
+}
+
+fn replace_icon_badge(overlay: &Overlay, shape: Shape, tint_color: Option<&str>) {
+    remove_shape_badge(overlay);
+    add_icon_badge(overlay, shape, tint_color);
+}
+
+fn replace_list_badge(overlay: &Overlay, shape: Shape, tint_color: Option<&str>) {
+    remove_shape_badge(overlay);
+    add_list_badge(overlay, shape, tint_color);
+}
+
+fn set_icon_badge_visible(
+    overlay: &Overlay,
+    shape: Shape,
+    tint_color: Option<&str>,
+    visible: bool,
+) {
+    if visible {
+        replace_icon_badge(overlay, shape, tint_color);
+    } else {
+        remove_shape_badge(overlay);
+    }
+}
+
+fn set_list_badge_visible(
+    overlay: &Overlay,
+    shape: Shape,
+    tint_color: Option<&str>,
+    visible: bool,
+) {
+    if visible {
+        replace_list_badge(overlay, shape, tint_color);
+    } else {
+        remove_shape_badge(overlay);
+    }
+}
+
+fn remove_shape_badge(overlay: &Overlay) {
+    let mut child = overlay.first_child();
+    while let Some(w) = child {
+        let next = w.next_sibling();
+        if w.widget_name() == "shape-badge" {
+            overlay.remove_overlay(&w);
+            break;
+        }
+        child = next;
+    }
+}
+
+fn add_icon_badge(overlay: &Overlay, shape: Shape, tint_color: Option<&str>) {
+    let badge = make_shape_badge(shape, MARK_BADGE_SIZE_CARD, tint_color);
+    badge.set_widget_name("shape-badge");
+    badge.set_halign(Align::End);
+    badge.set_valign(Align::Start);
+    badge.set_margin_end(3);
+    badge.set_margin_top(3);
+    overlay.add_overlay(&badge);
+}
+
+fn add_list_badge(overlay: &Overlay, shape: Shape, tint_color: Option<&str>) {
+    let badge = make_shape_badge(shape, MARK_BADGE_SIZE_LIST, tint_color);
+    badge.set_widget_name("shape-badge");
+    badge.set_halign(Align::End);
+    badge.set_valign(Align::End);
+    badge.set_margin_end(2);
+    badge.set_margin_bottom(2);
+    overlay.add_overlay(&badge);
+}
+
+// ── Mark badge constants ───────────────────────────────────────────────────────
+
+const MARK_BADGE_SIZE_CARD: i32 = 13;
+const MARK_BADGE_SIZE_LIST: i32 = 10;
+
+// ── Shape badge rendering ──────────────────────────────────────────────────────
+
+fn make_shape_badge(shape: Shape, size: i32, tint_color: Option<&str>) -> DrawingArea {
+    let area = DrawingArea::new();
+    area.set_content_width(size);
+    area.set_content_height(size);
+    area.add_css_class("file-mark-shape-badge");
+    let (fill_r, fill_g, fill_b) = tint_color
+        .and_then(parse_hex_rgb)
+        .unwrap_or((0.88, 0.76, 0.54));
+    area.set_draw_func(move |_, cr, w, h| {
+        let cx = w as f64 / 2.0;
+        let cy = h as f64 / 2.0;
+        let r = (w.min(h) as f64 / 2.0) * 0.80;
+        // Dark shadow outline for contrast against any background
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
+        draw_shape_path(cr, shape, cx, cy, r + 1.2);
+        let _ = cr.fill();
+        cr.set_source_rgba(fill_r, fill_g, fill_b, 0.95);
+        draw_shape_path(cr, shape, cx, cy, r);
+        let _ = cr.fill();
+    });
+    area
+}
+
+fn parse_hex_rgb(hex: &str) -> Option<(f64, f64, f64)> {
+    let s = hex.trim().trim_start_matches('#');
+    if s.len() != 6 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some((r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0))
+}
+
+fn draw_shape_path(cr: &cairo::Context, shape: Shape, cx: f64, cy: f64, r: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    match shape {
+        Shape::Circle => {
+            cr.arc(cx, cy, r, 0.0, 2.0 * PI);
+        }
+        Shape::Square => {
+            cr.rectangle(cx - r, cy - r, r * 2.0, r * 2.0);
+        }
+        Shape::Triangle => {
+            let offset = r * 0.12;
+            cr.move_to(cx, cy - r + offset);
+            cr.line_to(cx + r * 0.866, cy + r * 0.5 + offset);
+            cr.line_to(cx - r * 0.866, cy + r * 0.5 + offset);
+            cr.close_path();
+        }
+        Shape::Pentagon => draw_regular_polygon(cr, cx, cy, r, 5, FRAC_PI_2),
+        Shape::Hexagon => draw_regular_polygon(cr, cx, cy, r, 6, FRAC_PI_2),
+        Shape::Octagon => draw_regular_polygon(cr, cx, cy, r, 8, FRAC_PI_2 - PI / 8.0),
+        Shape::Trapezoid => {
+            let top = r * 0.62;
+            cr.move_to(cx - top, cy - r * 0.45);
+            cr.line_to(cx + top, cy - r * 0.45);
+            cr.line_to(cx + r, cy + r * 0.55);
+            cr.line_to(cx - r, cy + r * 0.55);
+            cr.close_path();
+        }
+    }
+}
+
+fn draw_regular_polygon(cr: &cairo::Context, cx: f64, cy: f64, r: f64, n: i32, start: f64) {
+    for i in 0..n {
+        let angle = start + 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+        let x = cx + r * angle.cos();
+        let y = cy - r * angle.sin();
+        if i == 0 {
+            cr.move_to(x, y);
+        } else {
+            cr.line_to(x, y);
+        }
+    }
+    cr.close_path();
 }
 
 fn format_file_size_list(bytes: u64) -> String {

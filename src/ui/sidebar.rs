@@ -8,6 +8,7 @@ pub enum SidebarTarget {
     Home,
     Place(i64),
     Search,
+    BulkNaming,
     SpaceViewer,
     Triage,
     ActivityLog,
@@ -23,6 +24,7 @@ pub struct Sidebar {
     pub root: ScrolledWindow,
     pub home_button: Button,
     pub search_button: Button,
+    pub bulk_naming_button: Button,
     pub space_viewer_button: Button,
     pub triage_button: Button,
     pub activity_log_button: Button,
@@ -75,21 +77,23 @@ impl Sidebar {
         );
 
         let search_button = section_button("🔍  Search", true);
+        let bulk_naming_button = section_button("✏  Bulk Naming", true);
         let space_viewer_button = section_button("📊  Space Viewer", true);
         let triage_button = section_button("🧹  Triage", true);
         let activity_log_button = section_button("📋  Activity Log", true);
-        let tags_button = section_button("🏷  Tags", true);
-        let projects_button = section_button("🗂  Projects", true);
+        let tags_button = section_button("🎨  Tints & Tags", true);
+        let projects_button = section_button("🗂  Palettes", true);
         append_section(
             &vbox,
             "TOOLS",
             [
+                &projects_button,
+                &tags_button,
                 &search_button,
                 &space_viewer_button,
                 &triage_button,
+                &bulk_naming_button,
                 &activity_log_button,
-                &tags_button,
-                &projects_button,
             ]
             .as_slice(),
         );
@@ -100,6 +104,7 @@ impl Sidebar {
             root,
             home_button,
             search_button,
+            bulk_naming_button,
             space_viewer_button,
             triage_button,
             activity_log_button,
@@ -137,6 +142,7 @@ impl Sidebar {
         for (button, location) in [
             (&self.home_button, SidebarTarget::Home),
             (&self.search_button, SidebarTarget::Search),
+            (&self.bulk_naming_button, SidebarTarget::BulkNaming),
             (&self.space_viewer_button, SidebarTarget::SpaceViewer),
             (&self.triage_button, SidebarTarget::Triage),
             (&self.activity_log_button, SidebarTarget::ActivityLog),

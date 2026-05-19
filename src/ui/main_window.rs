@@ -1,15 +1,20 @@
 use crate::action_plan::ActionPlan as FileOpPlan;
 use crate::config::{AppConfig, CustomActionConfig};
-use crate::metadata::{ActivityLogEntry, MetadataStore, PlaceRecord, ProjectRecord, TagRecord};
+use crate::metadata::{
+    ActivityLogEntry, MetadataStore, PlaceRecord, ProjectRecord, Shape, TagRecord, TintRecord,
+};
 use crate::ui::{
     activity_log_panel::{ActivityLogAction, ActivityLogPanel},
-    bulk_rename, conflict_resolver,
+    bulk_naming_panel::BulkNamingPanel,
+    conflict_resolver,
     file_grid::{FileGrid, FileItem, FileKind, ViewMode},
     holding_tray::HoldingTray,
     modal_host::{
         build_modal_actions, build_modal_button, build_modal_prompt, ButtonKind, ModalHost,
     },
     ops_panel::{OpId, OpsPanel},
+    painting_toolbar::{PaintTool, PaintingToolbar},
+    palette_board_panel::PaletteBoardPanel,
     plan_queue_panel::{PlanQueuePanel, QueueAction},
     preview_pane::PreviewPane,
     project_landing_panel::ProjectLandingPanel,
@@ -20,7 +25,7 @@ use crate::ui::{
     status_bar::StatusBar,
     tab_strip::TabStrip,
     tag_filter::{TagFilterPanel, TagFilterSpec},
-    tag_panel::TagManagerPanel,
+    tints_tags_panel::TintsTagsPanel,
     toolbar::Toolbar,
 };
 use gdk_pixbuf::Pixbuf;
@@ -29,8 +34,9 @@ use glib::UserDirectory;
 use gtk::gdk;
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, Entry, FlowBox, HeaderBar, Image,
-    Label, ListBox, ListBoxRow, Orientation, Paned, Popover, Revealer, Separator,
+    Adjustment, Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider,
+    DrawingArea, Entry, FlowBox, HeaderBar, Image, Label, ListBox, ListBoxRow, Orientation, Paned,
+    Popover, Revealer, Scale, Separator,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -272,6 +278,13 @@ enum WindowCommand {
     SetViewIcons,
     SetViewList,
     TogglePlanMode,
+    TogglePaintMode,
+    PaintBrush,
+    PaintEraser,
+    PaintEyedropper,
+    PaintFill,
+    PaintUndo,
+    PaintRedo,
     EmptyTrash,
     CustomAction(String),
 }
@@ -296,12 +309,29 @@ enum PaneView {
     Recent,
     Trash,
     Search(SearchQuery),
+    BulkNaming { root: PathBuf },
     SpaceViewer { root: PathBuf },
     ActivityLog,
     ProjectLanding(i64),
     ProjectManager,
     TagManager,
 }
+
+/// One file/folder change captured for undo/redo.
+struct PaintHistoryEntry {
+    path: PathBuf,
+    /// Mark that existed before this action (None = no explicit row, i.e. was default).
+    prev: Option<(i64, Shape)>,
+    /// Mark set by this action (None = mark was erased).
+    next: Option<(i64, Shape)>,
+}
+
+/// A group of changes that constitute one undoable paint operation.
+struct PaintHistoryStep {
+    entries: Vec<PaintHistoryEntry>,
+}
+
+const PAINT_HISTORY_LIMIT: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum SortField {
@@ -342,6 +372,9 @@ struct TabState {
     primary_show_hidden: bool,
     secondary_show_hidden: bool,
     tertiary_show_hidden: bool,
+    primary_show_shape_badges: bool,
+    secondary_show_shape_badges: bool,
+    tertiary_show_shape_badges: bool,
     primary_sort_field: SortField,
     primary_sort_direction: SortDirection,
     secondary_sort_field: SortField,
@@ -387,6 +420,9 @@ impl TabState {
             primary_show_hidden: false,
             secondary_show_hidden: false,
             tertiary_show_hidden: false,
+            primary_show_shape_badges: true,
+            secondary_show_shape_badges: true,
+            tertiary_show_shape_badges: true,
             primary_sort_field: SortField::Name,
             primary_sort_direction: SortDirection::Ascending,
             secondary_sort_field: SortField::Name,
@@ -436,6 +472,9 @@ impl TabState {
                 primary_show_hidden: false,
                 secondary_show_hidden: false,
                 tertiary_show_hidden: false,
+                primary_show_shape_badges: true,
+                secondary_show_shape_badges: true,
+                tertiary_show_shape_badges: true,
                 primary_sort_field: SortField::Name,
                 primary_sort_direction: SortDirection::Ascending,
                 secondary_sort_field: SortField::Name,
@@ -455,6 +494,8 @@ struct PaneWidgets {
     filter_toggle_btn: Button,
     hidden_toggle_btn: Button,
     hidden_toggle_icon: gtk::Image,
+    shape_badge_toggle_btn: Button,
+    shape_badge_toggle_icon: gtk::Image,
     sort_btn: Button,
     sort_icon: gtk::Image,
     view_mode_btn: Button,
@@ -469,8 +510,10 @@ struct PaneWidgets {
     file_grid: FileGrid,
     activity_log_panel: ActivityLogPanel,
     project_landing_panel: ProjectLandingPanel,
+    palette_board_panel: PaletteBoardPanel,
     project_manager_panel: ProjectManagerPanel,
-    tag_manager_panel: TagManagerPanel,
+    tag_manager_panel: TintsTagsPanel,
+    bulk_naming_panel: BulkNamingPanel,
     space_viewer_panel: SpaceViewerPanel,
 }
 
@@ -515,6 +558,15 @@ impl PaneWidgets {
         hidden_toggle_btn.set_valign(Align::Center);
         crate::ui::attach_tooltip(&hidden_toggle_btn, "Hidden files (Ctrl+H)");
         header.append(&hidden_toggle_btn);
+
+        let shape_badge_toggle_icon = gtk::Image::from_icon_name("emblem-default-symbolic");
+        let shape_badge_toggle_btn = Button::new();
+        shape_badge_toggle_btn.set_child(Some(&shape_badge_toggle_icon));
+        shape_badge_toggle_btn.add_css_class("pane-view-btn");
+        shape_badge_toggle_btn.add_css_class("pane-shape-badge-btn");
+        shape_badge_toggle_btn.set_valign(Align::Center);
+        crate::ui::attach_tooltip(&shape_badge_toggle_btn, "Shape badges");
+        header.append(&shape_badge_toggle_btn);
 
         let sort_icon = gtk::Image::from_icon_name("view-sort-ascending-symbolic");
         let sort_btn = Button::new();
@@ -582,9 +634,11 @@ impl PaneWidgets {
 
         let activity_log_panel = ActivityLogPanel::build();
         let project_landing_panel = ProjectLandingPanel::build();
+        let palette_board_panel = PaletteBoardPanel::build();
         let project_manager_panel = ProjectManagerPanel::build();
 
-        let tag_manager_panel = TagManagerPanel::build();
+        let tag_manager_panel = TintsTagsPanel::build();
+        let bulk_naming_panel = BulkNamingPanel::build();
         let space_viewer_panel = SpaceViewerPanel::build();
 
         root.append(&header);
@@ -594,8 +648,10 @@ impl PaneWidgets {
         root.append(&file_grid.root);
         root.append(&activity_log_panel.root);
         root.append(&project_landing_panel.root);
+        root.append(&palette_board_panel.root);
         root.append(&project_manager_panel.root);
         root.append(&tag_manager_panel.root);
+        root.append(&bulk_naming_panel.root);
         root.append(&space_viewer_panel.root);
 
         Self {
@@ -604,6 +660,8 @@ impl PaneWidgets {
             filter_toggle_btn,
             hidden_toggle_btn,
             hidden_toggle_icon,
+            shape_badge_toggle_btn,
+            shape_badge_toggle_icon,
             sort_btn,
             sort_icon,
             view_mode_btn,
@@ -618,8 +676,10 @@ impl PaneWidgets {
             file_grid,
             activity_log_panel,
             project_landing_panel,
+            palette_board_panel,
             project_manager_panel,
             tag_manager_panel,
+            bulk_naming_panel,
             space_viewer_panel,
         }
     }
@@ -655,9 +715,11 @@ impl MainWindow {
         let plan_queue_panel = PlanQueuePanel::build();
         let ops_panel = OpsPanel::build();
         let status = StatusBar::build();
+        let painting_toolbar = PaintingToolbar::build();
 
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.append(&toolbar.root);
+        root.append(&painting_toolbar.revealer);
 
         let body = build_body(
             &sidebar,
@@ -701,6 +763,7 @@ impl MainWindow {
             body.right_paned.clone(),
             modal_host,
             config,
+            painting_toolbar,
         );
         controller.bootstrap();
 
@@ -885,6 +948,9 @@ struct BrowserController {
     primary_show_hidden: Cell<bool>,
     secondary_show_hidden: Cell<bool>,
     tertiary_show_hidden: Cell<bool>,
+    primary_show_shape_badges: Cell<bool>,
+    secondary_show_shape_badges: Cell<bool>,
+    tertiary_show_shape_badges: Cell<bool>,
     sidebar_visible: Cell<bool>,
     preview_visible: Cell<bool>,
     suppress_panel_toggle_handlers: Cell<bool>,
@@ -924,6 +990,18 @@ struct BrowserController {
     plan_queue_panel: PlanQueuePanel,
     plan_mode_active: Cell<bool>,
     action_queue: RefCell<Vec<crate::action_plan::ActionPlan>>,
+    paint_mode_active: Cell<bool>,
+    active_paint_tint_id: Cell<i64>,
+    active_paint_tint_color: RefCell<String>,
+    active_paint_tint_name: RefCell<String>,
+    active_paint_shape: Cell<Shape>,
+    active_paint_tool: Cell<PaintTool>,
+    paint_contents: Cell<bool>,
+    current_drag_painted: RefCell<std::collections::HashSet<PathBuf>>,
+    drag_history_accumulator: RefCell<Option<Vec<PaintHistoryEntry>>>,
+    paint_undo_stack: RefCell<Vec<PaintHistoryStep>>,
+    paint_redo_stack: RefCell<Vec<PaintHistoryStep>>,
+    painting_toolbar: PaintingToolbar,
     sidebar_revealer: Revealer,
     preview_revealer: Revealer,
     split_paned: Paned,
@@ -936,6 +1014,7 @@ struct BrowserController {
     primary_duplicate_scan_pending: Cell<bool>,
     secondary_duplicate_scan_pending: Cell<bool>,
     tertiary_duplicate_scan_pending: Cell<bool>,
+    tint_css_provider: CssProvider,
 }
 
 impl BrowserController {
@@ -960,6 +1039,7 @@ impl BrowserController {
         right_paned: Paned,
         modal_host: ModalHost,
         config: AppConfig,
+        painting_toolbar: PaintingToolbar,
     ) -> Rc<Self> {
         let metadata = MetadataStore::open().or_else(|error| {
             eprintln!("Lattice metadata fallback: {error}");
@@ -967,6 +1047,18 @@ impl BrowserController {
         });
         let metadata = metadata.expect("Lattice could not initialize metadata storage.");
         let (initial_tab, launch_notice) = TabState::for_launch(launch, &places, &metadata);
+        let default_tint = metadata
+            .list_tints()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|t| t.is_default)
+            .unwrap_or_else(|| crate::metadata::TintRecord {
+                id: 1,
+                name: "Beige".to_string(),
+                color: Some("#806040".to_string()),
+                position: 0,
+                is_default: true,
+            });
         Rc::new(Self {
             window,
             metadata: RefCell::new(metadata),
@@ -1016,6 +1108,9 @@ impl BrowserController {
             primary_show_hidden: Cell::new(false),
             secondary_show_hidden: Cell::new(false),
             tertiary_show_hidden: Cell::new(false),
+            primary_show_shape_badges: Cell::new(true),
+            secondary_show_shape_badges: Cell::new(true),
+            tertiary_show_shape_badges: Cell::new(true),
             sidebar_visible: Cell::new(true),
             preview_visible: Cell::new(true),
             suppress_panel_toggle_handlers: Cell::new(false),
@@ -1055,6 +1150,23 @@ impl BrowserController {
             plan_queue_panel,
             plan_mode_active: Cell::new(false),
             action_queue: RefCell::new(Vec::new()),
+            paint_mode_active: Cell::new(false),
+            active_paint_tint_id: Cell::new(default_tint.id),
+            active_paint_tint_color: RefCell::new(
+                default_tint
+                    .color
+                    .clone()
+                    .unwrap_or_else(|| "#806040".to_string()),
+            ),
+            active_paint_tint_name: RefCell::new(default_tint.name.clone()),
+            active_paint_shape: Cell::new(Shape::DEFAULT),
+            active_paint_tool: Cell::new(PaintTool::Brush),
+            paint_contents: Cell::new(false),
+            current_drag_painted: RefCell::new(std::collections::HashSet::new()),
+            drag_history_accumulator: RefCell::new(None),
+            paint_undo_stack: RefCell::new(Vec::new()),
+            paint_redo_stack: RefCell::new(Vec::new()),
+            painting_toolbar,
             sidebar_revealer,
             preview_revealer,
             split_paned,
@@ -1067,10 +1179,13 @@ impl BrowserController {
             primary_duplicate_scan_pending: Cell::new(false),
             secondary_duplicate_scan_pending: Cell::new(false),
             tertiary_duplicate_scan_pending: Cell::new(false),
+            tint_css_provider: CssProvider::new(),
         })
     }
 
     fn bootstrap(self: &Rc<Self>) {
+        self.init_tint_css();
+        self.apply_tint_css();
         self.connect_navigation();
         self.connect_sidebar();
         self.connect_tab_strip();
@@ -1143,6 +1258,11 @@ impl BrowserController {
         self.toolbar
             .plan_mode_toggle
             .connect_toggled(move |toggle| controller.set_plan_mode(toggle.is_active()));
+
+        let controller = Rc::clone(self);
+        self.toolbar
+            .paint_mode_toggle
+            .connect_toggled(move |toggle| controller.set_paint_mode(toggle.is_active()));
 
         let controller = Rc::clone(self);
         self.plan_queue_panel
@@ -1224,6 +1344,34 @@ impl BrowserController {
             .add_selection_button
             .connect_clicked(move |_| {
                 controller.add_selection_to_holding_tray(controller.active_slot())
+            });
+
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .add_by_tint_button
+            .connect_clicked(move |btn| {
+                controller.show_add_to_tray_by_tint_popover(btn);
+            });
+
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .add_by_shape_button
+            .connect_clicked(move |btn| {
+                controller.show_add_to_tray_by_shape_popover(btn);
+            });
+
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .apply_mark_button
+            .connect_clicked(move |_| {
+                controller.show_tray_apply_mark_preview();
+            });
+
+        let controller = Rc::clone(self);
+        self.holding_tray
+            .reset_mark_button
+            .connect_clicked(move |_| {
+                controller.show_tray_reset_mark_preview();
             });
 
         let controller = Rc::clone(self);
@@ -1453,9 +1601,13 @@ impl BrowserController {
     fn sidebar_buttons(&self) -> Vec<Button> {
         let mut buttons = vec![
             self.sidebar.home_button.clone(),
-            self.sidebar.triage_button.clone(),
-            self.sidebar.activity_log_button.clone(),
+            self.sidebar.projects_button.clone(),
             self.sidebar.tags_button.clone(),
+            self.sidebar.search_button.clone(),
+            self.sidebar.space_viewer_button.clone(),
+            self.sidebar.triage_button.clone(),
+            self.sidebar.bulk_naming_button.clone(),
+            self.sidebar.activity_log_button.clone(),
             self.sidebar.drives_button.clone(),
             self.sidebar.recent_button.clone(),
             self.sidebar.trash_button.clone(),
@@ -1508,6 +1660,10 @@ impl BrowserController {
         self.sidebar
             .search_button
             .connect_clicked(move |_| controller.open_search_in_current_dir());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .bulk_naming_button
+            .connect_clicked(move |_| controller.open_bulk_naming_tool());
         let controller = Rc::clone(self);
         self.sidebar
             .triage_button
@@ -1600,6 +1756,11 @@ impl BrowserController {
         pane.space_viewer_panel.connect_trash_file(move |path| {
             controller.move_paths_to_trash(vec![path]);
         });
+        let controller = Rc::clone(self);
+        pane.space_viewer_panel
+            .connect_scan_complete(move |scan_root| {
+                controller.load_space_viewer_mark_stats(&scan_root, slot);
+            });
 
         pane.space_viewer_panel.set_folder(&dir);
         self.update_view_strip(slot);
@@ -1614,6 +1775,68 @@ impl BrowserController {
             self.update_navigation_state();
             self.update_action_state();
         }
+    }
+
+    fn load_space_viewer_mark_stats(self: &Rc<Self>, root: &std::path::Path, slot: PaneSlot) {
+        use crate::ui::space_viewer_panel::{ShapeStat, TintStat};
+        let marks = self
+            .metadata
+            .borrow()
+            .list_marks_under_prefix(root)
+            .unwrap_or_default();
+        if marks.is_empty() {
+            self.pane_widgets(slot)
+                .space_viewer_panel
+                .set_mark_stats(Vec::new(), Vec::new());
+            return;
+        }
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+        let tint_map: std::collections::HashMap<i64, &crate::metadata::TintRecord> =
+            tints.iter().map(|t| (t.id, t)).collect();
+
+        let mut tint_stats: std::collections::HashMap<i64, TintStat> =
+            std::collections::HashMap::new();
+        let mut shape_stats: std::collections::HashMap<String, ShapeStat> =
+            std::collections::HashMap::new();
+
+        for (path, tint_id, shape) in &marks {
+            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let te = tint_stats.entry(*tint_id).or_insert_with(|| {
+                let t = tint_map.get(tint_id);
+                TintStat {
+                    tint_id: *tint_id,
+                    name: t
+                        .map(|t| t.name.clone())
+                        .unwrap_or_else(|| format!("Tint {tint_id}")),
+                    color: t
+                        .and_then(|t| t.color.clone())
+                        .unwrap_or_else(|| "#806040".to_string()),
+                    count: 0,
+                    bytes: 0,
+                }
+            });
+            te.count += 1;
+            te.bytes += size;
+
+            let se = shape_stats
+                .entry(shape.as_str().to_string())
+                .or_insert_with(|| ShapeStat {
+                    shape: *shape,
+                    count: 0,
+                    bytes: 0,
+                });
+            se.count += 1;
+            se.bytes += size;
+        }
+
+        let mut by_tint: Vec<TintStat> = tint_stats.into_values().collect();
+        by_tint.sort_by(|a, b| b.count.cmp(&a.count));
+        let mut by_shape: Vec<ShapeStat> = shape_stats.into_values().collect();
+        by_shape.sort_by(|a, b| b.count.cmp(&a.count));
+
+        self.pane_widgets(slot)
+            .space_viewer_panel
+            .set_mark_stats(by_tint, by_shape);
     }
 
     fn open_activity_log(self: &Rc<Self>) {
@@ -1668,18 +1891,13 @@ impl BrowserController {
             });
         let controller = Rc::clone(self);
         pane.project_manager_panel
-            .connect_project_created(move |name, color| {
-                controller.handle_project_created(name, color);
+            .connect_project_created(move |name| {
+                controller.handle_project_created(name);
             });
         let controller = Rc::clone(self);
         pane.project_manager_panel
             .connect_project_renamed(move |id, name| {
                 controller.handle_project_renamed(id, name);
-            });
-        let controller = Rc::clone(self);
-        pane.project_manager_panel
-            .connect_project_recolored(move |id, color| {
-                controller.handle_project_recolored(id, color);
             });
         let controller = Rc::clone(self);
         pane.project_manager_panel
@@ -1701,18 +1919,15 @@ impl BrowserController {
         }
     }
 
-    fn handle_project_created(self: &Rc<Self>, name: String, color: String) {
-        let result = self
-            .metadata
-            .borrow_mut()
-            .create_project(&name, Some(&color));
+    fn handle_project_created(self: &Rc<Self>, name: String) {
+        let result = self.metadata.borrow_mut().create_project(&name, None);
         match result {
             Ok(_) => {
                 self.refresh_metadata_sidebar();
                 self.reload_project_manager_if_visible();
             }
             Err(error) => {
-                self.modal_host.show_error("Create Project Failed", &error);
+                self.modal_host.show_error("Create Palette Failed", &error);
             }
         }
     }
@@ -1725,22 +1940,7 @@ impl BrowserController {
                 self.reload_project_manager_if_visible();
             }
             Err(error) => {
-                self.modal_host.show_error("Rename Project Failed", &error);
-            }
-        }
-    }
-
-    fn handle_project_recolored(self: &Rc<Self>, id: i64, color: String) {
-        let _ = self
-            .metadata
-            .borrow_mut()
-            .update_project_color(id, Some(&color));
-        self.refresh_metadata_sidebar();
-        self.reload_project_manager_if_visible();
-        // Reload landing if it's currently open for this project
-        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
-            if matches!(self.current_view_for(slot), PaneView::ProjectLanding(pid) if pid == id) {
-                self.load_project_landing_view(slot, id);
+                self.modal_host.show_error("Rename Palette Failed", &error);
             }
         }
     }
@@ -1757,7 +1957,7 @@ impl BrowserController {
         };
         let controller = Rc::clone(self);
         self.modal_host.show_confirm(
-            "Delete Project",
+            "Delete Palette",
             &format!(
                 "Delete \u{201c}{}\u{201d}? Pinned folders will not be affected.",
                 project.name
@@ -1821,36 +2021,57 @@ impl BrowserController {
         self.reset_keyboard_state(slot);
         self.items_cell(slot).borrow_mut().clear();
 
-        let (tags, counts) = {
+        let (tints, tags, counts) = {
             let meta = self.metadata.borrow();
+            let tints = meta.list_tints().unwrap_or_default();
             let tags = meta.list_tags().unwrap_or_default();
             let counts = meta.count_files_per_tag().unwrap_or_default();
-            (tags, counts)
+            (tints, tags, counts)
         };
-        let tag_count = tags.len();
-        pane.tag_manager_panel.set_tags(&tags, &counts);
+        let item_count = tints.len() + tags.len();
+        pane.tag_manager_panel.set_tints(&tints);
+        pane.tag_manager_panel.set_tags(&tags, &counts, &tints);
 
         let controller = Rc::clone(self);
         pane.tag_manager_panel.connect_tag_clicked(move |tag_id| {
             controller.open_tag(tag_id);
         });
         let controller = Rc::clone(self);
-        pane.tag_manager_panel
-            .connect_tag_created(move |name, color| {
-                controller.handle_tag_created(name, color);
-            });
+        pane.tag_manager_panel.connect_tag_created(move |name| {
+            controller.handle_tag_created(name);
+        });
         let controller = Rc::clone(self);
         pane.tag_manager_panel.connect_tag_renamed(move |id, name| {
             controller.handle_tag_renamed(id, name);
         });
         let controller = Rc::clone(self);
-        pane.tag_manager_panel
-            .connect_tag_recolored(move |id, color| {
-                controller.handle_tag_recolored(id, color);
-            });
-        let controller = Rc::clone(self);
         pane.tag_manager_panel.connect_tag_deleted(move |id| {
             controller.handle_tag_deleted(id);
+        });
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel
+            .connect_tint_created(move |name, color| {
+                controller.handle_tint_created(name, color);
+            });
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel
+            .connect_tint_renamed(move |id, name| {
+                controller.handle_tint_renamed(id, name);
+            });
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel
+            .connect_tint_color_changed(move |id, color| {
+                controller.handle_tint_color_changed(id, color);
+            });
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel.connect_tint_color_pick_requested(
+            move |title, initial, on_selected| {
+                controller.show_tint_color_picker(&title, &initial, on_selected);
+            },
+        );
+        let controller = Rc::clone(self);
+        pane.tag_manager_panel.connect_tint_deleted(move |id| {
+            controller.handle_tint_deleted(id);
         });
 
         self.update_view_strip(slot);
@@ -1860,19 +2081,17 @@ impl BrowserController {
             self.toolbar.show_breadcrumb_mode();
             self.status.set_path(&display_label);
             self.status.clear_message();
-            self.status.set_counts(tag_count, 0);
+            self.status.set_counts(item_count, 0);
             self.update_sidebar_state();
             self.update_navigation_state();
             self.update_action_state();
         }
     }
 
-    fn handle_tag_created(self: &Rc<Self>, name: String, color: String) {
-        let tag_result = self.metadata.borrow_mut().ensure_tag(&name);
-        let result =
-            tag_result.and_then(|tag| self.metadata.borrow_mut().update_tag_color(tag.id, &color));
+    fn handle_tag_created(self: &Rc<Self>, name: String) {
+        let result = self.metadata.borrow_mut().ensure_tag(&name);
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 self.refresh_metadata_sidebar();
                 self.reload_tag_manager_if_visible();
                 self.status
@@ -1893,19 +2112,6 @@ impl BrowserController {
             }
             Err(e) => {
                 self.modal_host.show_error("Rename Tag Failed", &e);
-            }
-        }
-    }
-
-    fn handle_tag_recolored(self: &Rc<Self>, id: i64, color: String) {
-        let result = self.metadata.borrow_mut().update_tag_color(id, &color);
-        match result {
-            Ok(()) => {
-                self.refresh_metadata_sidebar();
-                self.reload_tag_manager_if_visible();
-            }
-            Err(e) => {
-                self.modal_host.show_error("Recolor Tag Failed", &e);
             }
         }
     }
@@ -1951,11 +2157,215 @@ impl BrowserController {
     }
 
     fn reload_tag_manager_if_visible(self: &Rc<Self>) {
+        self.apply_tint_css();
         for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
             if matches!(self.current_view_for(slot), PaneView::TagManager) {
                 self.load_tag_manager_view(slot);
             }
         }
+    }
+
+    fn handle_tint_created(self: &Rc<Self>, name: String, color: String) {
+        let result = self.metadata.borrow_mut().create_tint(&name, &color);
+        match result {
+            Ok(_) => {
+                self.reload_tag_manager_if_visible();
+                self.status
+                    .set_message(&format!("Tint \u{2018}{name}\u{2019} created."));
+            }
+            Err(e) => {
+                self.modal_host.show_error("Create Tint Failed", &e);
+            }
+        }
+    }
+
+    fn handle_tint_renamed(self: &Rc<Self>, id: i64, new_name: String) {
+        let result = self.metadata.borrow_mut().rename_tint(id, &new_name);
+        match result {
+            Ok(()) => self.reload_tag_manager_if_visible(),
+            Err(e) => self.modal_host.show_error("Rename Tint Failed", &e),
+        }
+    }
+
+    fn handle_tint_color_changed(self: &Rc<Self>, id: i64, color: String) {
+        let result = self.metadata.borrow_mut().update_tint_color(id, &color);
+        match result {
+            Ok(()) => self.reload_tag_manager_if_visible(),
+            Err(e) => self.modal_host.show_error("Update Tint Color Failed", &e),
+        }
+    }
+
+    fn show_tint_color_picker(
+        self: &Rc<Self>,
+        title: &str,
+        initial: &str,
+        on_selected: Box<dyn Fn(String)>,
+    ) {
+        let state = Rc::new(RefCell::new(parse_hex_rgb(initial)));
+
+        let content = GtkBox::new(Orientation::Vertical, 12);
+        content.add_css_class("tint-picker-content");
+        content.set_size_request(520, 380);
+        content.set_hexpand(false);
+        content.set_vexpand(false);
+
+        let preview_row = GtkBox::new(Orientation::Horizontal, 12);
+        preview_row.add_css_class("tint-picker-preview-row");
+
+        let preview = DrawingArea::new();
+        preview.add_css_class("tint-picker-preview");
+        preview.set_content_width(132);
+        preview.set_content_height(82);
+        preview.set_size_request(132, 82);
+        {
+            let state = Rc::clone(&state);
+            preview.set_draw_func(move |_, cr, w, h| {
+                let (r, g, b) = *state.borrow();
+                cr.set_source_rgb(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+                cr.rectangle(0.0, 0.0, w as f64, h as f64);
+                let _ = cr.fill();
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
+                cr.set_line_width(1.0);
+                cr.rectangle(0.5, 0.5, (w - 1) as f64, (h - 1) as f64);
+                let _ = cr.stroke();
+            });
+        }
+        preview_row.append(&preview);
+
+        let preview_meta = GtkBox::new(Orientation::Vertical, 6);
+        preview_meta.set_hexpand(true);
+        let picker_title = Label::new(Some("Tint color"));
+        picker_title.add_css_class("tint-picker-label");
+        picker_title.set_halign(Align::Start);
+        let hex_label = Label::new(Some(&rgb_to_hex(*state.borrow())));
+        hex_label.add_css_class("tint-picker-hex");
+        hex_label.set_halign(Align::Start);
+        let note = Label::new(Some("Choose a preset or tune red, green, and blue."));
+        note.add_css_class("tint-picker-note");
+        note.set_halign(Align::Start);
+        note.set_wrap(true);
+        preview_meta.append(&picker_title);
+        preview_meta.append(&hex_label);
+        preview_meta.append(&note);
+        preview_row.append(&preview_meta);
+        content.append(&preview_row);
+
+        let update_ui: Rc<dyn Fn()> = {
+            let preview = preview.clone();
+            let hex_label = hex_label.clone();
+            let state = Rc::clone(&state);
+            Rc::new(move || {
+                hex_label.set_label(&rgb_to_hex(*state.borrow()));
+                preview.queue_draw();
+            })
+        };
+
+        let red = build_tint_channel_row("Red", state.borrow().0);
+        let green = build_tint_channel_row("Green", state.borrow().1);
+        let blue = build_tint_channel_row("Blue", state.borrow().2);
+        content.append(&red.0);
+        content.append(&green.0);
+        content.append(&blue.0);
+
+        wire_tint_channel(&red.1, Rc::clone(&state), 0, Rc::clone(&update_ui));
+        wire_tint_channel(&green.1, Rc::clone(&state), 1, Rc::clone(&update_ui));
+        wire_tint_channel(&blue.1, Rc::clone(&state), 2, Rc::clone(&update_ui));
+
+        let presets_label = Label::new(Some("Presets"));
+        presets_label.add_css_class("tint-picker-label");
+        presets_label.set_halign(Align::Start);
+        content.append(&presets_label);
+
+        let presets = GtkBox::new(Orientation::Horizontal, 8);
+        presets.add_css_class("tint-picker-presets");
+        for hex in [
+            "#806040", "#c9962e", "#c84070", "#8040a0", "#5080b8", "#3d8060", "#d09458", "#e8dcc8",
+        ] {
+            let btn = Button::new();
+            btn.add_css_class("tint-picker-preset");
+            btn.set_size_request(42, 30);
+            let swatch = DrawingArea::new();
+            swatch.set_content_width(34);
+            swatch.set_content_height(22);
+            swatch.set_size_request(34, 22);
+            let (sr, sg, sb) = parse_hex_rgb(hex);
+            swatch.set_draw_func(move |_, cr, w, h| {
+                cr.set_source_rgb(sr as f64 / 255.0, sg as f64 / 255.0, sb as f64 / 255.0);
+                cr.rectangle(0.0, 0.0, w as f64, h as f64);
+                let _ = cr.fill();
+            });
+            btn.set_child(Some(&swatch));
+            {
+                let state = Rc::clone(&state);
+                let update_ui = Rc::clone(&update_ui);
+                let red_scale = red.1.clone();
+                let green_scale = green.1.clone();
+                let blue_scale = blue.1.clone();
+                btn.connect_clicked(move |_| {
+                    *state.borrow_mut() = (sr, sg, sb);
+                    red_scale.set_value(sr as f64);
+                    green_scale.set_value(sg as f64);
+                    blue_scale.set_value(sb as f64);
+                    update_ui();
+                });
+            }
+            presets.append(&btn);
+        }
+        content.append(&presets);
+
+        let actions = build_modal_actions();
+        let host = self.modal_host.clone();
+        let cancel_btn = build_modal_button("Cancel", ButtonKind::Secondary, move || host.hide());
+        actions.append(&cancel_btn);
+
+        let host = self.modal_host.clone();
+        let state_for_apply = Rc::clone(&state);
+        let on_selected = Rc::new(RefCell::new(Some(on_selected)));
+        let apply_btn = build_modal_button("Apply", ButtonKind::Primary, move || {
+            if let Some(callback) = on_selected.borrow_mut().take() {
+                callback(rgb_to_hex(*state_for_apply.borrow()));
+            }
+            host.hide();
+        });
+        actions.append(&apply_btn);
+
+        let host = self.modal_host.clone();
+        self.modal_host.show_with_custom_ui(
+            title,
+            &content,
+            &actions,
+            true,
+            Some(Box::new(move || host.hide())),
+        );
+        apply_btn.grab_focus();
+    }
+
+    fn handle_tint_deleted(self: &Rc<Self>, id: i64) {
+        let tint_name = {
+            self.metadata
+                .borrow()
+                .list_tints()
+                .unwrap_or_default()
+                .into_iter()
+                .find(|t| t.id == id)
+                .map(|t| t.name)
+                .unwrap_or_default()
+        };
+        let prompt = format!("Delete tint \u{2018}{tint_name}\u{2019}? This cannot be undone.");
+        let controller = Rc::clone(self);
+        self.modal_host
+            .show_confirm("Delete Tint", &prompt, "Delete", true, false, move || {
+                let result = controller.metadata.borrow_mut().delete_tint(id);
+                match result {
+                    Ok(()) => {
+                        controller.reload_tag_manager_if_visible();
+                        controller.status.set_message("Tint deleted.");
+                    }
+                    Err(e) => {
+                        controller.modal_host.show_error("Delete Tint Failed", &e);
+                    }
+                }
+            });
     }
 
     fn load_activity_log_view(self: &Rc<Self>, slot: PaneSlot) {
@@ -2007,7 +2417,7 @@ impl BrowserController {
             .find(|p| p.id == project_id)
             .cloned()
         else {
-            self.status.set_message("Project not found.");
+            self.status.set_message("Palette not found.");
             return;
         };
 
@@ -2023,11 +2433,6 @@ impl BrowserController {
         pane.file_grid.clear_selection();
         self.reset_keyboard_state(slot);
         self.items_cell(slot).borrow_mut().clear();
-
-        let controller = Rc::clone(self);
-        let on_back = move || {
-            controller.open_project_manager();
-        };
 
         let controller = Rc::clone(self);
         let on_navigate = move |path: PathBuf| {
@@ -2047,11 +2452,19 @@ impl BrowserController {
         pane.project_landing_panel.populate(
             &project,
             &destinations,
-            on_back,
             on_navigate,
             on_remove_pin,
             on_pin_folder,
         );
+
+        // Populate the Palette Board and wire back navigation into its toolbar
+        self.populate_palette_board(slot, project_id);
+        {
+            let ctrl = Rc::clone(self);
+            self.pane_widgets(slot)
+                .palette_board_panel
+                .set_palette_info(&project.name, move || ctrl.open_project_manager());
+        }
 
         self.update_view_strip(slot);
 
@@ -2063,6 +2476,248 @@ impl BrowserController {
             self.status.clear_message();
             self.update_sidebar_state();
             self.update_action_state();
+        }
+    }
+
+    fn populate_palette_board(self: &Rc<Self>, slot: PaneSlot, palette_id: i64) {
+        let items = self
+            .metadata
+            .borrow()
+            .list_palette_items(palette_id)
+            .unwrap_or_default();
+        let links = self
+            .metadata
+            .borrow()
+            .list_palette_links(palette_id)
+            .unwrap_or_default();
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+
+        let pane = self.pane_widgets(slot);
+        let board = pane.palette_board_panel.clone();
+
+        // Wire up board callbacks
+        {
+            let controller = Rc::clone(self);
+            let board2 = board.clone();
+            board.set_callbacks(
+                // on_item_moved
+                {
+                    let ctrl = Rc::clone(&controller);
+                    let brd = board2.clone();
+                    move |id, x, y| {
+                        let item = brd.items.borrow().iter().find(|i| i.id == id).cloned();
+                        if let Some(item) = item {
+                            let _ = ctrl.metadata.borrow_mut().update_palette_item_geometry(
+                                id,
+                                x,
+                                y,
+                                item.width,
+                                item.height,
+                            );
+                        }
+                    }
+                },
+                // on_item_resized
+                {
+                    let ctrl = Rc::clone(&controller);
+                    let brd = board2.clone();
+                    move |id, w, h| {
+                        let item = brd.items.borrow().iter().find(|i| i.id == id).cloned();
+                        if let Some(item) = item {
+                            let _ = ctrl
+                                .metadata
+                                .borrow_mut()
+                                .update_palette_item_geometry(id, item.x, item.y, w, h);
+                        }
+                    }
+                },
+                // on_item_deleted
+                {
+                    let ctrl = Rc::clone(&controller);
+                    move |id| {
+                        let _ = ctrl.metadata.borrow_mut().delete_palette_item(id);
+                    }
+                },
+                // on_note_edited
+                {
+                    let ctrl = Rc::clone(&controller);
+                    move |id, title: Option<String>, body: Option<String>| {
+                        let _ = ctrl.metadata.borrow_mut().update_palette_item_content(
+                            id,
+                            title.as_deref(),
+                            body.as_deref(),
+                        );
+                    }
+                },
+                // on_link_created
+                {
+                    let ctrl = Rc::clone(&controller);
+                    let brd = board2.clone();
+                    move |src_id, dst_id, strength: String| {
+                        let result = ctrl
+                            .metadata
+                            .borrow_mut()
+                            .create_palette_link(palette_id, src_id, dst_id, &strength);
+                        if let Ok(_link) = result {
+                            // Refresh links on the board
+                            let links = ctrl
+                                .metadata
+                                .borrow()
+                                .list_palette_links(palette_id)
+                                .unwrap_or_default();
+                            brd.set_links(links);
+                        }
+                    }
+                },
+                // on_link_deleted
+                {
+                    let ctrl = Rc::clone(&controller);
+                    move |id| {
+                        let _ = ctrl.metadata.borrow_mut().delete_palette_link(id);
+                    }
+                },
+                // on_add_file_card
+                {
+                    let ctrl = Rc::clone(&controller);
+                    move || {
+                        ctrl.show_add_file_card_dialog(slot, palette_id);
+                    }
+                },
+                // on_add_folder_card
+                {
+                    let ctrl = Rc::clone(&controller);
+                    move || {
+                        ctrl.show_add_folder_card_dialog(slot, palette_id);
+                    }
+                },
+                // on_add_note_card
+                {
+                    let ctrl = Rc::clone(&controller);
+                    move || {
+                        ctrl.add_note_card_to_board(slot, palette_id);
+                    }
+                },
+            );
+        }
+
+        board.populate(palette_id, items, links, tints);
+    }
+
+    fn show_add_file_card_dialog(self: &Rc<Self>, slot: PaneSlot, palette_id: i64) {
+        let initial = self.current_dir_for(slot).to_string_lossy().to_string();
+        let controller = Rc::clone(self);
+        self.modal_host.show_input(
+            "Add File Card",
+            "Enter the path of the file to add:",
+            &initial,
+            "Add",
+            move |path_str| {
+                let path_str = path_str.trim().to_string();
+                if path_str.is_empty() {
+                    return;
+                }
+                let name = std::path::Path::new(&path_str)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path_str.clone());
+                let offset = controller
+                    .metadata
+                    .borrow()
+                    .list_palette_items(palette_id)
+                    .map(|items| items.len() as i64 * 20)
+                    .unwrap_or(0);
+                let result = controller.metadata.borrow_mut().create_palette_item(
+                    palette_id,
+                    "file",
+                    Some(&path_str),
+                    Some(&name),
+                    None,
+                    None,
+                    None,
+                    60 + offset,
+                    60 + offset,
+                    220,
+                    160,
+                );
+                if let Ok(item) = result {
+                    controller
+                        .pane_widgets(slot)
+                        .palette_board_panel
+                        .add_card(item);
+                }
+            },
+        );
+    }
+
+    fn show_add_folder_card_dialog(self: &Rc<Self>, slot: PaneSlot, palette_id: i64) {
+        let initial = self.current_dir_for(slot).to_string_lossy().to_string();
+        let controller = Rc::clone(self);
+        self.modal_host.show_input(
+            "Add Folder Card",
+            "Enter the path of the folder to add:",
+            &initial,
+            "Add",
+            move |path_str| {
+                let path_str = path_str.trim().to_string();
+                if path_str.is_empty() {
+                    return;
+                }
+                let name = std::path::Path::new(&path_str)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path_str.clone());
+                let offset = controller
+                    .metadata
+                    .borrow()
+                    .list_palette_items(palette_id)
+                    .map(|items| items.len() as i64 * 20)
+                    .unwrap_or(0);
+                let result = controller.metadata.borrow_mut().create_palette_item(
+                    palette_id,
+                    "folder",
+                    Some(&path_str),
+                    Some(&name),
+                    None,
+                    None,
+                    None,
+                    60 + offset,
+                    60 + offset,
+                    220,
+                    160,
+                );
+                if let Ok(item) = result {
+                    controller
+                        .pane_widgets(slot)
+                        .palette_board_panel
+                        .add_card(item);
+                }
+            },
+        );
+    }
+
+    fn add_note_card_to_board(self: &Rc<Self>, slot: PaneSlot, palette_id: i64) {
+        let offset = {
+            self.metadata
+                .borrow()
+                .list_palette_items(palette_id)
+                .map(|items| items.len() as i64 * 20)
+                .unwrap_or(0)
+        };
+        let result = self.metadata.borrow_mut().create_palette_item(
+            palette_id,
+            "note",
+            None,
+            Some(""),
+            Some(""),
+            None,
+            None,
+            60 + offset,
+            60 + offset,
+            220,
+            160,
+        );
+        if let Ok(item) = result {
+            self.pane_widgets(slot).palette_board_panel.add_card(item);
         }
     }
 
@@ -2685,6 +3340,9 @@ impl BrowserController {
                 size_bytes: (info.size() >= 0).then_some(info.size() as u64),
                 modified_unix: info.modification_date_time().map(|value| value.to_unix()),
                 tags: Vec::new(),
+                mark_tint_id: 0,
+                mark_tint_color: None,
+                mark_shape: Shape::DEFAULT,
                 original_path: Some(orig_path),
             });
         }
@@ -2700,6 +3358,7 @@ impl BrowserController {
     }
 
     fn refresh_metadata_sidebar(self: &Rc<Self>) {
+        self.apply_tint_css();
         let (places, projects, tags) = {
             let metadata = self.metadata.borrow();
             let places = metadata.list_places().unwrap_or_default();
@@ -2836,6 +3495,216 @@ impl BrowserController {
         self.open_triage(root, TriageFilter::All);
     }
 
+    fn open_bulk_naming_tool(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        let Some(root) = self.tool_scope_dir_for(slot) else {
+            self.status
+                .set_message("Bulk Naming is only available from folder-backed views.");
+            return;
+        };
+        if matches!(self.current_view_for(slot), PaneView::BulkNaming { root: ref current } if current == &root)
+        {
+            return;
+        }
+        self.save_dir_to_history_if_in_directory(slot);
+        self.current_dir_cell(slot).replace(root.clone());
+        self.current_view_cell(slot)
+            .replace(PaneView::BulkNaming { root: root.clone() });
+        self.sync_active_tab_state();
+        self.update_view_strip(slot);
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_bulk_naming_view(slot, root);
+        self.update_navigation_state();
+    }
+
+    fn open_bulk_naming_with_items(self: &Rc<Self>, items: Vec<FileItem>) {
+        if items.is_empty() {
+            return;
+        }
+        let slot = self.active_slot();
+        let root = common_parent_for_items(&items).unwrap_or_else(|| self.current_dir_for(slot));
+        let selected_paths = items
+            .iter()
+            .map(|item| item.path.clone())
+            .collect::<HashSet<_>>();
+        let sibling_names = self.sibling_names_outside_selection(slot, &selected_paths);
+
+        self.save_dir_to_history_if_in_directory(slot);
+        self.current_dir_cell(slot).replace(root.clone());
+        self.current_view_cell(slot)
+            .replace(PaneView::BulkNaming { root: root.clone() });
+        self.sync_active_tab_state();
+        self.update_view_strip(slot);
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_bulk_naming_items(slot, root, items, sibling_names, false);
+        self.update_navigation_state();
+    }
+
+    fn load_bulk_naming_view(self: &Rc<Self>, slot: PaneSlot, root: PathBuf) {
+        let recursive = self.pane_widgets(slot).bulk_naming_panel.recursive_active();
+        self.load_bulk_naming_folder(slot, root, recursive);
+    }
+
+    fn load_bulk_naming_folder(self: &Rc<Self>, slot: PaneSlot, root: PathBuf, recursive: bool) {
+        self.cancel_active_load(slot);
+        if slot == self.active_slot() {
+            self.cancel_active_preview();
+        }
+        self.dismiss_context_menu();
+
+        let display_label = self.display_label_for(slot);
+        let pane = self.pane_widgets(slot);
+        pane.path_label.set_label(&display_label);
+        pane.file_grid.clear_selection();
+        pane.bulk_naming_panel
+            .set_scope(&root, recursive, &self.places.home);
+        pane.bulk_naming_panel
+            .set_loading("Loading files for Bulk Naming...");
+        self.reset_keyboard_state(slot);
+        self.items_cell(slot).borrow_mut().clear();
+        self.all_items_cell(slot).borrow_mut().clear();
+
+        let (tints, tags) = {
+            let metadata = self.metadata.borrow();
+            (
+                metadata.list_tints().unwrap_or_default(),
+                metadata.list_tags().unwrap_or_default(),
+            )
+        };
+        pane.bulk_naming_panel.set_reference_data(&tints, &tags);
+        self.connect_bulk_naming_panel(slot);
+        self.update_view_strip(slot);
+
+        if slot == self.active_slot() {
+            self.toolbar.set_breadcrumb_path(&display_label);
+            self.toolbar.show_breadcrumb_mode();
+            self.status.set_path(&display_label);
+            self.status.clear_message();
+            self.status.set_counts(0, 0);
+            self.update_sidebar_state();
+            self.update_navigation_state();
+            self.update_action_state();
+            self.preview
+                .show_folder("Bulk Naming", &display_label, None, None, "Bulk Naming");
+            self.preview.set_action_state(false, false, false);
+        }
+
+        let generation = self.load_generation_cell(slot).get() + 1;
+        self.load_generation_cell(slot).set(generation);
+        let root_for_worker = root.clone();
+        let show_hidden = self.show_hidden_cell(slot).get();
+        let controller = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let raw = gio::spawn_blocking(move || {
+                collect_bulk_naming_items_blocking(&root_for_worker, recursive, show_hidden)
+            })
+            .await
+            .unwrap_or_default();
+            if !controller.is_current_load(slot, generation) {
+                return;
+            }
+            let items = controller.enrich_items(raw);
+            controller.finish_bulk_naming_load(slot, generation, root, items);
+        });
+    }
+
+    fn finish_bulk_naming_load(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        generation: u64,
+        root: PathBuf,
+        mut items: Vec<FileItem>,
+    ) {
+        if !self.is_current_load(slot, generation) {
+            return;
+        }
+        sort_items_with(
+            &mut items,
+            self.sort_field_cell(slot).get(),
+            self.sort_direction_cell(slot).get(),
+        );
+        self.load_bulk_naming_items(slot, root, items, HashMap::new(), true);
+    }
+
+    fn load_bulk_naming_items(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        root: PathBuf,
+        items: Vec<FileItem>,
+        sibling_names: HashMap<PathBuf, HashSet<String>>,
+        recursive: bool,
+    ) {
+        let display_label = self.display_label_for(slot);
+        let pane = self.pane_widgets(slot);
+        let (tints, tags) = {
+            let metadata = self.metadata.borrow();
+            (
+                metadata.list_tints().unwrap_or_default(),
+                metadata.list_tags().unwrap_or_default(),
+            )
+        };
+        pane.bulk_naming_panel
+            .set_scope(&root, recursive, &self.places.home);
+        pane.bulk_naming_panel.set_reference_data(&tints, &tags);
+        pane.bulk_naming_panel
+            .set_items(items.clone(), sibling_names);
+        self.connect_bulk_naming_panel(slot);
+        self.all_items_cell(slot).replace(items.clone());
+        self.items_cell(slot).replace(items.clone());
+
+        if slot == self.active_slot() {
+            self.status.set_path(&display_label);
+            self.status.set_counts(items.len(), 0);
+            self.status.set_message(&format!(
+                "Bulk Naming loaded {} item{}.",
+                items.len(),
+                if items.len() == 1 { "" } else { "s" }
+            ));
+            self.update_sidebar_state();
+            self.update_navigation_state();
+            self.update_action_state();
+            self.refresh_preview();
+        }
+    }
+
+    fn connect_bulk_naming_panel(self: &Rc<Self>, slot: PaneSlot) {
+        let controller = Rc::clone(self);
+        self.pane_widgets(slot)
+            .bulk_naming_panel
+            .connect_refresh(move |recursive| {
+                let PaneView::BulkNaming { root } = controller.current_view_for(slot) else {
+                    return;
+                };
+                controller.load_bulk_naming_folder(slot, root, recursive);
+            });
+        let controller = Rc::clone(self);
+        self.pane_widgets(slot)
+            .bulk_naming_panel
+            .connect_apply(move |renames| controller.apply_bulk_rename(renames));
+    }
+
+    fn sibling_names_outside_selection(
+        &self,
+        slot: PaneSlot,
+        selected_paths: &HashSet<PathBuf>,
+    ) -> HashMap<PathBuf, HashSet<String>> {
+        let mut map: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        for item in self.all_items_cell(slot).borrow().iter() {
+            if selected_paths.contains(&item.path) {
+                continue;
+            }
+            let Some(parent) = item.path.parent().map(Path::to_path_buf) else {
+                continue;
+            };
+            map.entry(parent).or_default().insert(item.name.clone());
+        }
+        map
+    }
+
     fn start_duplicate_scan(self: &Rc<Self>, slot: PaneSlot, root: PathBuf) {
         self.set_duplicate_scan_pending(slot, true);
         self.update_view_strip(slot);
@@ -2880,22 +3749,28 @@ impl BrowserController {
         let is_project_landing = matches!(self.current_view_for(slot), PaneView::ProjectLanding(_));
         let is_project_manager = matches!(self.current_view_for(slot), PaneView::ProjectManager);
         let is_tag_manager = matches!(self.current_view_for(slot), PaneView::TagManager);
+        let is_bulk_naming = matches!(self.current_view_for(slot), PaneView::BulkNaming { .. });
         let is_space_viewer = matches!(self.current_view_for(slot), PaneView::SpaceViewer { .. });
         pane.file_grid.root.set_visible(
             !is_activity_log
                 && !is_project_landing
                 && !is_project_manager
                 && !is_tag_manager
+                && !is_bulk_naming
                 && !is_space_viewer,
         );
         pane.activity_log_panel.root.set_visible(is_activity_log);
         pane.project_landing_panel
             .root
             .set_visible(is_project_landing);
+        pane.palette_board_panel
+            .root
+            .set_visible(is_project_landing);
         pane.project_manager_panel
             .root
             .set_visible(is_project_manager);
         pane.tag_manager_panel.root.set_visible(is_tag_manager);
+        pane.bulk_naming_panel.root.set_visible(is_bulk_naming);
         pane.space_viewer_panel.root.set_visible(is_space_viewer);
         if !is_space_viewer {
             pane.space_viewer_panel.cancel_scan();
@@ -2977,6 +3852,12 @@ impl BrowserController {
                 pane.tag_filter_revealer.set_visible(false);
                 self.sync_filter_button_state(slot);
             }
+            PaneView::BulkNaming { .. } => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
+            }
             PaneView::SpaceViewer { .. } => {
                 pane.view_strip.set_visible(false);
                 pane.tag_filter_revealer.set_reveal_child(false);
@@ -2995,6 +3876,7 @@ impl BrowserController {
             PaneView::Recent => self.load_recent_view(slot),
             PaneView::Trash => self.load_trash_view(slot),
             PaneView::Search(query) => self.load_search_view(slot, query),
+            PaneView::BulkNaming { root } => self.load_bulk_naming_view(slot, root),
             PaneView::ActivityLog => self.load_activity_log_view(slot),
             PaneView::ProjectLanding(project_id) => {
                 self.load_project_landing_view(slot, project_id)
@@ -3073,6 +3955,71 @@ impl BrowserController {
         flow_click.connect_pressed(move |_, _, _, _| controller.set_active_pane(slot));
         pane.file_grid.flow.add_controller(flow_click);
 
+        // Paint mode: drag-to-paint on icon grid
+        // (GestureDrag.drag_begin fires on initial press too, so no separate GestureClick needed)
+        let controller = Rc::clone(self);
+        let flow = pane.file_grid.flow.clone();
+        let paint_drag = gtk::GestureDrag::new();
+        paint_drag.set_button(1);
+        paint_drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        {
+            let controller = Rc::clone(&controller);
+            let flow = flow.clone();
+            paint_drag.connect_drag_begin(move |gesture, x, y| {
+                if !controller.paint_mode_active.get() {
+                    gesture.set_state(gtk::EventSequenceState::Denied);
+                    return;
+                }
+                controller.current_drag_painted.borrow_mut().clear();
+                // Open a drag history accumulator — all strokes become one undo step
+                *controller.drag_history_accumulator.borrow_mut() = Some(Vec::new());
+                if let Some(child) = flow.child_at_pos(x as i32, y as i32) {
+                    controller.set_active_pane(slot);
+                    controller.dispatch_paint_tool(slot, child.index());
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                }
+            });
+        }
+        {
+            let controller = Rc::clone(&controller);
+            let flow = flow.clone();
+            paint_drag.connect_drag_update(move |gesture, offset_x, offset_y| {
+                if !controller.paint_mode_active.get() {
+                    return;
+                }
+                let Some((start_x, start_y)) = gesture.start_point() else {
+                    return;
+                };
+                let abs_x = (start_x + offset_x) as i32;
+                let abs_y = (start_y + offset_y) as i32;
+                if let Some(child) = flow.child_at_pos(abs_x, abs_y) {
+                    if let Some(item) = controller.item_for_index(slot, child.index()) {
+                        if controller
+                            .current_drag_painted
+                            .borrow()
+                            .contains(&item.path)
+                        {
+                            return;
+                        }
+                    }
+                    controller.dispatch_paint_tool(slot, child.index());
+                }
+            });
+        }
+        {
+            let controller = Rc::clone(&controller);
+            paint_drag.connect_drag_end(move |_, _, _| {
+                controller.current_drag_painted.borrow_mut().clear();
+                // Commit accumulated drag entries as a single undo step
+                if let Some(entries) = controller.drag_history_accumulator.borrow_mut().take() {
+                    if !entries.is_empty() {
+                        controller.commit_paint_history(PaintHistoryStep { entries });
+                    }
+                }
+            });
+        }
+        pane.file_grid.flow.add_controller(paint_drag);
+
         // List-mode selection signals
         let controller = Rc::clone(self);
         pane.file_grid
@@ -3110,6 +4057,24 @@ impl BrowserController {
         list_click.connect_pressed(move |_, _, _, _| controller.set_active_pane(slot));
         pane.file_grid.list_box.add_controller(list_click);
 
+        // Paint mode: left-click intercept on list
+        let controller = Rc::clone(self);
+        let list_box = pane.file_grid.list_box.clone();
+        let paint_list_click = gtk::GestureClick::new();
+        paint_list_click.set_button(1);
+        paint_list_click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        paint_list_click.connect_pressed(move |gesture, _, _x, y| {
+            if !controller.paint_mode_active.get() {
+                return;
+            }
+            if let Some(row) = list_box.row_at_y(y as i32) {
+                controller.set_active_pane(slot);
+                controller.dispatch_paint_tool(slot, row.index());
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        pane.file_grid.list_box.add_controller(paint_list_click);
+
         let controller = Rc::clone(self);
         let click = gtk::GestureClick::new();
         click.set_button(0);
@@ -3136,6 +4101,15 @@ impl BrowserController {
         pane.hidden_toggle_btn.connect_clicked(move |_| {
             controller.set_active_pane(slot);
             controller.set_show_hidden_for_slot(slot, !controller.show_hidden_cell(slot).get());
+        });
+
+        let controller = Rc::clone(self);
+        pane.shape_badge_toggle_btn.connect_clicked(move |_| {
+            controller.set_active_pane(slot);
+            controller.set_show_shape_badges_for_slot(
+                slot,
+                !controller.show_shape_badges_cell(slot).get(),
+            );
         });
 
         let controller = Rc::clone(self);
@@ -3306,6 +4280,56 @@ impl BrowserController {
             WindowCommand::TogglePlanMode => {
                 self.set_plan_mode(!self.plan_mode_active.get());
                 true
+            }
+            WindowCommand::TogglePaintMode => {
+                self.set_paint_mode(!self.paint_mode_active.get());
+                true
+            }
+            WindowCommand::PaintBrush => {
+                if self.paint_mode_active.get() {
+                    self.active_paint_tool.set(PaintTool::Brush);
+                    self.painting_toolbar.set_active_tool(PaintTool::Brush);
+                }
+                self.paint_mode_active.get()
+            }
+            WindowCommand::PaintEraser => {
+                if self.paint_mode_active.get() {
+                    self.active_paint_tool.set(PaintTool::Eraser);
+                    self.painting_toolbar.set_active_tool(PaintTool::Eraser);
+                }
+                self.paint_mode_active.get()
+            }
+            WindowCommand::PaintEyedropper => {
+                if self.paint_mode_active.get() {
+                    self.active_paint_tool.set(PaintTool::Eyedropper);
+                    self.painting_toolbar.set_active_tool(PaintTool::Eyedropper);
+                }
+                self.paint_mode_active.get()
+            }
+            WindowCommand::PaintFill => {
+                if self.paint_mode_active.get() {
+                    let slot = self.active_slot();
+                    self.paint_fill_selection(slot);
+                    true
+                } else {
+                    false
+                }
+            }
+            WindowCommand::PaintUndo => {
+                if self.paint_mode_active.get() {
+                    self.paint_undo();
+                    true
+                } else {
+                    false
+                }
+            }
+            WindowCommand::PaintRedo => {
+                if self.paint_mode_active.get() {
+                    self.paint_redo();
+                    true
+                } else {
+                    false
+                }
             }
             WindowCommand::EmptyTrash => {
                 self.empty_trash();
@@ -3802,6 +4826,7 @@ impl BrowserController {
             PaneView::Directory(path) => Some(path),
             PaneView::Triage { root, .. } => Some(root),
             PaneView::Search(query) => Some(query.scope_dir),
+            PaneView::BulkNaming { root } => Some(root),
             PaneView::ActivityLog => Some(self.current_dir_for(slot)),
             PaneView::SpaceViewer { root, .. } => Some(root),
             _ => None,
@@ -3837,6 +4862,14 @@ impl BrowserController {
             PaneSlot::Primary => &self.primary_show_hidden,
             PaneSlot::Secondary => &self.secondary_show_hidden,
             PaneSlot::Tertiary => &self.tertiary_show_hidden,
+        }
+    }
+
+    fn show_shape_badges_cell(&self, slot: PaneSlot) -> &Cell<bool> {
+        match slot {
+            PaneSlot::Primary => &self.primary_show_shape_badges,
+            PaneSlot::Secondary => &self.secondary_show_shape_badges,
+            PaneSlot::Tertiary => &self.tertiary_show_shape_badges,
         }
     }
 
@@ -3893,6 +4926,36 @@ impl BrowserController {
         }
     }
 
+    fn set_show_shape_badges_for_slot(self: &Rc<Self>, slot: PaneSlot, show_badges: bool) {
+        if self.show_shape_badges_cell(slot).get() == show_badges {
+            self.sync_show_shape_badges_button_state(slot);
+            return;
+        }
+        self.show_shape_badges_cell(slot).set(show_badges);
+        self.pane_widgets(slot)
+            .file_grid
+            .set_shape_badges_visible(show_badges);
+        self.sync_show_shape_badges_button_state(slot);
+        self.sync_active_tab_state();
+    }
+
+    fn sync_show_shape_badges_button_state(&self, slot: PaneSlot) {
+        let pane = self.pane_widgets(slot);
+        let show_badges = self.show_shape_badges_cell(slot).get();
+        pane.file_grid.set_shape_badges_visible(show_badges);
+        if show_badges {
+            pane.shape_badge_toggle_btn
+                .add_css_class("pane-control-active");
+            pane.shape_badge_toggle_icon
+                .set_icon_name(Some("emblem-default-symbolic"));
+        } else {
+            pane.shape_badge_toggle_btn
+                .remove_css_class("pane-control-active");
+            pane.shape_badge_toggle_icon
+                .set_icon_name(Some("emblem-default-symbolic"));
+        }
+    }
+
     fn visible_slots(&self) -> Vec<PaneSlot> {
         [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary]
             .into_iter()
@@ -3932,6 +4995,9 @@ impl BrowserController {
             tab.primary_show_hidden = self.primary_show_hidden.get();
             tab.secondary_show_hidden = self.secondary_show_hidden.get();
             tab.tertiary_show_hidden = self.tertiary_show_hidden.get();
+            tab.primary_show_shape_badges = self.primary_show_shape_badges.get();
+            tab.secondary_show_shape_badges = self.secondary_show_shape_badges.get();
+            tab.tertiary_show_shape_badges = self.tertiary_show_shape_badges.get();
             tab.primary_sort_field = self.primary_sort_field.get();
             tab.primary_sort_direction = self.primary_sort_direction.get();
             tab.secondary_sort_field = self.secondary_sort_field.get();
@@ -4066,6 +5132,12 @@ impl BrowserController {
         self.primary_show_hidden.set(tab.primary_show_hidden);
         self.secondary_show_hidden.set(tab.secondary_show_hidden);
         self.tertiary_show_hidden.set(tab.tertiary_show_hidden);
+        self.primary_show_shape_badges
+            .set(tab.primary_show_shape_badges);
+        self.secondary_show_shape_badges
+            .set(tab.secondary_show_shape_badges);
+        self.tertiary_show_shape_badges
+            .set(tab.tertiary_show_shape_badges);
         self.primary_sort_field.set(tab.primary_sort_field);
         self.primary_sort_direction.set(tab.primary_sort_direction);
         self.secondary_sort_field.set(tab.secondary_sort_field);
@@ -4077,6 +5149,7 @@ impl BrowserController {
         for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
             self.set_view_mode(slot, self.view_mode_cell(slot).get());
             self.sync_show_hidden_button_state(slot);
+            self.sync_show_shape_badges_button_state(slot);
             let icon = match self.sort_direction_cell(slot).get() {
                 SortDirection::Ascending => "view-sort-ascending-symbolic",
                 SortDirection::Descending => "view-sort-descending-symbolic",
@@ -4533,6 +5606,504 @@ impl BrowserController {
         }
     }
 
+    // ── Painting Mode ────────────────────────────────────────────────────────
+
+    fn set_paint_mode(self: &Rc<Self>, active: bool) {
+        self.paint_mode_active.set(active);
+        if self.toolbar.paint_mode_toggle.is_active() != active {
+            self.toolbar.paint_mode_toggle.set_active(active);
+        }
+        self.painting_toolbar.set_reveal(active);
+        if active {
+            let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+            self.painting_toolbar
+                .set_tints(&tints, self.active_paint_tint_id.get());
+            self.painting_toolbar
+                .set_active_shape(self.active_paint_shape.get());
+            self.painting_toolbar
+                .set_active_tool(self.active_paint_tool.get());
+            self.painting_toolbar
+                .set_paint_contents(self.paint_contents.get());
+            {
+                let ctrl = Rc::clone(self);
+                self.painting_toolbar
+                    .connect_tint_changed(move |id| ctrl.on_paint_tint_changed(id));
+            }
+            {
+                let ctrl = Rc::clone(self);
+                let pt = self.painting_toolbar.clone();
+                self.painting_toolbar.connect_shape_changed(move |s| {
+                    ctrl.active_paint_shape.set(s);
+                    pt.set_active_shape(s);
+                });
+            }
+            {
+                let ctrl = Rc::clone(self);
+                self.painting_toolbar
+                    .connect_tool_changed(move |t| ctrl.active_paint_tool.set(t));
+            }
+            {
+                let ctrl = Rc::clone(self);
+                self.painting_toolbar
+                    .connect_paint_contents_changed(move |on| ctrl.paint_contents.set(on));
+            }
+            {
+                let ctrl = Rc::clone(self);
+                self.painting_toolbar
+                    .connect_undo(move || ctrl.paint_undo());
+            }
+            {
+                let ctrl = Rc::clone(self);
+                self.painting_toolbar
+                    .connect_redo(move || ctrl.paint_redo());
+            }
+            self.refresh_paint_undo_redo_state();
+            self.status
+                .set_message("🎨 Painting Mode — click files to apply marks.");
+        } else {
+            self.status.set_message("Painting Mode OFF.");
+        }
+    }
+
+    fn on_paint_tint_changed(self: &Rc<Self>, tint_id: i64) {
+        let meta = self.metadata.borrow();
+        let tints = meta.list_tints().unwrap_or_default();
+        if let Some(t) = tints.iter().find(|t| t.id == tint_id) {
+            self.active_paint_tint_id.set(tint_id);
+            let color = t.color.as_deref().unwrap_or("#806040");
+            *self.active_paint_tint_color.borrow_mut() = color.to_string();
+            *self.active_paint_tint_name.borrow_mut() = t.name.clone();
+            drop(meta);
+            let tints2 = self.metadata.borrow().list_tints().unwrap_or_default();
+            self.painting_toolbar.set_tints(&tints2, tint_id);
+        }
+    }
+
+    fn dispatch_paint_tool(self: &Rc<Self>, slot: PaneSlot, index: i32) {
+        let Some(item) = self.item_for_index(slot, index) else {
+            return;
+        };
+        match self.active_paint_tool.get() {
+            PaintTool::Brush => self.paint_brush_item(slot, &item),
+            PaintTool::Eraser => self.paint_eraser_item(slot, &item),
+            PaintTool::Eyedropper => self.paint_eyedropper_item(&item),
+            PaintTool::FillSelection => self.paint_fill_selection(slot),
+        }
+    }
+
+    fn paint_brush_item(self: &Rc<Self>, slot: PaneSlot, item: &FileItem) {
+        if item.is_dir && self.paint_contents.get() {
+            self.paint_folder_with_preview(slot, item.path.clone());
+            return;
+        }
+        let tint_id = self.active_paint_tint_id.get();
+        let shape = self.active_paint_shape.get();
+        // Capture previous mark before overwriting
+        let prev = self.read_explicit_mark(&item.path);
+        let result = self
+            .metadata
+            .borrow_mut()
+            .set_file_mark(&item.path, tint_id, shape);
+        if result.is_ok() {
+            self.current_drag_painted
+                .borrow_mut()
+                .insert(item.path.clone());
+            self.update_item_mark_in_grid(slot, &item.path, tint_id, shape);
+            let entry = PaintHistoryEntry {
+                path: item.path.clone(),
+                prev,
+                next: Some((tint_id, shape)),
+            };
+            if !self.append_or_commit_history(entry) {
+                // Not in a drag — commit as standalone step
+                self.commit_paint_history(PaintHistoryStep {
+                    entries: vec![PaintHistoryEntry {
+                        path: item.path.clone(),
+                        prev,
+                        next: Some((tint_id, shape)),
+                    }],
+                });
+            }
+            self.log_paint_mark(slot, &[item.path.clone()], tint_id, shape);
+        }
+    }
+
+    fn paint_eraser_item(self: &Rc<Self>, slot: PaneSlot, item: &FileItem) {
+        let prev = self.read_explicit_mark(&item.path);
+        let _ = self.metadata.borrow_mut().clear_file_mark(&item.path);
+        self.current_drag_painted
+            .borrow_mut()
+            .insert(item.path.clone());
+        let default = {
+            let meta = self.metadata.borrow();
+            meta.list_tints()
+                .unwrap_or_default()
+                .into_iter()
+                .find(|t| t.is_default)
+        };
+        let (default_tint_id, default_shape) = default
+            .map(|t| (t.id, Shape::DEFAULT))
+            .unwrap_or((self.active_paint_tint_id.get(), Shape::DEFAULT));
+        self.update_item_mark_in_grid(slot, &item.path, default_tint_id, default_shape);
+        let entry = PaintHistoryEntry {
+            path: item.path.clone(),
+            prev,
+            next: None, // erased
+        };
+        if !self.append_or_commit_history(entry) {
+            self.commit_paint_history(PaintHistoryStep {
+                entries: vec![PaintHistoryEntry {
+                    path: item.path.clone(),
+                    prev,
+                    next: None,
+                }],
+            });
+        }
+        self.log_erase_mark(slot, &[item.path.clone()]);
+    }
+
+    fn paint_eyedropper_item(self: &Rc<Self>, item: &FileItem) {
+        let tint_id = item.mark_tint_id;
+        let shape = item.mark_shape;
+        self.active_paint_tint_id.set(tint_id);
+        self.active_paint_shape.set(shape);
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+        if let Some(t) = tints.iter().find(|t| t.id == tint_id) {
+            let color = t.color.as_deref().unwrap_or("#806040");
+            *self.active_paint_tint_color.borrow_mut() = color.to_string();
+            *self.active_paint_tint_name.borrow_mut() = t.name.clone();
+            self.painting_toolbar.set_tints(&tints, tint_id);
+        }
+        self.painting_toolbar.set_active_shape(shape);
+        self.status.set_message(&format!(
+            "Eyedropper: picked {} {}",
+            self.active_paint_tint_name.borrow(),
+            shape.display_name()
+        ));
+    }
+
+    fn paint_fill_selection(self: &Rc<Self>, slot: PaneSlot) {
+        let items = self.selected_items_for(slot);
+        if items.is_empty() {
+            return;
+        }
+        let tint_id = self.active_paint_tint_id.get();
+        let shape = self.active_paint_shape.get();
+        let mut history_entries = Vec::new();
+        let mut paths = Vec::new();
+        {
+            let mut meta = self.metadata.borrow_mut();
+            for item in &items {
+                let prev = read_explicit_mark_from_item(item);
+                if meta.set_file_mark(&item.path, tint_id, shape).is_ok() {
+                    paths.push(item.path.clone());
+                    history_entries.push(PaintHistoryEntry {
+                        path: item.path.clone(),
+                        prev,
+                        next: Some((tint_id, shape)),
+                    });
+                }
+            }
+        }
+        for item in &items {
+            if paths.contains(&item.path) {
+                self.update_item_mark_in_grid(slot, &item.path, tint_id, shape);
+            }
+        }
+        if !history_entries.is_empty() {
+            self.commit_paint_history(PaintHistoryStep {
+                entries: history_entries,
+            });
+        }
+        if !paths.is_empty() {
+            self.log_paint_mark(slot, &paths, tint_id, shape);
+        }
+    }
+
+    fn update_item_mark_in_grid(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        path: &PathBuf,
+        tint_id: i64,
+        shape: Shape,
+    ) {
+        let items = self.items_cell(slot).borrow();
+        if let Some(index) = items.iter().position(|i| &i.path == path) {
+            drop(items);
+            let tint_color = self.tint_color_for_id(tint_id);
+            self.pane_widgets(slot).file_grid.update_item_mark(
+                index,
+                tint_id,
+                tint_color.as_deref(),
+                shape,
+            );
+            // Also update the in-memory record
+            let mut items = self.items_cell(slot).borrow_mut();
+            if let Some(item) = items.get_mut(index) {
+                item.mark_tint_id = tint_id;
+                item.mark_tint_color = tint_color;
+                item.mark_shape = shape;
+            }
+        }
+    }
+
+    fn tint_color_for_id(&self, tint_id: i64) -> Option<String> {
+        self.metadata
+            .borrow()
+            .list_tints()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|tint| tint.id == tint_id)
+            .and_then(|tint| tint.color)
+    }
+
+    fn log_paint_mark(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        paths: &[PathBuf],
+        _tint_id: i64,
+        shape: Shape,
+    ) {
+        let tint_name = self.active_paint_tint_name.borrow().clone();
+        let count = paths.len();
+        let summary = format!(
+            "Marked {} item{} {} {}",
+            count,
+            if count == 1 { "" } else { "s" },
+            tint_name,
+            shape.display_name()
+        );
+        let source = self.current_dir_for(slot).display().to_string();
+        let items: Vec<(PathBuf, Option<PathBuf>)> =
+            paths.iter().map(|p| (p.clone(), None)).collect();
+        self.metadata
+            .borrow()
+            .log_activity_with_items(
+                "paint_mark",
+                count as i32,
+                &summary,
+                &source,
+                None,
+                &[],
+                &items,
+            )
+            .ok();
+        self.status.set_message(&summary);
+    }
+
+    fn log_erase_mark(self: &Rc<Self>, slot: PaneSlot, paths: &[PathBuf]) {
+        let count = paths.len();
+        let summary = format!(
+            "Reset {} item{} to Beige Square",
+            count,
+            if count == 1 { "" } else { "s" }
+        );
+        let source = self.current_dir_for(slot).display().to_string();
+        let items: Vec<(PathBuf, Option<PathBuf>)> =
+            paths.iter().map(|p| (p.clone(), None)).collect();
+        self.metadata
+            .borrow()
+            .log_activity_with_items(
+                "erase_mark",
+                count as i32,
+                &summary,
+                &source,
+                None,
+                &[],
+                &items,
+            )
+            .ok();
+        self.status.set_message(&summary);
+    }
+
+    // ── Paint history helpers ────────────────────────────────────────────────
+
+    /// Read the explicit mark for a path (None = path uses default, no explicit row).
+    fn read_explicit_mark(&self, path: &PathBuf) -> Option<(i64, Shape)> {
+        let meta = self.metadata.borrow();
+        let paths = std::slice::from_ref(path);
+        let marks = meta.marks_for_paths(paths).unwrap_or_default();
+        if let Some(m) = marks.get(path) {
+            // created_at == 0 is the synthetic default sentinel
+            if m.created_at != 0 {
+                return Some((m.tint_id, m.shape));
+            }
+        }
+        None
+    }
+
+    /// Append a history entry to the ongoing drag accumulator, or return false
+    /// if there is no open accumulator (single-click case, caller should commit).
+    fn append_or_commit_history(&self, entry: PaintHistoryEntry) -> bool {
+        let mut acc = self.drag_history_accumulator.borrow_mut();
+        if let Some(ref mut entries) = *acc {
+            entries.push(entry);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Push a completed step onto the undo stack and clear the redo stack.
+    fn commit_paint_history(&self, step: PaintHistoryStep) {
+        let mut undo = self.paint_undo_stack.borrow_mut();
+        undo.push(step);
+        if undo.len() > PAINT_HISTORY_LIMIT {
+            undo.remove(0);
+        }
+        drop(undo);
+        self.paint_redo_stack.borrow_mut().clear();
+        self.refresh_paint_undo_redo_state();
+    }
+
+    fn refresh_paint_undo_redo_state(&self) {
+        let can_undo = !self.paint_undo_stack.borrow().is_empty();
+        let can_redo = !self.paint_redo_stack.borrow().is_empty();
+        self.painting_toolbar.set_undo_enabled(can_undo);
+        self.painting_toolbar.set_redo_enabled(can_redo);
+    }
+
+    fn paint_undo(self: &Rc<Self>) {
+        let step = self.paint_undo_stack.borrow_mut().pop();
+        let Some(step) = step else { return };
+        let slot = self.active_slot();
+        self.apply_paint_history_step(slot, &step, true);
+        self.paint_redo_stack.borrow_mut().push(step);
+        self.refresh_paint_undo_redo_state();
+        self.status.set_message("Paint undo.");
+    }
+
+    fn paint_redo(self: &Rc<Self>) {
+        let step = self.paint_redo_stack.borrow_mut().pop();
+        let Some(step) = step else { return };
+        let slot = self.active_slot();
+        self.apply_paint_history_step(slot, &step, false);
+        self.paint_undo_stack.borrow_mut().push(step);
+        self.refresh_paint_undo_redo_state();
+        self.status.set_message("Paint redo.");
+    }
+
+    /// Apply a history step (undo = restore `prev`; redo = restore `next`).
+    fn apply_paint_history_step(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        step: &PaintHistoryStep,
+        is_undo: bool,
+    ) {
+        // When restoring to "no explicit mark", show the system default tint, not the active
+        // paint tint. Same approach as paint_eraser_item.
+        let system_default_tint_id = self
+            .metadata
+            .borrow()
+            .list_tints()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|t| t.is_default)
+            .map(|t| t.id)
+            .unwrap_or_else(|| self.active_paint_tint_id.get());
+        for entry in &step.entries {
+            let target = if is_undo { entry.prev } else { entry.next };
+            match target {
+                Some((tint_id, shape)) => {
+                    self.metadata
+                        .borrow_mut()
+                        .set_file_mark(&entry.path, tint_id, shape)
+                        .ok();
+                    self.update_item_mark_in_grid(slot, &entry.path, tint_id, shape);
+                }
+                None => {
+                    self.metadata.borrow_mut().clear_file_mark(&entry.path).ok();
+                    self.update_item_mark_in_grid(
+                        slot,
+                        &entry.path,
+                        system_default_tint_id,
+                        Shape::DEFAULT,
+                    );
+                }
+            }
+        }
+    }
+
+    fn paint_folder_with_preview(self: &Rc<Self>, slot: PaneSlot, folder_path: PathBuf) {
+        let tint_id = self.active_paint_tint_id.get();
+        let shape = self.active_paint_shape.get();
+        let tint_name = self.active_paint_tint_name.borrow().clone();
+        let folder_name = folder_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("folder")
+            .to_string();
+        let prompt = format!(
+            "Paint all contents of \"{}\" as {} {} recursively?\n\nAll files and subfolders will receive this mark.",
+            folder_name,
+            tint_name,
+            shape.display_name()
+        );
+        let title = format!("Paint Contents of {folder_name}");
+        let controller = Rc::clone(self);
+        self.modal_host
+            .show_confirm(&title, &prompt, "Paint", false, true, move || {
+                controller.do_paint_folder_recursive(
+                    slot,
+                    folder_path.clone(),
+                    tint_id,
+                    shape,
+                    tint_name.clone(),
+                );
+            });
+    }
+
+    fn do_paint_folder_recursive(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        folder_path: PathBuf,
+        tint_id: i64,
+        shape: Shape,
+        tint_name: String,
+    ) {
+        self.status.set_message("Painting folder contents…");
+        let controller = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let paths = gio::spawn_blocking(move || collect_paths_recursively(&folder_path))
+                .await
+                .unwrap_or_default();
+            let mut ok_count = 0i32;
+            {
+                let mut meta = controller.metadata.borrow_mut();
+                for path in &paths {
+                    if meta.set_file_mark(path, tint_id, shape).is_ok() {
+                        ok_count += 1;
+                    }
+                }
+            }
+            let summary = format!(
+                "Marked {} item{} {} {}",
+                ok_count,
+                if ok_count == 1 { "" } else { "s" },
+                tint_name,
+                shape.display_name()
+            );
+            let source = folder_path_str_from_slot(&controller, slot);
+            let item_pairs: Vec<(PathBuf, Option<PathBuf>)> =
+                paths.iter().map(|p| (p.clone(), None)).collect();
+            controller
+                .metadata
+                .borrow()
+                .log_activity_with_items(
+                    "paint_mark",
+                    ok_count,
+                    &summary,
+                    &source,
+                    None,
+                    &[],
+                    &item_pairs,
+                )
+                .ok();
+            controller.load_current_view(slot);
+            controller.status.set_message(&summary);
+        });
+    }
+
     fn queue_plan(self: &Rc<Self>, plan: crate::action_plan::ActionPlan) {
         self.action_queue.borrow_mut().push(plan);
         self.refresh_plan_queue_panel();
@@ -4662,8 +6233,116 @@ impl BrowserController {
                         }
                     }
                 }
+                crate::action_plan::OpKind::PaintMark {
+                    tint_id,
+                    tint_name,
+                    shape,
+                    recursive,
+                } => {
+                    if recursive {
+                        for src in plan.sources {
+                            self.do_paint_folder_recursive(
+                                self.active_slot(),
+                                src,
+                                tint_id,
+                                shape,
+                                tint_name.clone(),
+                            );
+                        }
+                    } else {
+                        self.apply_mark_to_paths_direct(plan.sources, tint_id, shape, &tint_name);
+                    }
+                }
+                crate::action_plan::OpKind::ResetMark { recursive } => {
+                    if recursive {
+                        self.reset_mark_recursive(plan.sources);
+                    } else {
+                        self.reset_mark_for_paths_direct(plan.sources);
+                    }
+                }
             }
         }
+    }
+
+    fn apply_mark_to_paths_direct(
+        self: &Rc<Self>,
+        paths: Vec<PathBuf>,
+        tint_id: i64,
+        shape: Shape,
+        tint_name: &str,
+    ) {
+        let count = paths.len() as i32;
+        {
+            let mut meta = self.metadata.borrow_mut();
+            for path in &paths {
+                let _ = meta.set_file_mark(path, tint_id, shape);
+            }
+            let summary = format!(
+                "Marked {} item{} {} {}",
+                count,
+                if count == 1 { "" } else { "s" },
+                tint_name,
+                shape.display_name(),
+            );
+            let _ = meta.log_activity(
+                "paint_mark",
+                count,
+                &summary,
+                paths
+                    .first()
+                    .map(|p| p.to_string_lossy())
+                    .unwrap_or_default()
+                    .as_ref(),
+                None,
+                &[],
+            );
+        }
+        self.reload_active_tab();
+    }
+
+    fn reset_mark_for_paths_direct(self: &Rc<Self>, paths: Vec<PathBuf>) {
+        let count = paths.len() as i32;
+        {
+            let mut meta = self.metadata.borrow_mut();
+            for path in &paths {
+                let _ = meta.clear_file_mark(path);
+            }
+            let summary = format!(
+                "Reset {} item{} to Beige Square",
+                count,
+                if count == 1 { "" } else { "s" },
+            );
+            let _ = meta.log_activity(
+                "erase_mark",
+                count,
+                &summary,
+                paths
+                    .first()
+                    .map(|p| p.to_string_lossy())
+                    .unwrap_or_default()
+                    .as_ref(),
+                None,
+                &[],
+            );
+        }
+        self.reload_active_tab();
+    }
+
+    fn reset_mark_recursive(self: &Rc<Self>, folder_paths: Vec<PathBuf>) {
+        self.status.set_message("Resetting marks…");
+        let controller = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let all_paths = gio::spawn_blocking(move || {
+                let mut acc = Vec::new();
+                for root in &folder_paths {
+                    acc.extend(collect_paths_recursively(root));
+                }
+                acc
+            })
+            .await
+            .unwrap_or_default();
+            controller.reset_mark_for_paths_direct(all_paths);
+        });
     }
 
     fn load_directory(self: &Rc<Self>, slot: PaneSlot, path: PathBuf) {
@@ -4915,6 +6594,7 @@ impl BrowserController {
                 PaneView::Recent => "Unable to read recent folders.",
                 PaneView::Trash => "Unable to read Trash.",
                 PaneView::Search(_) => "Search failed.",
+                PaneView::BulkNaming { .. } => "Unable to load files for Bulk Naming.",
                 PaneView::ActivityLog => "Unable to load activity log.",
                 PaneView::ProjectLanding(_)
                 | PaneView::ProjectManager
@@ -5298,6 +6978,9 @@ impl BrowserController {
                                         .modification_date_time()
                                         .map(|dt| dt.to_unix()),
                                     tags: Vec::new(),
+                                    mark_tint_id: 0,
+                                    mark_tint_color: None,
+                                    mark_shape: Shape::DEFAULT,
                                     original_path,
                                 });
                             }
@@ -5732,10 +7415,13 @@ impl BrowserController {
         if slot == PaneSlot::Primary {
             self.rebuild_tab_strip();
         }
-        // Build tag row first so update_view_strip can sync chip state correctly
+        // Build tag and mark rows first so sync_from_query can reflect chip state correctly
         let tags = self.tags.borrow().clone();
         self.pane_widgets(slot).search_panel.set_tags(&tags);
         self.wire_search_tag_buttons(slot);
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+        self.pane_widgets(slot).search_panel.set_tints(&tints);
+        self.wire_search_mark_buttons(slot);
         // update_view_strip calls sync_from_query — that's the only call we need
         self.update_view_strip(slot);
         self.load_search_view(slot, query);
@@ -5772,6 +7458,21 @@ impl BrowserController {
         for (id, btn) in panel.tag_buttons() {
             if id != -1 && btn.has_css_class("active") {
                 query.tag_id = Some(id);
+                break;
+            }
+        }
+        query.tint_id = None;
+        query.shape = None;
+        query.default_mark_only = false;
+        for (chip, btn) in panel.mark_buttons() {
+            if btn.has_css_class("active") {
+                use crate::ui::search_panel::MarkChip;
+                match chip {
+                    MarkChip::AnyMark => {}
+                    MarkChip::DefaultMark => query.default_mark_only = true,
+                    MarkChip::Tint(id) => query.tint_id = Some(id),
+                    MarkChip::Shape(s) => query.shape = Some(s),
+                }
                 break;
             }
         }
@@ -5859,12 +7560,28 @@ impl BrowserController {
                 return;
             }
 
-            // Enrich with tags then apply optional tag filter
+            // Enrich with tags+marks, then apply optional filters
             let enriched = controller.enrich_items_with_tags(raw);
             let items: Vec<FileItem> = if let Some(tag_id) = query.tag_id {
                 enriched
                     .into_iter()
                     .filter(|item| item.tags.iter().any(|t| t.id == tag_id))
+                    .collect()
+            } else if query.default_mark_only {
+                // created_at == 0 is the default mark sentinel (no explicit DB row)
+                enriched
+                    .into_iter()
+                    .filter(|item| item.mark_tint_id == 0)
+                    .collect()
+            } else if let Some(tint_id) = query.tint_id {
+                enriched
+                    .into_iter()
+                    .filter(|item| item.mark_tint_id == tint_id)
+                    .collect()
+            } else if let Some(shape) = query.shape {
+                enriched
+                    .into_iter()
+                    .filter(|item| item.mark_shape == shape)
                     .collect()
             } else {
                 enriched
@@ -6034,6 +7751,24 @@ impl BrowserController {
         }
     }
 
+    fn wire_search_mark_buttons(self: &Rc<Self>, slot: PaneSlot) {
+        let panel = self.pane_widgets(slot).search_panel.clone();
+        for (chip, btn) in panel.mark_buttons() {
+            let controller = Rc::clone(self);
+            let all_mark = panel.mark_buttons();
+            btn.connect_clicked(move |clicked| {
+                for (_, b) in &all_mark {
+                    b.remove_css_class("active");
+                }
+                clicked.add_css_class("active");
+                if matches!(controller.current_view_for(slot), PaneView::Search(_)) {
+                    controller.rerun_search(slot);
+                }
+                let _ = &chip;
+            });
+        }
+    }
+
     /// Called when tags change globally; updates the search panel only when it is
     /// currently visible (search view is active for that slot).
     fn refresh_search_tag_buttons(self: &Rc<Self>, slot: PaneSlot) {
@@ -6177,6 +7912,9 @@ impl BrowserController {
                                     .modification_date_time()
                                     .and_then(|value| Some(value.to_unix())),
                                 tags: Vec::new(),
+                                mark_tint_id: 0,
+                                mark_tint_color: None,
+                                mark_shape: Shape::DEFAULT,
                                 original_path: None,
                             });
                         }
@@ -6245,21 +7983,52 @@ impl BrowserController {
         }
     }
 
-    fn enrich_items_with_tags(&self, mut items: Vec<FileItem>) -> Vec<FileItem> {
-        let paths = items
-            .iter()
-            .map(|item| item.path.clone())
-            .collect::<Vec<_>>();
-        let tags_by_path = self
+    fn enrich_items_with_tags(&self, items: Vec<FileItem>) -> Vec<FileItem> {
+        self.enrich_items(items)
+    }
+
+    fn enrich_items(&self, mut items: Vec<FileItem>) -> Vec<FileItem> {
+        let paths: Vec<_> = items.iter().map(|item| item.path.clone()).collect();
+        let (tags_by_path, marks_by_path) = {
+            let meta = self.metadata.borrow();
+            let tags = meta.tags_for_paths(&paths).unwrap_or_default();
+            let marks = meta.marks_for_paths(&paths).unwrap_or_default();
+            (tags, marks)
+        };
+        let tint_colors: HashMap<i64, String> = self
             .metadata
             .borrow()
-            .tags_for_paths(&paths)
-            .unwrap_or_else(|_| HashMap::new());
-
+            .list_tints()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|tint| tint.color.map(|color| (tint.id, color)))
+            .collect();
         for item in &mut items {
             item.tags = tags_by_path.get(&item.path).cloned().unwrap_or_default();
+            if let Some(mark) = marks_by_path.get(&item.path) {
+                item.mark_tint_id = mark.tint_id;
+                item.mark_tint_color = tint_colors.get(&mark.tint_id).cloned();
+                item.mark_shape = mark.shape;
+            }
         }
         items
+    }
+
+    fn init_tint_css(self: &Rc<Self>) {
+        let Some(display) = gtk::gdk::Display::default() else {
+            return;
+        };
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &self.tint_css_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+        );
+    }
+
+    fn apply_tint_css(self: &Rc<Self>) {
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+        let css = generate_tint_css(&tints);
+        self.tint_css_provider.load_from_string(&css);
     }
 
     fn show_empty_selection_preview(&self, slot: PaneSlot, display_label: &str, item_count: usize) {
@@ -6324,6 +8093,20 @@ impl BrowserController {
                     .show_folder(&title, display_label, None, Some(item_count), "Search");
                 self.preview.set_action_state(false, false, false);
             }
+            PaneView::BulkNaming { root } => {
+                let name = root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Bulk Naming".to_string());
+                self.preview.show_folder(
+                    &format!("Bulk Naming: {name}"),
+                    display_label,
+                    None,
+                    Some(item_count),
+                    "Bulk Naming",
+                );
+                self.preview.set_action_state(false, false, false);
+            }
             PaneView::ActivityLog => {
                 self.preview
                     .show_folder("Activity Log", display_label, None, None, "File History");
@@ -6341,7 +8124,7 @@ impl BrowserController {
             }
             PaneView::TagManager => {
                 self.preview
-                    .show_folder("Tags", display_label, None, None, "Tag Manager");
+                    .show_folder("Tints & Tags", display_label, None, None, "Tints & Tags");
                 self.preview.set_action_state(false, false, false);
             }
             PaneView::SpaceViewer { root } => {
@@ -6623,6 +8406,13 @@ impl BrowserController {
                     "add_tag",
                     "remove_tag",
                     "separator",
+                    "mark_as_active",
+                    "reset_mark",
+                    "select_same_tint",
+                    "select_same_shape",
+                    "select_same_mark",
+                    "add_same_mark_to_tray",
+                    "separator",
                     "move_to_trash",
                     "delete_permanently",
                 ]
@@ -6642,6 +8432,13 @@ impl BrowserController {
                     "send_to_project",
                     "add_tag",
                     "remove_tag",
+                    "separator",
+                    "mark_as_active",
+                    "reset_mark",
+                    "select_same_tint",
+                    "select_same_shape",
+                    "select_same_mark",
+                    "add_same_mark_to_tray",
                     "separator",
                     "move_to_trash",
                     "delete_permanently",
@@ -6756,12 +8553,12 @@ impl BrowserController {
                     if selected.len() >= 2 {
                         append_menu_button(
                             menu_box,
-                            "Bulk Rename\u{2026}",
+                            "Bulk Naming\u{2026}",
                             Some("document-edit-symbolic"),
                             false,
                             {
                                 let controller = Rc::clone(self);
-                                move || controller.show_bulk_rename_dialog(selected.clone())
+                                move || controller.open_bulk_naming_with_items(selected.clone())
                             },
                         )
                     }
@@ -6875,6 +8672,121 @@ impl BrowserController {
                         move || controller.confirm_permanent_delete(vec![item.path.clone()])
                     },
                 ),
+                "mark_as_active" => {
+                    let tint_name = self.active_paint_tint_name.borrow().clone();
+                    let shape = self.active_paint_shape.get();
+                    let label = format!("Mark as {} {}", tint_name, shape.display_name());
+                    append_menu_button(
+                        menu_box,
+                        &label,
+                        Some("preferences-color-symbolic"),
+                        false,
+                        {
+                            let controller = Rc::clone(self);
+                            let item = item.clone();
+                            move || {
+                                let tint_id = controller.active_paint_tint_id.get();
+                                let shape = controller.active_paint_shape.get();
+                                if controller
+                                    .metadata
+                                    .borrow_mut()
+                                    .set_file_mark(&item.path, tint_id, shape)
+                                    .is_ok()
+                                {
+                                    controller
+                                        .update_item_mark_in_grid(slot, &item.path, tint_id, shape);
+                                    controller.log_paint_mark(
+                                        slot,
+                                        &[item.path.clone()],
+                                        tint_id,
+                                        shape,
+                                    );
+                                }
+                            }
+                        },
+                    );
+                }
+                "reset_mark" => append_menu_button(
+                    menu_box,
+                    "Reset Mark",
+                    Some("edit-clear-symbolic"),
+                    false,
+                    {
+                        let controller = Rc::clone(self);
+                        let item = item.clone();
+                        move || {
+                            controller.paint_eraser_item(slot, &item);
+                        }
+                    },
+                ),
+                "select_same_tint" => {
+                    append_menu_button(menu_box, "Select Same Tint", None, false, {
+                        let controller = Rc::clone(self);
+                        let tint_id = item.mark_tint_id;
+                        move || {
+                            let items = controller.items_cell(slot).borrow();
+                            let grid = &controller.pane_widgets(slot).file_grid;
+                            grid.clear_selection();
+                            for (i, it) in items.iter().enumerate() {
+                                if it.mark_tint_id == tint_id {
+                                    grid.select_range(i as i32, i as i32, false);
+                                }
+                            }
+                        }
+                    })
+                }
+                "select_same_shape" => {
+                    append_menu_button(menu_box, "Select Same Shape", None, false, {
+                        let controller = Rc::clone(self);
+                        let shape = item.mark_shape;
+                        move || {
+                            let items = controller.items_cell(slot).borrow();
+                            let grid = &controller.pane_widgets(slot).file_grid;
+                            grid.clear_selection();
+                            for (i, it) in items.iter().enumerate() {
+                                if it.mark_shape == shape {
+                                    grid.select_range(i as i32, i as i32, false);
+                                }
+                            }
+                        }
+                    })
+                }
+                "select_same_mark" => {
+                    append_menu_button(menu_box, "Select Same Mark", None, false, {
+                        let controller = Rc::clone(self);
+                        let tint_id = item.mark_tint_id;
+                        let shape = item.mark_shape;
+                        move || {
+                            let items = controller.items_cell(slot).borrow();
+                            let grid = &controller.pane_widgets(slot).file_grid;
+                            grid.clear_selection();
+                            for (i, it) in items.iter().enumerate() {
+                                if it.mark_tint_id == tint_id && it.mark_shape == shape {
+                                    grid.select_range(i as i32, i as i32, false);
+                                }
+                            }
+                        }
+                    })
+                }
+                "add_same_mark_to_tray" => {
+                    append_menu_button(menu_box, "Add Same Mark to Tray", None, false, {
+                        let controller = Rc::clone(self);
+                        let tint_id = item.mark_tint_id;
+                        let shape = item.mark_shape;
+                        move || {
+                            let items = controller.items_cell(slot).borrow();
+                            let paths: Vec<_> = items
+                                .iter()
+                                .filter(|it| it.mark_tint_id == tint_id && it.mark_shape == shape)
+                                .map(|it| it.path.clone())
+                                .collect();
+                            drop(items);
+                            if !paths.is_empty() {
+                                controller.add_paths_to_holding_tray(paths);
+                            }
+                        }
+                    })
+                }
                 custom if custom.starts_with("custom.") => {
                     self.append_custom_context_action(
                         menu_box,
@@ -7097,9 +9009,12 @@ impl BrowserController {
         let selected = self.holding_tray_selection.borrow().clone();
         let select_controller = Rc::clone(self);
         let open_controller = Rc::clone(self);
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+        let tint_colors = HoldingTray::tint_color_map(&tints);
         self.holding_tray.set_items(
             &items,
             &selected,
+            &tint_colors,
             move |path| controller.remove_holding_tray_path(&path),
             move |path| select_controller.select_holding_tray_path(path),
             move |path| open_controller.open_holding_tray_path(path),
@@ -7223,15 +9138,15 @@ impl BrowserController {
         let projects = self.projects.borrow().clone();
         if projects.is_empty() {
             self.modal_host.show_error(
-                "No Projects Yet",
-                "Pin a folder as a project first, then send tray items to it.",
+                "No Palettes Yet",
+                "Create a palette and pin a folder first, then send tray items to it.",
             );
             return;
         }
 
         let content = GtkBox::new(Orientation::Vertical, 12);
         content.append(&build_modal_prompt(
-            "Choose the project that should receive the staged tray items.",
+            "Choose the palette that should receive the staged tray items.",
         ));
 
         let project_box = GtkBox::new(Orientation::Vertical, 8);
@@ -7346,6 +9261,125 @@ impl BrowserController {
             controller.copy_paths_to_clipboard(paths.clone());
             controller.record_tray_receipt("Copy Tray Paths", paths.len(), 0);
         });
+    }
+
+    fn show_tray_apply_mark_preview(self: &Rc<Self>) {
+        let paths = self.selected_holding_tray_paths();
+        if paths.is_empty() {
+            self.status.set_message("The Holding Tray is empty.");
+            return;
+        }
+        let tint_id = self.active_paint_tint_id.get();
+        let tint_name = self.active_paint_tint_name.borrow().clone();
+        let shape = self.active_paint_shape.get();
+        let plan = apply_mark_action_plan(&paths, &tint_name, shape);
+        let controller = Rc::clone(self);
+        self.show_action_plan(plan, move || {
+            controller.apply_mark_to_paths_direct(paths.clone(), tint_id, shape, &tint_name);
+        });
+    }
+
+    fn show_tray_reset_mark_preview(self: &Rc<Self>) {
+        let paths = self.selected_holding_tray_paths();
+        if paths.is_empty() {
+            self.status.set_message("The Holding Tray is empty.");
+            return;
+        }
+        let plan = reset_mark_action_plan(&paths);
+        let controller = Rc::clone(self);
+        self.show_action_plan(plan, move || {
+            controller.reset_mark_for_paths_direct(paths.clone());
+        });
+    }
+
+    fn show_add_to_tray_by_tint_popover(
+        self: &Rc<Self>,
+        anchor: &impl gtk::prelude::IsA<gtk::Widget>,
+    ) {
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+        if tints.is_empty() {
+            self.status.set_message("No tints defined.");
+            return;
+        }
+        let popover = gtk::Popover::new();
+        popover.add_css_class("context-menu");
+        popover.set_parent(anchor);
+        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for tint in tints {
+            let btn = gtk::Button::with_label(&tint.name);
+            btn.add_css_class("context-menu-button");
+            let controller = Rc::clone(self);
+            let popover_ref = popover.clone();
+            btn.connect_clicked(move |_| {
+                popover_ref.popdown();
+                let slot = controller.active_slot();
+                let items = controller.items_cell(slot).borrow().clone();
+                let tint_id = tint.id;
+                let paths: Vec<_> = items
+                    .iter()
+                    .filter(|i| i.mark_tint_id == tint_id)
+                    .map(|i| i.path.clone())
+                    .collect();
+                if paths.is_empty() {
+                    controller
+                        .status
+                        .set_message(&format!("No {} items in current folder.", tint.name));
+                    return;
+                }
+                controller.add_paths_to_holding_tray(paths);
+            });
+            vbox.append(&btn);
+        }
+        popover.set_child(Some(&vbox));
+        popover.popup();
+    }
+
+    fn show_add_to_tray_by_shape_popover(
+        self: &Rc<Self>,
+        anchor: &impl gtk::prelude::IsA<gtk::Widget>,
+    ) {
+        use crate::metadata::Shape;
+        let shapes = [
+            Shape::Circle,
+            Shape::Square,
+            Shape::Triangle,
+            Shape::Pentagon,
+            Shape::Hexagon,
+            Shape::Octagon,
+            Shape::Trapezoid,
+        ];
+        let popover = gtk::Popover::new();
+        popover.add_css_class("context-menu");
+        popover.set_parent(anchor);
+        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for shape in shapes {
+            let label = format!("{} {}", shape.glyph(), shape.display_name());
+            let btn = gtk::Button::with_label(&label);
+            btn.add_css_class("context-menu-button");
+            let controller = Rc::clone(self);
+            let popover_ref = popover.clone();
+            btn.connect_clicked(move |_| {
+                popover_ref.popdown();
+                let slot = controller.active_slot();
+                let items = controller.items_cell(slot).borrow().clone();
+                let paths: Vec<_> = items
+                    .iter()
+                    .filter(|i| i.mark_shape == shape)
+                    .map(|i| i.path.clone())
+                    .collect();
+                if paths.is_empty() {
+                    controller.status.set_message(&format!(
+                        "No {} items in current folder.",
+                        shape.display_name()
+                    ));
+                    return;
+                }
+                controller.add_paths_to_holding_tray(paths);
+            });
+            vbox.append(&btn);
+        }
+        popover.set_child(Some(&vbox));
+        popover.popup();
     }
 
     fn show_action_plan<F>(self: &Rc<Self>, plan: ActionPlan, on_accept: F)
@@ -8029,24 +10063,8 @@ impl BrowserController {
                 let item = items.into_iter().next().unwrap();
                 self.show_rename_dialog(item.path, item.name);
             }
-            _ => self.show_bulk_rename_dialog(items),
+            _ => self.open_bulk_naming_with_items(items),
         }
-    }
-
-    fn show_bulk_rename_dialog(self: &Rc<Self>, selected: Vec<FileItem>) {
-        let selected_paths: HashSet<PathBuf> = selected.iter().map(|i| i.path.clone()).collect();
-        let existing_names: HashSet<String> = self
-            .items
-            .borrow()
-            .iter()
-            .filter(|item| !selected_paths.contains(&item.path))
-            .map(|item| item.name.clone())
-            .collect();
-
-        let controller = Rc::clone(self);
-        bulk_rename::show(&self.modal_host, selected, existing_names, move |renames| {
-            controller.apply_bulk_rename(renames);
-        });
     }
 
     fn apply_bulk_rename(self: &Rc<Self>, renames: Vec<(PathBuf, String)>) {
@@ -8484,8 +10502,8 @@ impl BrowserController {
         let initial_name = suggested_project_name(&path);
         let controller = Rc::clone(self);
         self.modal_host.show_input(
-            "Pin as Project",
-            "Choose a project name for this folder.",
+            "Pin as Palette",
+            "Choose a palette name for this folder.",
             &initial_name,
             "Pin",
             move |name| controller.pin_project(path.clone(), name),
@@ -8494,7 +10512,7 @@ impl BrowserController {
 
     fn pin_project(self: &Rc<Self>, path: PathBuf, name: String) {
         if name.trim().is_empty() {
-            self.show_error_dialog("Invalid Name", "Project names cannot be empty.");
+            self.show_error_dialog("Invalid Name", "Palette names cannot be empty.");
             return;
         }
 
@@ -8514,9 +10532,9 @@ impl BrowserController {
                     .add_project_destination(project.id, &dest_name, &path_str);
                 self.refresh_metadata_sidebar();
                 self.status
-                    .set_message(&format!("Created project: {}.", project.name));
+                    .set_message(&format!("Created palette: {}.", project.name));
             }
-            Err(error) => self.show_error_dialog("Project Save Failed", &error),
+            Err(error) => self.show_error_dialog("Palette Save Failed", &error),
         }
     }
 
@@ -8689,22 +10707,22 @@ impl BrowserController {
     fn show_send_to_project_dialog(self: &Rc<Self>, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             self.status
-                .set_message("Select an item before sending it to a project.");
+                .set_message("Select an item before sending it to a palette.");
             return;
         }
 
         let projects = self.projects.borrow().clone();
         if projects.is_empty() {
             self.modal_host.show_error(
-                "No Projects Yet",
-                "Pin a folder as a project first, then send files to it.",
+                "No Palettes Yet",
+                "Create a palette and pin a folder first, then send files to it.",
             );
             return;
         }
 
         let content = GtkBox::new(Orientation::Vertical, 12);
         content.append(&build_modal_prompt(
-            "Choose a destination project and whether to copy or move.",
+            "Choose a destination palette and whether to copy or move.",
         ));
 
         let project_box = GtkBox::new(Orientation::Vertical, 8);
@@ -8731,12 +10749,12 @@ impl BrowserController {
 
         let action_row = GtkBox::new(Orientation::Horizontal, 12);
         content.append(&action_row);
-        let copy_button = gtk::CheckButton::with_label("Copy to project");
+        let copy_button = gtk::CheckButton::with_label("Copy to palette");
         copy_button.set_active(true);
         copy_button.set_halign(Align::Start);
         action_row.append(&copy_button);
 
-        let move_button = gtk::CheckButton::with_label("Move to project");
+        let move_button = gtk::CheckButton::with_label("Move to palette");
         move_button.set_group(Some(&copy_button));
         move_button.set_halign(Align::Start);
         action_row.append(&move_button);
@@ -8766,7 +10784,7 @@ impl BrowserController {
         actions.append(&send_btn);
 
         self.modal_host
-            .show_with_custom_ui("Send to Project", &content, &actions, false, None);
+            .show_with_custom_ui("Send to Palette", &content, &actions, false, None);
     }
 
     fn send_paths_to_project(
@@ -8783,7 +10801,7 @@ impl BrowserController {
             .find(|project| project.id == project_id)
             .cloned()
         else {
-            self.show_error_dialog("Project Missing", "That project no longer exists.");
+            self.show_error_dialog("Palette Missing", "That palette no longer exists.");
             return;
         };
 
@@ -8800,7 +10818,7 @@ impl BrowserController {
         let Some(pin) = first_pin else {
             self.modal_host.show_error(
                 "No Pinned Folders",
-                "Pin a folder to this project before sending files to it.",
+                "Pin a folder to this palette before sending files to it.",
             );
             return;
         };
@@ -9258,6 +11276,7 @@ impl BrowserController {
             | PaneView::SystemDrives
             | PaneView::Recent
             | PaneView::Search(_)
+            | PaneView::BulkNaming { .. }
             | PaneView::ActivityLog
             | PaneView::ProjectLanding(_)
             | PaneView::ProjectManager
@@ -9847,6 +11866,7 @@ impl BrowserController {
             PaneView::Trash => Some(SidebarTarget::Trash),
             PaneView::ActivityLog => Some(SidebarTarget::ActivityLog),
             PaneView::Search(_) => Some(SidebarTarget::Search),
+            PaneView::BulkNaming { .. } => Some(SidebarTarget::BulkNaming),
             PaneView::SpaceViewer { .. } => Some(SidebarTarget::SpaceViewer),
             PaneView::Directory(_) => {
                 let current = self.current_dir_for(self.active_slot());
@@ -9977,7 +11997,7 @@ impl BrowserController {
         let la_motion = last_action.clone();
 
         let drop_target = gtk::DropTarget::new(
-            glib::Type::STRING,
+            gdk::FileList::static_type(),
             gdk::DragAction::COPY | gdk::DragAction::MOVE,
         );
 
@@ -10032,7 +12052,7 @@ impl BrowserController {
         let la_motion = last_action.clone();
 
         let drop_target = gtk::DropTarget::new(
-            glib::Type::STRING,
+            gdk::FileList::static_type(),
             gdk::DragAction::COPY | gdk::DragAction::MOVE,
         );
 
@@ -10103,8 +12123,10 @@ impl BrowserController {
             return false;
         }
 
+        // surface_transform gives the offset from surface coords to widget coords.
+        let (sx, sy) = self.window.surface_transform();
         self.window
-            .pick(x, y, gtk::PickFlags::DEFAULT)
+            .pick(x - sx, y - sy, gtk::PickFlags::DEFAULT)
             .as_ref()
             .is_some_and(|widget| widget_or_ancestor_has_css(widget, "holding-tray"))
     }
@@ -10165,13 +12187,9 @@ impl BrowserController {
                 }
                 tray_drag_paths_prepare.replace(paths.clone());
 
-                let uri_list = paths
-                    .iter()
-                    .map(|p| gio::File::for_path(p).uri().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\r\n");
-
-                Some(gdk::ContentProvider::for_value(&uri_list.to_value()))
+                let files: Vec<gio::File> = paths.iter().map(|p| gio::File::for_path(p)).collect();
+                let file_list = gdk::FileList::from_array(&files);
+                Some(gdk::ContentProvider::for_value(&file_list.to_value()))
             });
 
             let ctrl = Rc::clone(self);
@@ -10258,12 +12276,10 @@ impl BrowserController {
                         return None;
                     }
                     tray_drag_paths_prepare.replace(paths.clone());
-                    let uri_list = paths
-                        .iter()
-                        .map(|p| gio::File::for_path(p).uri().to_string())
-                        .collect::<Vec<_>>()
-                        .join("\r\n");
-                    Some(gdk::ContentProvider::for_value(&uri_list.to_value()))
+                    let files: Vec<gio::File> =
+                        paths.iter().map(|p| gio::File::for_path(p)).collect();
+                    let file_list = gdk::FileList::from_array(&files);
+                    Some(gdk::ContentProvider::for_value(&file_list.to_value()))
                 });
 
                 let ctrl = Rc::clone(self);
@@ -10335,7 +12351,7 @@ impl BrowserController {
             let la_motion = last_action.clone();
 
             let drop_target = gtk::DropTarget::new(
-                glib::Type::STRING,
+                gdk::FileList::static_type(),
                 gdk::DragAction::COPY | gdk::DragAction::MOVE,
             );
 
@@ -10392,7 +12408,7 @@ impl BrowserController {
                 let la_list = last_action_list.clone();
 
                 let drop_target_list = gtk::DropTarget::new(
-                    glib::Type::STRING,
+                    gdk::FileList::static_type(),
                     gdk::DragAction::COPY | gdk::DragAction::MOVE,
                 );
 
@@ -10853,6 +12869,26 @@ fn copy_path_action_plan(paths: &[PathBuf]) -> ActionPlan {
     ActionPlan::new("Copy Tray Paths", "Copy Paths", false, lines)
 }
 
+fn apply_mark_action_plan(paths: &[PathBuf], tint_name: &str, shape: Shape) -> ActionPlan {
+    let mut lines = vec![format!(
+        "Mark {} staged item(s) as {} {}.",
+        paths.len(),
+        tint_name,
+        shape.display_name(),
+    )];
+    lines.extend(plan_path_lines(paths));
+    ActionPlan::new("Apply Mark to Tray", "Apply Mark", false, lines)
+}
+
+fn reset_mark_action_plan(paths: &[PathBuf]) -> ActionPlan {
+    let mut lines = vec![format!(
+        "Reset {} staged item(s) to Beige Square.",
+        paths.len(),
+    )];
+    lines.extend(plan_path_lines(paths));
+    ActionPlan::new("Reset Mark", "Reset Mark", false, lines)
+}
+
 fn plan_path_lines(paths: &[PathBuf]) -> Vec<String> {
     const MAX_PREVIEW_PATHS: usize = 8;
     let mut lines = paths
@@ -10970,6 +13006,13 @@ fn builtin_command(action_id: &str) -> Option<WindowCommand> {
         "view_icons" => Some(WindowCommand::SetViewIcons),
         "view_list" => Some(WindowCommand::SetViewList),
         "toggle_plan_mode" => Some(WindowCommand::TogglePlanMode),
+        "toggle_paint_mode" => Some(WindowCommand::TogglePaintMode),
+        "paint_brush" => Some(WindowCommand::PaintBrush),
+        "paint_eraser" => Some(WindowCommand::PaintEraser),
+        "paint_eyedropper" => Some(WindowCommand::PaintEyedropper),
+        "paint_fill" => Some(WindowCommand::PaintFill),
+        "paint_undo" => Some(WindowCommand::PaintUndo),
+        "paint_redo" => Some(WindowCommand::PaintRedo),
         "empty_trash" => Some(WindowCommand::EmptyTrash),
         _ => None,
     }
@@ -11089,6 +13132,7 @@ fn action_availability(
             | PaneView::SystemDrives
             | PaneView::Recent
             | PaneView::Search(_)
+            | PaneView::BulkNaming { .. }
             | PaneView::ActivityLog
             | PaneView::SpaceViewer { .. }
     );
@@ -11300,18 +13344,9 @@ fn build_drag_preview(item: &FileItem, count: usize) -> GtkBox {
 /// Parse a newline-separated URI list from a drop value into local paths.
 fn parse_dropped_uris(value: &glib::Value) -> Vec<PathBuf> {
     value
-        .get::<String>()
+        .get::<gdk::FileList>()
+        .map(|fl| fl.files().iter().filter_map(|f| f.path()).collect())
         .unwrap_or_default()
-        .lines()
-        .filter_map(|line| {
-            let uri = line.trim_end_matches('\r').trim();
-            if uri.starts_with("file://") || uri.starts_with("file:///") {
-                gio::File::for_uri(uri).path()
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────
@@ -11489,6 +13524,9 @@ fn match_entry(
         size_bytes: if e.is_dir { None } else { Some(e.size) },
         modified_unix: Some(e.modified_secs),
         tags: Vec::new(),
+        mark_tint_id: 0,
+        mark_tint_color: None,
+        mark_shape: Shape::DEFAULT,
         original_path: None,
     })
 }
@@ -11913,6 +13951,9 @@ fn collect_mounted_volume_items() -> MountedVolumeListing {
             size_bytes: None,
             modified_unix: None,
             tags: Vec::new(),
+            mark_tint_id: 0,
+            mark_tint_color: None,
+            mark_shape: Shape::DEFAULT,
             original_path: None,
         });
     }
@@ -11939,6 +13980,9 @@ fn collect_mounted_volume_items() -> MountedVolumeListing {
             size_bytes: None,
             modified_unix: None,
             tags: Vec::new(),
+            mark_tint_id: 0,
+            mark_tint_color: None,
+            mark_shape: Shape::DEFAULT,
             original_path: None,
         });
     }
@@ -11962,6 +14006,9 @@ fn collect_mounted_volume_items() -> MountedVolumeListing {
                 size_bytes: None,
                 modified_unix: None,
                 tags: Vec::new(),
+                mark_tint_id: 0,
+                mark_tint_color: None,
+                mark_shape: Shape::DEFAULT,
                 original_path: None,
             });
         }
@@ -12048,6 +14095,9 @@ fn collect_fallback_mounted_locations(seen_paths: &mut HashSet<PathBuf>) -> Fall
                 size_bytes: None,
                 modified_unix: None,
                 tags: Vec::new(),
+                mark_tint_id: 0,
+                mark_tint_color: None,
+                mark_shape: Shape::DEFAULT,
                 original_path: None,
             });
         }
@@ -12126,6 +14176,9 @@ fn collect_recent_folder_items(
             size_bytes: None,
             modified_unix: None,
             tags: Vec::new(),
+            mark_tint_id: 0,
+            mark_tint_color: None,
+            mark_shape: Shape::DEFAULT,
             original_path: None,
         });
     }
@@ -12176,10 +14229,11 @@ fn tab_title_for_view(view: &PaneView, path: &Path) -> String {
                 format!("Search \u{201c}{}\u{201d}", q.name)
             }
         }
+        PaneView::BulkNaming { .. } => "Bulk Naming".to_string(),
         PaneView::ActivityLog => "Activity Log".to_string(),
-        PaneView::ProjectLanding(_) => "Project".to_string(),
-        PaneView::ProjectManager => "Projects".to_string(),
-        PaneView::TagManager => "Tags".to_string(),
+        PaneView::ProjectLanding(_) => "Palette".to_string(),
+        PaneView::ProjectManager => "Palettes".to_string(),
+        PaneView::TagManager => "Tints & Tags".to_string(),
         PaneView::SpaceViewer { root } => {
             let folder = root
                 .file_name()
@@ -12209,12 +14263,100 @@ fn view_display_label(view: &PaneView, home: &Path) -> String {
                 format!("Search \u{201c}{}\u{201d} in {scope}", q.name)
             }
         }
+        PaneView::BulkNaming { root } => format!("Bulk Naming in {}", format_path(root, home)),
         PaneView::ActivityLog => "Activity Log".to_string(),
-        PaneView::ProjectLanding(_) => "Project".to_string(),
-        PaneView::ProjectManager => "Projects".to_string(),
-        PaneView::TagManager => "Tags".to_string(),
+        PaneView::ProjectLanding(_) => "Palette".to_string(),
+        PaneView::ProjectManager => "Palettes".to_string(),
+        PaneView::TagManager => "Tints & Tags".to_string(),
         PaneView::SpaceViewer { root } => format!("Space: {}", format_path(root, home)),
     }
+}
+
+// ── Tint CSS generation ────────────────────────────────────────────────────────
+
+fn parse_hex_rgb(hex: &str) -> (u8, u8, u8) {
+    let s = hex.trim().trim_start_matches('#');
+    if s.len() != 6 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (128, 96, 64);
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(128);
+    let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(96);
+    let b = u8::from_str_radix(&s[4..6], 16).unwrap_or(64);
+    (r, g, b)
+}
+
+fn rgb_to_hex((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+fn build_tint_channel_row(label_text: &str, value: u8) -> (GtkBox, Scale) {
+    let row = GtkBox::new(Orientation::Horizontal, 10);
+    row.add_css_class("tint-picker-channel-row");
+
+    let label = Label::new(Some(label_text));
+    label.add_css_class("tint-picker-channel-label");
+    label.set_width_chars(6);
+    label.set_halign(Align::End);
+    row.append(&label);
+
+    let adjustment = Adjustment::new(value as f64, 0.0, 255.0, 1.0, 16.0, 0.0);
+    let scale = Scale::new(Orientation::Horizontal, Some(&adjustment));
+    scale.add_css_class("tint-picker-scale");
+    scale.set_draw_value(true);
+    scale.set_digits(0);
+    scale.set_hexpand(true);
+    row.append(&scale);
+
+    (row, scale)
+}
+
+fn wire_tint_channel(
+    scale: &Scale,
+    state: Rc<RefCell<(u8, u8, u8)>>,
+    channel: usize,
+    update_ui: Rc<dyn Fn()>,
+) {
+    scale.connect_value_changed(move |scale| {
+        let value = scale.value().round().clamp(0.0, 255.0) as u8;
+        {
+            let mut rgb = state.borrow_mut();
+            match channel {
+                0 => rgb.0 = value,
+                1 => rgb.1 = value,
+                _ => rgb.2 = value,
+            }
+        }
+        update_ui();
+    });
+}
+
+fn generate_tint_css(tints: &[TintRecord]) -> String {
+    let mut css = String::new();
+    for tint in tints {
+        let color = tint.color.as_deref().unwrap_or("#806040");
+        // Icon card: tint glow is interactive only. Resting cards should stay
+        // visually quiet; hover/selection reveal the Mark's tint.
+        let (hover_ring_a, hover_glow_a) = if tint.is_default {
+            ("28", "14")
+        } else {
+            ("58", "44")
+        };
+        css.push_str(&format!(
+            ".file-card-shell:hover > .file-card.mark-tint-{id} {{ box-shadow: 0 0 0 1.5px {c}{hover_ring}, 0 4px 18px 0 {c}{hover_glow}; }}\n",
+            id = tint.id, c = color, hover_ring = hover_ring_a, hover_glow = hover_glow_a,
+        ));
+        css.push_str(&format!(
+            "flowboxchild:selected > .file-card-shell > .file-card.mark-tint-{id} {{ box-shadow: 0 0 0 1.5px {c}{hover_ring}, 0 4px 18px 0 {c}{hover_glow}; }}\n",
+            id = tint.id, c = color, hover_ring = hover_ring_a, hover_glow = hover_glow_a,
+        ));
+        // List row: inset left accent via box-shadow on the inner row
+        let list_a = if tint.is_default { "22" } else { "58" };
+        css.push_str(&format!(
+            ".file-list > row.mark-tint-{id} > .file-list-row-inner {{ border-left-color: {c}{list_a}; }}\n",
+            id = tint.id, c = color, list_a = list_a,
+        ));
+    }
+    css
 }
 
 fn format_path(path: &Path, home: &Path) -> String {
@@ -12501,6 +14643,72 @@ fn copy_path_recursively(
     Ok(())
 }
 
+fn collect_bulk_naming_items_blocking(
+    root: &Path,
+    recursive: bool,
+    show_hidden: bool,
+) -> Vec<FileItem> {
+    let mut items = Vec::new();
+    collect_bulk_naming_items_from_dir(root, recursive, show_hidden, &mut items, 0);
+    items
+}
+
+fn collect_bulk_naming_items_from_dir(
+    root: &Path,
+    recursive: bool,
+    show_hidden: bool,
+    items: &mut Vec<FileItem>,
+    depth: usize,
+) {
+    const MAX_BULK_NAMING_RECURSION_DEPTH: usize = 32;
+    if depth > MAX_BULK_NAMING_RECURSION_DEPTH {
+        return;
+    }
+    let directory = gio::File::for_path(root);
+    let Ok(enumerator) = directory.enumerate_children(
+        DIRECTORY_ATTRIBUTES,
+        gio::FileQueryInfoFlags::NONE,
+        None::<&gio::Cancellable>,
+    ) else {
+        return;
+    };
+
+    loop {
+        let info = match enumerator.next_file(None::<&gio::Cancellable>) {
+            Ok(Some(info)) => info,
+            Ok(None) | Err(_) => break,
+        };
+        let Some(item) = FileItem::from_info(&directory, &info, show_hidden) else {
+            continue;
+        };
+        let should_recurse = recursive && item.is_dir;
+        let child_path = item.path.clone();
+        items.push(item);
+        if should_recurse {
+            collect_bulk_naming_items_from_dir(
+                &child_path,
+                recursive,
+                show_hidden,
+                items,
+                depth + 1,
+            );
+        }
+    }
+}
+
+fn common_parent_for_items(items: &[FileItem]) -> Option<PathBuf> {
+    let mut parent = items.first()?.path.parent()?.to_path_buf();
+    for item in items.iter().skip(1) {
+        let item_parent = item.path.parent()?;
+        while !item_parent.starts_with(&parent) {
+            if !parent.pop() {
+                return None;
+            }
+        }
+    }
+    Some(parent)
+}
+
 fn filter_triage_items(
     items: Vec<FileItem>,
     filter: TriageFilter,
@@ -12711,6 +14919,8 @@ mod tests {
             id: 7,
             name: "Focus".to_string(),
             color: None,
+            associated_tint_id: None,
+            associated_shape: None,
         }
     }
 
@@ -12730,6 +14940,9 @@ mod tests {
             size_bytes: None,
             modified_unix: None,
             tags: Vec::new(),
+            mark_tint_id: 0,
+            mark_tint_color: None,
+            mark_shape: Shape::DEFAULT,
             original_path: None,
         }
     }
@@ -13311,4 +15524,35 @@ fn mime_to_friendly_type(mime: &str) -> Option<&'static str> {
 fn probe_image_dimensions(path: &std::path::Path) -> Option<(i32, i32)> {
     let (_fmt, w, h) = Pixbuf::file_info(path)?;
     (w > 0 && h > 0).then_some((w, h))
+}
+
+fn read_explicit_mark_from_item(item: &FileItem) -> Option<(i64, Shape)> {
+    if item.mark_tint_id != 0 {
+        Some((item.mark_tint_id, item.mark_shape))
+    } else {
+        None
+    }
+}
+
+fn collect_paths_recursively(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_paths_inner(root, &mut out);
+    out
+}
+
+fn collect_paths_inner(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        out.push(path.clone());
+        if path.is_dir() {
+            collect_paths_inner(&path, out);
+        }
+    }
+}
+
+fn folder_path_str_from_slot(controller: &BrowserController, slot: PaneSlot) -> String {
+    controller.current_dir_for(slot).display().to_string()
 }

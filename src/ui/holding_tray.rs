@@ -1,8 +1,12 @@
+use crate::metadata::TintRecord;
 use crate::thumbnail::{ThumbnailKind, ThumbnailTarget};
 use crate::ui::file_grid::FileItem;
 use gtk::prelude::*;
-use gtk::{Box as GtkBox, Button, Label, Orientation, Picture, Revealer, Separator, Stack};
+use gtk::{
+    Box as GtkBox, Button, DrawingArea, Label, Orientation, Picture, Revealer, Separator, Stack,
+};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -11,9 +15,13 @@ pub struct HoldingTray {
     pub item_box: GtkBox,
     pub empty_label: Label,
     pub add_selection_button: Button,
+    pub add_by_tint_button: Button,
+    pub add_by_shape_button: Button,
     pub move_to_project_button: Button,
     pub copy_to_project_button: Button,
     pub tag_button: Button,
+    pub apply_mark_button: Button,
+    pub reset_mark_button: Button,
     pub trash_button: Button,
     pub copy_path_button: Button,
     pub clear_button: Button,
@@ -44,6 +52,14 @@ impl HoldingTray {
             action_button("Add selection (Ctrl+Alt+A)", "list-add-symbolic");
         header.append(&add_selection_host);
 
+        let (add_by_tint_button, add_by_tint_host) =
+            action_button("Add by Tint", "color-select-symbolic");
+        header.append(&add_by_tint_host);
+
+        let (add_by_shape_button, add_by_shape_host) =
+            action_button("Add by Shape", "shapes-symbolic");
+        header.append(&add_by_shape_host);
+
         let (move_to_project_button, move_to_project_host) =
             action_button("Move to project (Ctrl+Alt+M)", "go-next-symbolic");
         header.append(&move_to_project_host);
@@ -54,6 +70,14 @@ impl HoldingTray {
 
         let (tag_button, tag_host) = action_button("Tag tray (Ctrl+Alt+T)", "tag-symbolic");
         header.append(&tag_host);
+
+        let (apply_mark_button, apply_mark_host) =
+            action_button("Apply Mark to tray items", "emblem-symbolic");
+        header.append(&apply_mark_host);
+
+        let (reset_mark_button, reset_mark_host) =
+            action_button("Reset tray items to Beige Square", "edit-undo-symbolic");
+        header.append(&reset_mark_host);
 
         let (trash_button, trash_host) =
             action_button("Trash tray (Ctrl+Alt+Delete)", "user-trash-symbolic");
@@ -97,9 +121,13 @@ impl HoldingTray {
             item_box,
             empty_label,
             add_selection_button,
+            add_by_tint_button,
+            add_by_shape_button,
             move_to_project_button,
             copy_to_project_button,
             tag_button,
+            apply_mark_button,
+            reset_mark_button,
             trash_button,
             copy_path_button,
             clear_button,
@@ -114,6 +142,7 @@ impl HoldingTray {
         &self,
         items: &[FileItem],
         selected_paths: &[PathBuf],
+        tint_colors: &HashMap<i64, String>,
         on_remove: F,
         on_select: G,
         on_open: H,
@@ -141,9 +170,11 @@ impl HoldingTray {
                 self.item_box.append(&sep);
             }
             let selected = selected_paths.iter().any(|path| path == &item.path);
+            let tint_color = tint_colors.get(&item.mark_tint_id).cloned();
             let (row, target) = tray_item(
                 item,
                 selected,
+                tint_color,
                 on_remove.clone(),
                 on_select.clone(),
                 on_open.clone(),
@@ -155,15 +186,26 @@ impl HoldingTray {
         }
     }
 
+    pub fn tint_color_map(tints: &[TintRecord]) -> HashMap<i64, String> {
+        tints
+            .iter()
+            .filter_map(|t| t.color.clone().map(|c| (t.id, c)))
+            .collect()
+    }
+
     pub fn drain_thumb_targets(&self) -> Vec<ThumbnailTarget> {
         self.thumb_targets.borrow_mut().drain(..).collect()
     }
 
     fn set_action_sensitive(&self, sensitive: bool) {
         self.add_selection_button.set_sensitive(true);
+        self.add_by_tint_button.set_sensitive(true);
+        self.add_by_shape_button.set_sensitive(true);
         self.move_to_project_button.set_sensitive(sensitive);
         self.copy_to_project_button.set_sensitive(sensitive);
         self.tag_button.set_sensitive(sensitive);
+        self.apply_mark_button.set_sensitive(sensitive);
+        self.reset_mark_button.set_sensitive(sensitive);
         self.trash_button.set_sensitive(sensitive);
         self.copy_path_button.set_sensitive(sensitive);
         self.clear_button.set_sensitive(sensitive);
@@ -181,6 +223,7 @@ fn action_button(label: &str, icon_name: &str) -> (Button, GtkBox) {
 fn tray_item<F, G, H>(
     item: &FileItem,
     selected: bool,
+    tint_color: Option<String>,
     on_remove: F,
     on_select: G,
     on_open: H,
@@ -211,6 +254,36 @@ where
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
     name.set_max_width_chars(18);
     row.append(&name);
+
+    // Mark badge: color chip + shape glyph
+    if let Some(color) = tint_color {
+        let badge = GtkBox::new(Orientation::Horizontal, 2);
+        badge.add_css_class("ht-mark-badge");
+        let chip = DrawingArea::new();
+        chip.set_content_width(8);
+        chip.set_content_height(8);
+        chip.set_valign(gtk::Align::Center);
+        {
+            let color = color.clone();
+            chip.set_draw_func(move |_, cr, w, h| {
+                if let Ok(rgba) = gtk::gdk::RGBA::parse(&color) {
+                    cr.set_source_rgba(
+                        rgba.red() as f64,
+                        rgba.green() as f64,
+                        rgba.blue() as f64,
+                        1.0,
+                    );
+                    cr.rectangle(0.0, 0.0, w as f64, h as f64);
+                    let _ = cr.fill();
+                }
+            });
+        }
+        badge.append(&chip);
+        let shape_lbl = Label::new(Some(item.mark_shape.glyph()));
+        shape_lbl.add_css_class("ht-mark-shape");
+        badge.append(&shape_lbl);
+        row.append(&badge);
+    }
 
     let remove_button = Button::from_icon_name("window-close-symbolic");
     remove_button.add_css_class("holding-tray-remove");

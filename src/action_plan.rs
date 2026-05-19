@@ -1,3 +1,4 @@
+use crate::metadata::Shape;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -12,7 +13,18 @@ pub enum OpKind {
     Duplicate,
     NewFolder,
     NewFile,
-    SendToProject { is_copy: bool },
+    SendToProject {
+        is_copy: bool,
+    },
+    PaintMark {
+        tint_id: i64,
+        tint_name: String,
+        shape: Shape,
+        recursive: bool,
+    },
+    ResetMark {
+        recursive: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -228,6 +240,75 @@ impl ActionPlan {
             file_list: vec![name.to_string()],
             conflicts: Vec::new(),
             warn_level: WarnLevel::None,
+        }
+    }
+
+    /// Build a plan for applying a mark (tint + shape) to paths, optionally recursing into folders.
+    #[allow(dead_code)]
+    pub fn for_paint_mark(
+        paths: &[PathBuf],
+        tint_id: i64,
+        tint_name: &str,
+        shape: Shape,
+        recursive: bool,
+    ) -> Self {
+        let n = paths.len();
+        let summary = format!(
+            "Mark {} item{} {} {}",
+            n,
+            if n == 1 { "" } else { "s" },
+            tint_name,
+            shape.display_name(),
+        );
+        let file_list: Vec<String> = paths
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str().map(String::from))
+            .collect();
+        Self {
+            kind: OpKind::PaintMark {
+                tint_id,
+                tint_name: tint_name.to_string(),
+                shape,
+                recursive,
+            },
+            sources: paths.to_vec(),
+            destination: None,
+            summary,
+            file_list,
+            conflicts: Vec::new(),
+            warn_level: if recursive {
+                WarnLevel::Caution
+            } else {
+                WarnLevel::None
+            },
+        }
+    }
+
+    /// Build a plan for resetting paths to the default mark (Beige Square).
+    #[allow(dead_code)]
+    pub fn for_reset_mark(paths: &[PathBuf], recursive: bool) -> Self {
+        let n = paths.len();
+        let summary = format!(
+            "Reset {} item{} to Beige Square",
+            n,
+            if n == 1 { "" } else { "s" },
+        );
+        let file_list: Vec<String> = paths
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str().map(String::from))
+            .collect();
+        Self {
+            kind: OpKind::ResetMark { recursive },
+            sources: paths.to_vec(),
+            destination: None,
+            summary,
+            file_list,
+            conflicts: Vec::new(),
+            warn_level: if recursive {
+                WarnLevel::Caution
+            } else {
+                WarnLevel::None
+            },
         }
     }
 

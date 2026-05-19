@@ -98,6 +98,13 @@ fn default_shortcuts() -> HashMap<String, String> {
         ("view_icons", "Ctrl+1"),
         ("view_list", "Ctrl+2"),
         ("toggle_plan_mode", "Ctrl+Shift+P"),
+        ("toggle_paint_mode", "Ctrl+Shift+M"),
+        ("paint_brush", "b"),
+        ("paint_eraser", "e"),
+        ("paint_eyedropper", "i"),
+        ("paint_fill", "f"),
+        ("paint_undo", "Ctrl+Z"),
+        ("paint_redo", "Ctrl+Y"),
         ("empty_trash", "Ctrl+Shift+Delete"),
         ("tray_add_selection", "Ctrl+Alt+A"),
         ("tray_move_to_project", "Ctrl+Alt+M"),
@@ -381,6 +388,13 @@ theme = "default"
 # view_icons = "Ctrl+1"
 # view_list = "Ctrl+2"
 # toggle_plan_mode = "Ctrl+Shift+P"
+# toggle_paint_mode = "Ctrl+Shift+M"
+# paint_brush = "b"
+# paint_eraser = "e"
+# paint_eyedropper = "i"
+# paint_fill = "f"
+# paint_undo = "Ctrl+Z"
+# paint_redo = "Ctrl+Y"
 # empty_trash = "Ctrl+Shift+Delete"
 # tray_add_selection = "Ctrl+Alt+A"
 # tray_move_to_project = "Ctrl+Alt+M"
@@ -414,8 +428,8 @@ theme = "default"
 #   copy_path, custom.<id>
 #
 # Conditional entries are skipped when they do not apply. For example,
-# bulk_rename appears only with two or more selected items; open_in_pane adapts
-# to the current pane layout; custom actions appear only in their contexts.
+# bulk_rename appears only with two or more selected items and opens Bulk Naming;
+# open_in_pane adapts to the current pane layout; custom actions appear only in their contexts.
 [context_menu]
 # file = ["open", "open_with", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
 # folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]

@@ -1,19 +1,17 @@
 use crate::metadata::ProjectRecord;
-use crate::ui::tag_panel::{tag_color_class, TAG_PALETTE};
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, Entry, EventControllerKey, Label, Orientation, Popover, Revealer,
+    Align, Box as GtkBox, Button, Entry, EventControllerKey, Label, Orientation, Revealer,
     RevealerTransitionType, ScrolledWindow, Stack,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 
 struct Callbacks {
-    on_project_clicked: RefCell<Option<Box<dyn Fn(i64)>>>,
-    on_project_created: RefCell<Option<Box<dyn Fn(String, String)>>>,
-    on_project_renamed: RefCell<Option<Box<dyn Fn(i64, String)>>>,
-    on_project_recolored: RefCell<Option<Box<dyn Fn(i64, String)>>>,
-    on_project_deleted: RefCell<Option<Box<dyn Fn(i64)>>>,
+    on_project_clicked: RefCell<Option<Rc<dyn Fn(i64)>>>,
+    on_project_created: RefCell<Option<Rc<dyn Fn(String)>>>,
+    on_project_renamed: RefCell<Option<Rc<dyn Fn(i64, String)>>>,
+    on_project_deleted: RefCell<Option<Rc<dyn Fn(i64)>>>,
 }
 
 impl Callbacks {
@@ -22,7 +20,6 @@ impl Callbacks {
             on_project_clicked: RefCell::new(None),
             on_project_created: RefCell::new(None),
             on_project_renamed: RefCell::new(None),
-            on_project_recolored: RefCell::new(None),
             on_project_deleted: RefCell::new(None),
         }
     }
@@ -33,7 +30,6 @@ struct Inner {
     empty_hint: Label,
     create_revealer: Revealer,
     create_name_entry: Entry,
-    create_color_selected: RefCell<String>,
     cbs: Callbacks,
 }
 
@@ -53,13 +49,13 @@ impl ProjectManagerPanel {
         let header = GtkBox::new(Orientation::Horizontal, 8);
         header.add_css_class("tm-header");
 
-        let title = Label::new(Some("🗂  Projects"));
+        let title = Label::new(Some("🗂  Palettes"));
         title.add_css_class("tm-title");
         title.set_halign(Align::Start);
         title.set_hexpand(true);
         header.append(&title);
 
-        let new_btn = Button::with_label("+ New Project");
+        let new_btn = Button::with_label("+ New Palette");
         new_btn.add_css_class("tm-new-btn");
         header.append(&new_btn);
 
@@ -76,27 +72,8 @@ impl ProjectManagerPanel {
 
         let create_name_entry = Entry::new();
         create_name_entry.add_css_class("tm-create-entry");
-        create_name_entry.set_placeholder_text(Some("Project name…"));
+        create_name_entry.set_placeholder_text(Some("Palette name…"));
         create_row.append(&create_name_entry);
-
-        let swatch_row = GtkBox::new(Orientation::Horizontal, 6);
-        swatch_row.add_css_class("tm-swatch-row");
-
-        let create_color_selected = RefCell::new(TAG_PALETTE[0].0.to_string());
-        let mut create_swatch_btns: Vec<(String, Button)> = Vec::new();
-
-        for (i, (hex, _)) in TAG_PALETTE.iter().enumerate() {
-            let btn = Button::new();
-            btn.add_css_class("tm-swatch-btn");
-            btn.add_css_class(&format!("tm-swatch-{}", i));
-            if i == 0 {
-                btn.add_css_class("selected");
-            }
-            swatch_row.append(&btn);
-            create_swatch_btns.push((hex.to_string(), btn));
-        }
-
-        create_row.append(&swatch_row);
 
         let create_actions = GtkBox::new(Orientation::Horizontal, 6);
         create_actions.add_css_class("tm-create-actions");
@@ -125,7 +102,7 @@ impl ProjectManagerPanel {
         root.append(&scrolled);
 
         let empty_hint = Label::new(Some(
-            "No projects yet. Create one with + New Project above.",
+            "No palettes yet. Create one with + New Palette above.",
         ));
         empty_hint.add_css_class("tm-empty");
         empty_hint.set_halign(Align::Start);
@@ -138,27 +115,8 @@ impl ProjectManagerPanel {
             empty_hint,
             create_revealer: create_revealer.clone(),
             create_name_entry: create_name_entry.clone(),
-            create_color_selected,
             cbs: Callbacks::new(),
         });
-
-        // ── Wire create swatch buttons ───────────────────────────────────────────
-        for (idx, (hex, btn)) in create_swatch_btns.iter().enumerate() {
-            let hex = hex.clone();
-            let inner = Rc::clone(&inner);
-            let all_btns: Vec<Button> = create_swatch_btns.iter().map(|(_, b)| b.clone()).collect();
-            btn.connect_clicked(move |clicked| {
-                *inner.create_color_selected.borrow_mut() = hex.clone();
-                for (i, b) in all_btns.iter().enumerate() {
-                    if i == idx {
-                        b.add_css_class("selected");
-                    } else {
-                        b.remove_css_class("selected");
-                    }
-                }
-                let _ = clicked;
-            });
-        }
 
         // ── Wire new-project button ──────────────────────────────────────────────
         {
@@ -226,23 +184,19 @@ impl ProjectManagerPanel {
     // ── Callback wiring ───────────────────────────────────────────────────────────
 
     pub fn connect_project_clicked<F: Fn(i64) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_project_clicked.borrow_mut() = Some(Box::new(f));
+        *self.inner.cbs.on_project_clicked.borrow_mut() = Some(Rc::new(f));
     }
 
-    pub fn connect_project_created<F: Fn(String, String) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_project_created.borrow_mut() = Some(Box::new(f));
+    pub fn connect_project_created<F: Fn(String) + 'static>(&self, f: F) {
+        *self.inner.cbs.on_project_created.borrow_mut() = Some(Rc::new(f));
     }
 
     pub fn connect_project_renamed<F: Fn(i64, String) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_project_renamed.borrow_mut() = Some(Box::new(f));
-    }
-
-    pub fn connect_project_recolored<F: Fn(i64, String) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_project_recolored.borrow_mut() = Some(Box::new(f));
+        *self.inner.cbs.on_project_renamed.borrow_mut() = Some(Rc::new(f));
     }
 
     pub fn connect_project_deleted<F: Fn(i64) + 'static>(&self, f: F) {
-        *self.inner.cbs.on_project_deleted.borrow_mut() = Some(Box::new(f));
+        *self.inner.cbs.on_project_deleted.borrow_mut() = Some(Rc::new(f));
     }
 }
 
@@ -252,24 +206,17 @@ fn fire_create(inner: &Rc<Inner>) {
     if name.is_empty() {
         return;
     }
-    let color = inner.create_color_selected.borrow().clone();
     inner.create_revealer.set_reveal_child(false);
     inner.create_name_entry.set_text("");
-    if let Some(cb) = inner.cbs.on_project_created.borrow().as_ref() {
-        cb(name, color);
+    let cb = inner.cbs.on_project_created.borrow().clone();
+    if let Some(cb) = cb {
+        cb(name);
     }
 }
 
 fn build_project_row(project: &ProjectRecord, inner: &Rc<Inner>) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 6);
     row.add_css_class("tm-row");
-
-    // Color dot
-    let dot = Label::new(Some("●"));
-    dot.add_css_class("tm-dot");
-    dot.add_css_class(tag_color_class(project.color.as_deref()));
-    dot.set_valign(Align::Center);
-    row.append(&dot);
 
     // Name stack (label / entry)
     let name_stack = Stack::new();
@@ -289,18 +236,34 @@ fn build_project_row(project: &ProjectRecord, inner: &Rc<Inner>) -> GtkBox {
     name_stack.set_visible_child_name("label");
     row.append(&name_stack);
 
-    // Click name label to open project
+    // Click or double-click name label to open project
     {
         let project_id = project.id;
         let inner = Rc::clone(inner);
         let click = gtk::GestureClick::new();
         click.connect_pressed(move |_, _, _, _| {
-            if let Some(cb) = inner.cbs.on_project_clicked.borrow().as_ref() {
+            let cb = inner.cbs.on_project_clicked.borrow().clone();
+            if let Some(cb) = cb {
                 cb(project_id);
             }
         });
         name_label.add_controller(click);
     }
+
+    // Explicit open button
+    let open_btn = Button::with_label("Open →");
+    open_btn.add_css_class("tm-open-btn");
+    {
+        let project_id = project.id;
+        let inner = Rc::clone(inner);
+        open_btn.connect_clicked(move |_| {
+            let cb = inner.cbs.on_project_clicked.borrow().clone();
+            if let Some(cb) = cb {
+                cb(project_id);
+            }
+        });
+    }
+    row.append(&open_btn);
 
     // Edit (rename) button
     let edit_btn = Button::with_label("✏");
@@ -364,63 +327,6 @@ fn build_project_row(project: &ProjectRecord, inner: &Rc<Inner>) -> GtkBox {
         name_entry.add_controller(key_ctrl);
     }
 
-    // Color change button → Popover with swatch row
-    let color_btn = Button::with_label("●");
-    color_btn.add_css_class("tm-color-btn");
-    color_btn.add_css_class(tag_color_class(project.color.as_deref()));
-    {
-        let project_id = project.id;
-        let inner = Rc::clone(inner);
-        let color_btn_ref = color_btn.clone();
-        let current_color = project
-            .color
-            .clone()
-            .unwrap_or_else(|| TAG_PALETTE[0].0.to_string());
-
-        color_btn.connect_clicked(move |btn| {
-            let popover = Popover::new();
-            popover.add_css_class("tm-color-popover");
-            popover.set_has_arrow(true);
-
-            let swatch_row = GtkBox::new(Orientation::Horizontal, 6);
-            swatch_row.add_css_class("tm-swatch-popover-row");
-
-            for (i, (hex, _)) in TAG_PALETTE.iter().enumerate() {
-                let swatch = Button::new();
-                swatch.add_css_class("tm-swatch-btn");
-                swatch.add_css_class(&format!("tm-swatch-{}", i));
-                if hex.eq_ignore_ascii_case(&current_color) {
-                    swatch.add_css_class("selected");
-                }
-                let hex_str = hex.to_string();
-                let inner = Rc::clone(&inner);
-                let popover_ref = popover.clone();
-                let color_btn_inner = color_btn_ref.clone();
-                swatch.connect_clicked(move |_| {
-                    popover_ref.popdown();
-                    for (_, c) in TAG_PALETTE.iter() {
-                        color_btn_inner.remove_css_class(c);
-                    }
-                    color_btn_inner.add_css_class(tag_color_class(Some(&hex_str)));
-                    if let Some(cb) = inner.cbs.on_project_recolored.borrow().as_ref() {
-                        cb(project_id, hex_str.clone());
-                    }
-                });
-                swatch_row.append(&swatch);
-            }
-
-            popover.set_child(Some(&swatch_row));
-            popover.set_parent(btn);
-            popover.popup();
-
-            let popover_clone = popover.clone();
-            popover.connect_closed(move |_| {
-                popover_clone.unparent();
-            });
-        });
-    }
-    row.append(&color_btn);
-
     // Delete button
     let delete_btn = Button::with_label("🗑");
     delete_btn.add_css_class("tm-delete-btn");
@@ -428,7 +334,8 @@ fn build_project_row(project: &ProjectRecord, inner: &Rc<Inner>) -> GtkBox {
         let project_id = project.id;
         let inner = Rc::clone(inner);
         delete_btn.connect_clicked(move |_| {
-            if let Some(cb) = inner.cbs.on_project_deleted.borrow().as_ref() {
+            let cb = inner.cbs.on_project_deleted.borrow().clone();
+            if let Some(cb) = cb {
                 cb(project_id);
             }
         });
@@ -449,7 +356,8 @@ fn commit_rename(
     let new_name = new_name.trim().to_string();
     name_stack.set_visible_child_name("label");
     if !new_name.is_empty() && new_name != original_name {
-        if let Some(cb) = inner.cbs.on_project_renamed.borrow().as_ref() {
+        let cb = inner.cbs.on_project_renamed.borrow().clone();
+        if let Some(cb) = cb {
             cb(project_id, new_name);
         }
     }

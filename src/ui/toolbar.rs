@@ -16,6 +16,7 @@ pub struct Toolbar {
     pub split_tooltip_label: Label,
     pub holding_tray_toggle: ToggleButton,
     pub plan_mode_toggle: ToggleButton,
+    pub paint_mode_toggle: ToggleButton,
     pub preview_toggle: ToggleButton,
     pub new_folder_button: Button,
     pub new_text_document_button: Button,
@@ -95,6 +96,19 @@ impl Toolbar {
         );
         plan_mode_toggle.set_active(false);
         bar.append(&plan_mode_toggle);
+
+        let paint_mode_toggle = toggle_icon_button(
+            "preferences-color-symbolic",
+            "Painting Mode",
+            &[
+                "toolbar-action-btn",
+                "toolbar-toggle",
+                "toolbar-icon-btn",
+                "toolbar-paint-btn",
+            ],
+        );
+        paint_mode_toggle.set_active(false);
+        bar.append(&paint_mode_toggle);
 
         // ── Divider 2 ──────────────────────────────────────────────────
         let sep2 = Separator::new(Orientation::Vertical);
@@ -205,6 +219,7 @@ impl Toolbar {
             split_tooltip_label,
             holding_tray_toggle,
             plan_mode_toggle,
+            paint_mode_toggle,
             preview_toggle,
             new_folder_button,
             new_text_document_button,
