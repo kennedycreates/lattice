@@ -62,13 +62,28 @@ Other Linux distributions may work if they provide equivalent GTK4, GIO/GVfs, UD
 
 ## Requirements
 
+**Required to build and run:**
 - A GTK4-capable Linux desktop session
-- Rust stable `1.75+`
+- Rust stable `1.75+` — see note below
 - GTK4 development libraries
 - GIO/GVfs, UDisks2, and Polkit for Trash and System Drives integration
 - Fontconfig with Noto/DejaVu-compatible sans fallback, emoji fonts, and a monospace font
 - `update-desktop-database` from `desktop-file-utils`
 - `gtk-update-icon-cache` for icon cache refresh
+
+**Optional — media conversion** (`🔄 Convert Media` sidebar tool):
+- `ffmpeg` — required for image, audio, and video conversion (most presets)
+- `imagemagick` — required for AVIF output only
+
+**Optional — cloud drive mounting** (rclone Cloud entries):
+- `rclone` — install from https://rclone.org/install/ or your distro package
+- `fuse3` (Ubuntu) / `fuse2` (Arch) — provides `fusermount3`/`fusermount` for unmounting
+
+**Optional — GVfs remote URI support** (`sftp://`, `smb://`, `ftp://`, `dav://` paths):
+- `gvfs-backends` (Ubuntu) / `gvfs-smb` (Arch) — SMB/SFTP/FTP/WebDAV support
+- `gvfs-fuse` (Arch) — needed on some systems for SFTP/FTP URIs
+
+> **Rust version note:** `apt install cargo` on Ubuntu 22.04 LTS provides Rust 1.66, which is below the required 1.75. Ubuntu 24.04 LTS provides 1.75. If your distro Rust is too old, install via [rustup](https://rustup.rs/) instead: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
 ### Ubuntu-Based Dependencies
 
@@ -92,7 +107,26 @@ sudo apt install \
   udisks2
 ```
 
-Optional filesystem support packages for removable or external drives:
+Optional — media conversion:
+
+```sh
+sudo apt install ffmpeg imagemagick
+```
+
+Optional — rclone cloud drive mounting:
+
+```sh
+sudo apt install fuse3
+# rclone: install from https://rclone.org/install/ (or: sudo apt install rclone)
+```
+
+Optional — GVfs remote URIs (sftp://, smb://, ftp://, dav://):
+
+```sh
+sudo apt install gvfs-backends
+```
+
+Optional filesystem support for removable or external drives:
 
 ```sh
 sudo apt install exfatprogs dosfstools ntfs-3g btrfs-progs xfsprogs
@@ -117,7 +151,26 @@ sudo pacman -Syu --needed \
   udisks2
 ```
 
-Optional filesystem support packages for removable or external drives:
+Optional — media conversion:
+
+```sh
+sudo pacman -S ffmpeg imagemagick
+```
+
+Optional — rclone cloud drive mounting:
+
+```sh
+sudo pacman -S rclone fuse2
+```
+
+Optional — GVfs remote URIs (sftp://, smb://, ftp://, dav://):
+
+```sh
+sudo pacman -S gvfs-smb
+sudo pacman -S gvfs-fuse   # if sftp:// doesn't work without it
+```
+
+Optional filesystem support for removable or external drives:
 
 ```sh
 sudo pacman -Syu --needed exfatprogs dosfstools ntfs-3g btrfs-progs xfsprogs
