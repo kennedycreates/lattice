@@ -1,6 +1,6 @@
 # Lattice
 
-Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. The supported distribution families are Ubuntu-based systems and Arch-based systems.
+Lattice is a powerful graphical GTK4 file manager for Linux, built with Rust. Designed for media and computer professionals who constantly deal with file management. The supported distribution families are Ubuntu-based systems and Arch-based systems.
 
 ## Features
 
@@ -43,11 +43,12 @@ Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. The suppo
 - See `docs/conversion.md` for required tools, supported formats, and developer notes
 
 **Preview and History**
-- Preview pane for images, text/config files, folders, and media metadata
+- Preview pane for images, text/config files, folders, media metadata, resolved Mark identity, and neutral tag chips
 - Activity Log with SQLite-backed receipts plus guarded undo, repeat, reveal, and copy-path actions per row
 
 **Configuration**
 - TOML config at `~/.config/lattice/config.toml`
+- Rebindable command shortcuts for navigation, file actions, sidebar tools, painting tools, Holding Tray actions, queued plans, conversion controls, and custom actions
 - Bundled `default` and `high-contrast` themes
 - User themes in `~/.config/lattice/themes/`
 
@@ -283,6 +284,8 @@ theme = "default" # or "high-contrast"
 
 [shortcuts]
 custom.open_in_gimp = "Ctrl+Alt+G"
+open_convert = "Ctrl+Alt+F"
+trash = "" # disable a default shortcut
 
 [context_menu]
 file = ["open", "open_with", "separator", "rename", "copy_path",
@@ -297,6 +300,8 @@ needs_selection = true
 ```
 
 `{paths}` expands all selected paths as separate arguments, `{path}` expands the first selected path, and `{cwd}` expands the active folder.
+
+The generated config lists every supported built-in shortcut action id. Command shortcuts are secondary accelerators; all core actions remain available by mouse. Standard text editing, path completion, and local list/grid navigation keys keep their GTK behavior and are not part of the command rebinding surface.
 
 Theme lookup order:
 

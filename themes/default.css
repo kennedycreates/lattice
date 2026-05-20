@@ -1061,6 +1061,47 @@ label.preview-icon.file-type-unknown { color: #806040; background: radial-gradie
     line-height: 1.15;
 }
 
+.preview-identity {
+    margin-top: -2px;
+    margin-bottom: 2px;
+}
+
+.preview-mark-row {
+    background: linear-gradient(90deg, #26211a 0%, #181512 100%);
+    border: 1px solid #3a3022;
+    border-radius: 999px;
+    padding: 5px 9px;
+}
+
+.preview-mark-badge-slot {
+    min-width: 18px;
+    min-height: 18px;
+}
+
+.preview-mark-label {
+    color: #e0c7a0;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.preview-tags {
+    margin-left: 2px;
+}
+
+.preview-tag-chip {
+    background: #171410;
+    border: 1px solid #352a1d;
+    border-radius: 999px;
+    color: #8f805f;
+    padding: 2px 7px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.preview-tag-chip-muted {
+    color: #5f5138;
+}
+
 .preview-actions {
     margin-top: 2px;
     margin-bottom: 2px;
@@ -4352,4 +4393,201 @@ flowboxchild:hover > .file-card-shell.drop-hover > .file-card,
     padding: 4px 8px;
     margin-top: 4px;
     margin-bottom: 4px;
+}
+
+
+/* ── Picker Widget ────────────────────────────────────────────────────────── */
+
+.picker-root {
+    min-width: 600px;
+    min-height: 400px;
+}
+
+.picker-nav-bar {
+    background: #1a1815;
+    border-bottom: 1px solid #302e28;
+    min-height: 34px;
+}
+
+.picker-nav-btn {
+    background: linear-gradient(180deg, #292223 0%, #252320 100%);
+    border: 1px solid #302e28;
+    border-radius: 4px;
+    color: #e8dcc8;
+    padding: 2px 9px;
+    min-width: 28px;
+    min-height: 24px;
+    font-size: 13px;
+}
+
+.picker-nav-btn:hover {
+    background: linear-gradient(180deg, #34282d 0%, #2d2627 100%);
+    border-color: #c8407068;
+    color: #d9a98d;
+}
+
+.picker-nav-btn:disabled {
+    color: #504840;
+    background: #1c1a17;
+    border-color: #252320;
+}
+
+.picker-path {
+    color: #b89e78;
+    font-family: "JetBrains Mono", "Noto Sans Mono", monospace;
+    font-size: 11px;
+    padding: 0 6px;
+}
+
+.picker-sidebar {
+    background: linear-gradient(180deg, #1c1a1d 0%, #1b1918 100%);
+    min-width: 160px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
+
+.picker-sidebar-section {
+    color: #9a6a71;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+    padding: 8px 10px 3px 10px;
+}
+
+.picker-sidebar-btn {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    color: #b89e78;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
+    transition: background 100ms ease, color 100ms ease;
+}
+
+.picker-sidebar-btn:hover {
+    background: linear-gradient(90deg, rgba(61,128,96,0.06) 0%, #252320 70%);
+    color: #e8dcc8;
+}
+
+.picker-sidebar-btn.active {
+    background: linear-gradient(90deg, rgba(200,64,112,0.10) 0%, transparent 85%);
+    border-left: 2px solid #c84070;
+    color: #d9a7b6;
+    padding-left: 8px;
+}
+
+.picker-body-sep {
+    background-color: #302e28;
+    min-width: 1px;
+}
+
+.picker-list {
+    background: transparent;
+}
+
+.picker-list > row {
+    padding: 0;
+    border-radius: 0;
+    border: none;
+    outline: none;
+    box-shadow: none;
+}
+
+.picker-row {
+    padding: 2px 6px;
+    min-height: 26px;
+}
+
+.picker-row:hover {
+    background: rgba(200, 180, 150, 0.06);
+}
+
+.picker-list > row:selected > .picker-row {
+    background: linear-gradient(90deg, rgba(200,64,112,0.16) 0%, rgba(201,150,46,0.06) 100%);
+}
+
+.picker-row-icon {
+    color: #e8dcc8;
+    font-size: 14px;
+    min-width: 26px;
+}
+
+.picker-row-name {
+    color: #e8dcc8;
+    font-size: 13px;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
+}
+
+.picker-row-dir > .picker-row-name,
+.picker-row.picker-row-dir .picker-row-name {
+    font-weight: 500;
+    color: #d9c8a8;
+}
+
+.picker-row-size {
+    color: #806040;
+    font-size: 11px;
+    font-family: "JetBrains Mono", "Noto Sans Mono", monospace;
+    min-width: 56px;
+}
+
+.picker-save-row {
+    border-top: 1px solid #302e28;
+    padding: 6px 10px;
+    background: #1a1815;
+}
+
+.picker-save-label {
+    color: #806040;
+    font-size: 12px;
+    min-width: 54px;
+}
+
+.picker-save-entry {
+    background-color: #0c0b0a;
+    border: 1px solid #302e28;
+    border-radius: 4px;
+    color: #e8dcc8;
+    padding: 3px 8px;
+    min-height: 24px;
+    font-size: 13px;
+}
+
+.picker-save-entry:focus {
+    border-color: rgba(200,64,112,0.45);
+    box-shadow: 0 0 0 2px rgba(200,64,112,0.10);
+}
+
+.picker-window-actions {
+    /* Standalone window action bar styling */
+}
+
+.picker-chosen-path-display {
+    color: #b89e78;
+    font-size: 12px;
+    font-family: "JetBrains Mono", "Noto Sans Mono", monospace;
+    background-color: #0c0b0a;
+    border: 1px solid #302e28;
+    border-radius: 4px;
+    padding: 3px 8px;
+    min-height: 24px;
+}
+
+.picker-browse-btn {
+    background: linear-gradient(180deg, #292223 0%, #252320 100%);
+    border: 1px solid #302e28;
+    border-radius: 4px;
+    color: #b89e78;
+    padding: 2px 8px;
+    min-height: 24px;
+    font-size: 12px;
+}
+
+.picker-browse-btn:hover {
+    background: linear-gradient(180deg, #34282d 0%, #2d2627 100%);
+    border-color: #c8407068;
+    color: #e8dcc8;
 }

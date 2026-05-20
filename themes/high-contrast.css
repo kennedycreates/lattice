@@ -775,6 +775,47 @@ label.preview-icon.file-type-unknown { color: #888888; background: radial-gradie
     line-height: 1.15;
 }
 
+.preview-identity {
+    margin-top: -2px;
+    margin-bottom: 2px;
+}
+
+.preview-mark-row {
+    background: #000000;
+    border: 1px solid #666666;
+    border-radius: 999px;
+    padding: 5px 9px;
+}
+
+.preview-mark-badge-slot {
+    min-width: 18px;
+    min-height: 18px;
+}
+
+.preview-mark-label {
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.preview-tags {
+    margin-left: 2px;
+}
+
+.preview-tag-chip {
+    background: #000000;
+    border: 1px solid #666666;
+    border-radius: 999px;
+    color: #dddddd;
+    padding: 2px 7px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.preview-tag-chip-muted {
+    color: #aaaaaa;
+}
+
 .preview-actions {
     margin-top: 2px;
     margin-bottom: 2px;
@@ -1090,7 +1131,7 @@ tooltip {
 .landing-action-btn:hover { background: #1e1e1e; border-color: #00ffff; color: #00ffff; }
 .landing-action-btn:active { background: #2a2a2a; border-color: #00ffff; }
 .landing-section-heading { font-size: 9px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; color: #888888; margin-bottom: 12px; }
-.landing-dest-card { min-width: 90px; max-width: 120px; padding: 14px 10px 10px; border-radius: 8px; border: 1px solid #333333; background: #141414; transition: background 120ms ease, border-color 120ms ease; }
+.landing-dest-card { min-width: 90px; padding: 14px 10px 10px; border-radius: 8px; border: 1px solid #333333; background: #141414; transition: background 120ms ease, border-color 120ms ease; }
 .landing-dest-card:hover { background: #1e1e1e; border-color: #00ffff; }
 .landing-dest-icon { font-size: 26px; margin-bottom: 4px; }
 .landing-dest-name { font-size: 12px; font-weight: 600; color: #ffffff; margin-top: 4px; }
@@ -1116,7 +1157,7 @@ tooltip {
 .tm-create-entry { background: #000000; border: 1px solid #555555; border-radius: 4px; color: #ffffff; padding: 4px 8px; caret-color: #00ffff; }
 .tm-create-entry:focus { border-color: #00ffff; }
 .tm-swatch-row { margin-top: 6px; margin-bottom: 4px; }
-.tm-swatch-btn { min-width: 20px; min-height: 20px; max-width: 20px; max-height: 20px; border-radius: 10px; border: 2px solid transparent; padding: 0; }
+.tm-swatch-btn { min-width: 20px; min-height: 20px; border-radius: 10px; border: 2px solid transparent; padding: 0; }
 .tm-swatch-btn:hover { border-color: #ffffff; }
 .tm-swatch-btn.selected { border-color: #00ffff; }
 .tm-swatch-0 { background-color: #00e5ff; }
@@ -1239,3 +1280,27 @@ tooltip {
 .convert-progress-btn:hover { border-color: #ffffff; color: #ffffff; }
 .convert-progress-btn-retry { border-color: #663300; color: #ff6600; }
 .convert-progress-btn-retry:hover { border-color: #ff6600; color: #ff9900; }
+
+/* ── Picker Widget (high-contrast overrides) ─────────────────────────────── */
+.picker-nav-bar { background: #0a0a0a; border-bottom: 1px solid #555555; }
+.picker-nav-btn { background: #1a1a1a; border: 1px solid #555555; color: #ffffff; }
+.picker-nav-btn:hover { background: #2a2a2a; border-color: #ffffff; }
+.picker-nav-btn:disabled { color: #444444; background: #0a0a0a; }
+.picker-path { color: #cccccc; }
+.picker-sidebar { background: #0d0d0d; }
+.picker-sidebar-section { color: #888888; }
+.picker-sidebar-btn { color: #cccccc; }
+.picker-sidebar-btn:hover { background: rgba(255,255,255,0.08); color: #ffffff; }
+.picker-sidebar-btn.active { border-left: 2px solid #ffffff; color: #ffffff; background: rgba(255,255,255,0.12); }
+.picker-body-sep { background-color: #444444; }
+.picker-row:hover { background: rgba(255,255,255,0.07); }
+.picker-list > row:selected > .picker-row { background: rgba(255,255,255,0.18); }
+.picker-row-name { color: #ffffff; }
+.picker-row-size { color: #888888; }
+.picker-save-row { background: #0a0a0a; border-top: 1px solid #444444; }
+.picker-save-label { color: #888888; }
+.picker-save-entry { background: #000000; border: 1px solid #555555; color: #ffffff; }
+.picker-save-entry:focus { border-color: #ffffff; }
+.picker-chosen-path-display { background: #000000; border: 1px solid #555555; color: #cccccc; }
+.picker-browse-btn { background: #1a1a1a; border: 1px solid #555555; color: #cccccc; }
+.picker-browse-btn:hover { background: #2a2a2a; border-color: #ffffff; color: #ffffff; }

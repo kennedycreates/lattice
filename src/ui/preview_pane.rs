@@ -1,9 +1,14 @@
+use crate::metadata::{Shape, TagRecord};
 use crate::ui::file_grid::FileKind;
+use crate::ui::mark_badge::make_shape_badge;
 use gtk::prelude::*;
 use gtk::{
     Align, Box, Button, Label, Orientation, Picture, ScrolledWindow, Separator, TextBuffer,
     TextView,
 };
+
+const PREVIEW_MARK_BADGE_SIZE: i32 = 18;
+const PREVIEW_VISIBLE_TAGS: usize = 3;
 
 #[derive(Clone)]
 struct MetaRow {
@@ -57,6 +62,10 @@ pub struct PreviewPane {
     pub open_parent_button: Button,
     icon: Label,
     title: Label,
+    identity: Box,
+    mark_badge_slot: Box,
+    mark_label: Label,
+    tag_box: Box,
     picture: Picture,
     text_buffer: TextBuffer,
     text_scroll: ScrolledWindow,
@@ -123,6 +132,36 @@ impl PreviewPane {
         title.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         content.append(&title);
 
+        let identity = Box::new(Orientation::Vertical, 6);
+        identity.add_css_class("preview-identity");
+        identity.set_halign(Align::Fill);
+        identity.set_visible(false);
+        content.append(&identity);
+
+        let mark_row = Box::new(Orientation::Horizontal, 8);
+        mark_row.add_css_class("preview-mark-row");
+        mark_row.set_halign(Align::Start);
+        identity.append(&mark_row);
+
+        let mark_badge_slot = Box::new(Orientation::Horizontal, 0);
+        mark_badge_slot.add_css_class("preview-mark-badge-slot");
+        mark_badge_slot.set_halign(Align::Start);
+        mark_badge_slot.set_valign(Align::Center);
+        mark_row.append(&mark_badge_slot);
+
+        let mark_label = Label::new(None);
+        mark_label.add_css_class("preview-mark-label");
+        mark_label.set_halign(Align::Start);
+        mark_label.set_valign(Align::Center);
+        mark_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        mark_label.set_single_line_mode(true);
+        mark_row.append(&mark_label);
+
+        let tag_box = Box::new(Orientation::Horizontal, 4);
+        tag_box.add_css_class("preview-tags");
+        tag_box.set_halign(Align::Start);
+        identity.append(&tag_box);
+
         let actions = Box::new(Orientation::Horizontal, 8);
         actions.add_css_class("preview-actions");
         actions.set_halign(Align::Start);
@@ -180,6 +219,10 @@ impl PreviewPane {
             open_parent_button,
             icon,
             title,
+            identity,
+            mark_badge_slot,
+            mark_label,
+            tag_box,
             picture,
             text_buffer,
             text_scroll,
@@ -227,6 +270,41 @@ impl PreviewPane {
         } else {
             self.mime_row.clear();
         }
+    }
+
+    pub fn set_identity(
+        &self,
+        tint_name: &str,
+        shape: Shape,
+        tint_color: Option<&str>,
+        tags: &[TagRecord],
+    ) {
+        clear_children(&self.mark_badge_slot);
+        clear_children(&self.tag_box);
+
+        let badge = make_shape_badge(shape, PREVIEW_MARK_BADGE_SIZE, tint_color);
+        self.mark_badge_slot.append(&badge);
+        self.mark_label
+            .set_label(&format!("{tint_name} {}", shape.display_name()));
+
+        for tag in tags.iter().take(PREVIEW_VISIBLE_TAGS) {
+            let chip = Label::new(Some(&format!("#{}", tag.name)));
+            chip.add_css_class("preview-tag-chip");
+            chip.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            chip.set_single_line_mode(true);
+            chip.set_max_width_chars(18);
+            self.tag_box.append(&chip);
+        }
+
+        if tags.len() > PREVIEW_VISIBLE_TAGS {
+            let overflow = Label::new(Some(&format!("+{}", tags.len() - PREVIEW_VISIBLE_TAGS)));
+            overflow.add_css_class("preview-tag-chip");
+            overflow.add_css_class("preview-tag-chip-muted");
+            self.tag_box.append(&overflow);
+        }
+
+        self.tag_box.set_visible(!tags.is_empty());
+        self.identity.set_visible(true);
     }
 
     #[allow(dead_code)]
@@ -371,6 +449,7 @@ impl PreviewPane {
         self.picture.set_visible(false);
         self.set_image_file(None::<&gio::File>);
         self.title.set_label(title);
+        self.clear_identity();
         self.text_buffer.set_text("");
         self.text_scroll.set_visible(false);
         self.type_row.clear();
@@ -381,5 +460,18 @@ impl PreviewPane {
         self.dimensions_row.clear();
         self.duration_row.clear();
         self.note_row.clear();
+    }
+
+    fn clear_identity(&self) {
+        clear_children(&self.mark_badge_slot);
+        clear_children(&self.tag_box);
+        self.mark_label.set_label("");
+        self.identity.set_visible(false);
+    }
+}
+
+fn clear_children(container: &Box) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
     }
 }

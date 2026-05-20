@@ -14,11 +14,6 @@ pub struct LaunchConfig {
 }
 
 impl LaunchConfig {
-    pub fn from_env() -> Self {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        Self::from_args(&args)
-    }
-
     fn from_args(args: &[String]) -> Self {
         let mut config = LaunchConfig::default();
         let mut i = 0;
@@ -63,7 +58,6 @@ impl LaunchConfig {
                     }
                 }
                 arg if !arg.starts_with('-') => {
-                    // Bare positional arg: treat as an open-path shorthand.
                     config.path = Some(PathBuf::from(arg));
                     i += 1;
                 }
@@ -76,9 +70,122 @@ impl LaunchConfig {
     }
 }
 
+// ── Picker CLI ────────────────────────────────────────────────────────────────
+
+/// Picker subcommand: what kind of selection the picker performs.
+#[derive(Debug, Clone)]
+pub enum PickerSubcommand {
+    /// Open one existing file.
+    OpenFile,
+    /// Open one or more existing files.
+    OpenFiles,
+    /// Select an existing folder.
+    OpenFolder,
+    /// Choose a save path (directory + filename).
+    SaveFile,
+}
+
+/// Parsed `lattice --picker ...` configuration.
+#[derive(Debug, Clone)]
+pub struct PickerLaunchConfig {
+    pub subcommand: PickerSubcommand,
+    /// Starting directory for the picker.
+    pub initial_path: Option<PathBuf>,
+    /// Suggested filename for SaveFile mode.
+    pub suggested_name: Option<String>,
+}
+
+/// Top-level launch decision — either a browser window or a picker window.
+#[derive(Debug)]
+pub enum LaunchMode {
+    Browser(LaunchConfig),
+    Picker(PickerLaunchConfig),
+}
+
+impl LaunchMode {
+    /// Parse from process arguments.
+    ///
+    /// If `--picker` is the first argument, parse as picker mode.
+    /// Otherwise parse as the normal browser launch config.
+    pub fn from_env() -> Self {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.first().map(|s| s.as_str()) == Some("--picker") {
+            Self::Picker(PickerLaunchConfig::from_args(&args[1..]))
+        } else {
+            Self::Browser(LaunchConfig::from_args(&args))
+        }
+    }
+}
+
+impl PickerLaunchConfig {
+    /// Parse picker arguments after `--picker`.
+    ///
+    /// Syntax:
+    ///   lattice --picker open          [--path /start/dir]
+    ///   lattice --picker open-files    [--path /start/dir]
+    ///   lattice --picker folder        [--path /start/dir]
+    ///   lattice --picker save          [--path /start/dir] [--name suggested.txt]
+    fn from_args(args: &[String]) -> Self {
+        let subcommand = match args.first().map(|s| s.as_str()) {
+            Some("open") => PickerSubcommand::OpenFile,
+            Some("open-files") => PickerSubcommand::OpenFiles,
+            Some("folder") => PickerSubcommand::OpenFolder,
+            Some("save") => PickerSubcommand::SaveFile,
+            other => {
+                if let Some(s) = other {
+                    eprintln!("lattice --picker: unknown subcommand '{s}'; expected open, open-files, folder, or save");
+                } else {
+                    eprintln!("lattice --picker: missing subcommand; expected open, open-files, folder, or save");
+                }
+                PickerSubcommand::OpenFile
+            }
+        };
+
+        let rest = if args.is_empty() {
+            &args[..]
+        } else {
+            &args[1..]
+        };
+        let mut initial_path: Option<PathBuf> = None;
+        let mut suggested_name: Option<String> = None;
+        let mut i = 0;
+        while i < rest.len() {
+            match rest[i].as_str() {
+                "--path" => {
+                    if i + 1 < rest.len() {
+                        initial_path = Some(PathBuf::from(&rest[i + 1]));
+                        i += 2;
+                    } else {
+                        eprintln!("lattice --picker: --path requires a directory argument");
+                        i += 1;
+                    }
+                }
+                "--name" => {
+                    if i + 1 < rest.len() {
+                        suggested_name = Some(rest[i + 1].clone());
+                        i += 2;
+                    } else {
+                        eprintln!("lattice --picker: --name requires a filename argument");
+                        i += 1;
+                    }
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        PickerLaunchConfig {
+            subcommand,
+            initial_path,
+            suggested_name,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::LaunchConfig;
+    use super::{LaunchConfig, LaunchMode, PickerSubcommand};
     use std::path::PathBuf;
 
     fn args(values: &[&str]) -> Vec<String> {
@@ -132,5 +239,25 @@ mod tests {
     fn positional_path_is_shorthand_for_path_flag() {
         let config = LaunchConfig::from_args(&args(&["/tmp/downloads"]));
         assert_eq!(config.path, Some(PathBuf::from("/tmp/downloads")));
+    }
+
+    #[test]
+    fn picker_mode_detected() {
+        let args_raw: Vec<String> = ["--picker", "folder", "--path", "/tmp"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let all: Vec<String> = std::iter::once("lattice".to_string())
+            .chain(args_raw)
+            .collect();
+        // Simulate from_env parsing logic
+        let rest = &all[1..];
+        if rest.first().map(|s| s.as_str()) == Some("--picker") {
+            let picker = super::PickerLaunchConfig::from_args(&rest[1..]);
+            assert!(matches!(picker.subcommand, PickerSubcommand::OpenFolder));
+            assert_eq!(picker.initial_path, Some(PathBuf::from("/tmp")));
+        } else {
+            panic!("expected picker mode");
+        }
     }
 }

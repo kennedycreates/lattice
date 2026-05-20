@@ -1,4 +1,5 @@
 use crate::action_plan::{ActionPlan, OpKind};
+use crate::config::{shortcut_tooltip, AppConfig};
 use gtk::prelude::*;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Revealer, ScrolledWindow};
 
@@ -18,7 +19,7 @@ pub struct PlanQueuePanel {
 }
 
 impl PlanQueuePanel {
-    pub fn build() -> Self {
+    pub fn build(config: &AppConfig) -> Self {
         let panel = GtkBox::new(Orientation::Vertical, 0);
         panel.add_css_class("plan-queue");
 
@@ -42,11 +43,19 @@ impl PlanQueuePanel {
         execute_btn.add_css_class("toolbar-action-btn");
         execute_btn.add_css_class("plan-queue-execute-btn");
         execute_btn.set_sensitive(false);
+        crate::ui::attach_tooltip(
+            &execute_btn,
+            shortcut_tooltip(config, "Execute queued actions", "plan_execute"),
+        );
         header.append(&execute_btn);
 
         let clear_btn = Button::with_label("✕  Clear");
         clear_btn.add_css_class("toolbar-action-btn");
         clear_btn.set_sensitive(false);
+        crate::ui::attach_tooltip(
+            &clear_btn,
+            shortcut_tooltip(config, "Clear queued actions", "plan_clear"),
+        );
         header.append(&clear_btn);
 
         panel.append(&header);
@@ -143,6 +152,7 @@ fn build_row<F: Fn(QueueAction) + Clone + 'static>(
     up_btn.add_css_class("pq-reorder-btn");
     up_btn.set_sensitive(index > 0);
     up_btn.set_valign(Align::Center);
+    crate::ui::attach_tooltip(&up_btn, "Move action up");
     let cb = on_action.clone();
     up_btn.connect_clicked(move |_| cb(QueueAction::MoveUp(index)));
     row.append(&up_btn);
@@ -151,6 +161,7 @@ fn build_row<F: Fn(QueueAction) + Clone + 'static>(
     down_btn.add_css_class("pq-reorder-btn");
     down_btn.set_sensitive(index + 1 < total);
     down_btn.set_valign(Align::Center);
+    crate::ui::attach_tooltip(&down_btn, "Move action down");
     let cb = on_action.clone();
     down_btn.connect_clicked(move |_| cb(QueueAction::MoveDown(index)));
     row.append(&down_btn);
@@ -188,6 +199,7 @@ fn build_row<F: Fn(QueueAction) + Clone + 'static>(
     let remove_btn = Button::with_label("✕");
     remove_btn.add_css_class("pq-remove-btn");
     remove_btn.set_valign(Align::Center);
+    crate::ui::attach_tooltip(&remove_btn, "Remove queued action");
     let cb = on_action.clone();
     remove_btn.connect_clicked(move |_| cb(QueueAction::Remove(index)));
     row.append(&remove_btn);

@@ -1,3 +1,4 @@
+use crate::config::{shortcut_tooltip, AppConfig};
 use gtk::prelude::*;
 use gtk::{Box, Button, Entry, Image, Label, Orientation, Separator, Stack, ToggleButton};
 use std::cell::RefCell;
@@ -31,17 +32,19 @@ pub struct Toolbar {
 }
 
 impl Toolbar {
-    pub fn build() -> Self {
+    pub fn build(config: &AppConfig) -> Self {
+        let tt = |label: &str, action: &str| shortcut_tooltip(config, label, action);
         let bar = Box::new(Orientation::Horizontal, 3);
         bar.add_css_class("top-toolbar");
 
         // ── Group 1: Navigation / View Basics ──────────────────────────
-        let (back_button, back_host) = nav_button("go-previous-symbolic", "Back (Alt+Left)", true);
+        let (back_button, back_host) =
+            nav_button("go-previous-symbolic", &tt("Back", "back"), true);
         let (forward_button, forward_host) =
-            nav_button("go-next-symbolic", "Forward (Alt+Right)", true);
-        let (up_button, up_host) = nav_button("go-up-symbolic", "Up (Alt+Up)", true);
+            nav_button("go-next-symbolic", &tt("Forward", "forward"), true);
+        let (up_button, up_host) = nav_button("go-up-symbolic", &tt("Up", "up"), true);
         let (refresh_button, refresh_host) =
-            nav_button("view-refresh-symbolic", "Refresh (Ctrl+R)", false);
+            nav_button("view-refresh-symbolic", &tt("Refresh", "refresh"), false);
         bar.append(&back_host);
         bar.append(&forward_host);
         bar.append(&up_host);
@@ -49,7 +52,7 @@ impl Toolbar {
 
         let (split_toggle, split_icon, split_tooltip_label) = dynamic_icon_button(
             "view-list-symbolic",
-            "Switch to 2 panels (Ctrl+\\)",
+            &tt("Switch to 2 panels", "toggle_split"),
             &["toolbar-action-btn", "toolbar-toggle", "toolbar-icon-btn"],
         );
         bar.append(&split_toggle);
@@ -62,7 +65,7 @@ impl Toolbar {
         // ── Group 2: Layout / Workspace Surfaces ───────────────────────
         let sidebar_toggle = toggle_icon_button(
             "sidebar-show-symbolic",
-            "Sidebar (Ctrl+B)",
+            &tt("Sidebar", "toggle_sidebar"),
             &["toolbar-action-btn", "toolbar-toggle", "toolbar-icon-btn"],
         );
         sidebar_toggle.set_active(true);
@@ -70,7 +73,7 @@ impl Toolbar {
 
         let preview_toggle = toggle_icon_button(
             "document-print-preview-symbolic",
-            "Preview (Ctrl+P)",
+            &tt("Preview", "toggle_preview"),
             &["toolbar-action-btn", "toolbar-toggle", "toolbar-icon-btn"],
         );
         preview_toggle.set_active(true);
@@ -78,7 +81,7 @@ impl Toolbar {
 
         let holding_tray_toggle = toggle_icon_button(
             "mail-attachment-symbolic",
-            "Holding Tray (Ctrl+Alt+H)",
+            &tt("Holding Tray", "toggle_holding_tray"),
             &["toolbar-action-btn", "toolbar-toggle", "toolbar-icon-btn"],
         );
         holding_tray_toggle.set_active(false);
@@ -86,7 +89,7 @@ impl Toolbar {
 
         let plan_mode_toggle = toggle_icon_button(
             "document-edit-symbolic",
-            "Plan actions (Ctrl+Shift+P)",
+            &tt("Plan actions", "toggle_plan_mode"),
             &[
                 "toolbar-action-btn",
                 "toolbar-toggle",
@@ -99,7 +102,7 @@ impl Toolbar {
 
         let paint_mode_toggle = toggle_icon_button(
             "preferences-color-symbolic",
-            "Painting Mode",
+            &tt("Painting Mode", "toggle_paint_mode"),
             &[
                 "toolbar-action-btn",
                 "toolbar-toggle",
@@ -118,40 +121,43 @@ impl Toolbar {
         // ── Group 3: File Actions ──────────────────────────────────────
         let new_folder_button = action_icon_button(
             "folder-new-symbolic",
-            "New folder (Ctrl+N)",
+            &tt("New folder", "new_folder"),
             &["toolbar-action-btn", "toolbar-icon-btn"],
         );
-        let new_folder_host = super::tooltip_host(&new_folder_button, "New folder (Ctrl+N)");
+        let new_folder_host =
+            super::tooltip_host(&new_folder_button, tt("New folder", "new_folder"));
         bar.append(&new_folder_host);
 
         let new_text_document_button = action_icon_button(
             "document-new-symbolic",
-            "New text file (Ctrl+Shift+N)",
+            &tt("New text file", "new_text_document"),
             &["toolbar-action-btn", "toolbar-icon-btn"],
         );
-        let new_text_document_host =
-            super::tooltip_host(&new_text_document_button, "New text file (Ctrl+Shift+N)");
+        let new_text_document_host = super::tooltip_host(
+            &new_text_document_button,
+            tt("New text file", "new_text_document"),
+        );
         bar.append(&new_text_document_host);
 
         let rename_button = action_icon_button(
             "document-edit-symbolic",
-            "Rename (F2)",
+            &tt("Rename", "rename"),
             &["toolbar-action-btn", "toolbar-icon-btn"],
         );
-        let rename_host = super::tooltip_host(&rename_button, "Rename (F2)");
+        let rename_host = super::tooltip_host(&rename_button, tt("Rename", "rename"));
         rename_button.set_sensitive(false);
         bar.append(&rename_host);
 
         let trash_button = action_icon_button(
             "user-trash-full-symbolic",
-            "Move to Trash (Delete)",
+            &tt("Move to Trash", "trash"),
             &[
                 "toolbar-action-btn",
                 "toolbar-icon-btn",
                 "toolbar-danger-btn",
             ],
         );
-        let trash_host = super::tooltip_host(&trash_button, "Move to Trash (Delete)");
+        let trash_host = super::tooltip_host(&trash_button, tt("Move to Trash", "trash"));
         trash_button.set_sensitive(false);
         bar.append(&trash_host);
 
@@ -159,7 +165,7 @@ impl Toolbar {
         empty_trash_button.add_css_class("toolbar-action-btn");
         empty_trash_button.add_css_class("toolbar-danger-btn");
         let empty_trash_host =
-            super::tooltip_host(&empty_trash_button, "Empty Trash (Ctrl+Shift+Delete)");
+            super::tooltip_host(&empty_trash_button, tt("Empty Trash", "empty_trash"));
         empty_trash_host.set_visible(false);
         {
             let inner = Box::new(Orientation::Horizontal, 5);
@@ -188,7 +194,7 @@ impl Toolbar {
         path_button.add_css_class("toolbar-path-button");
         path_button.set_hexpand(true);
         path_button.set_halign(gtk::Align::Fill);
-        super::attach_tooltip(&path_button, "Edit path (Ctrl+L)");
+        super::attach_tooltip(&path_button, tt("Edit path", "focus_path"));
 
         let breadcrumb_row = Box::new(Orientation::Horizontal, 6);
         breadcrumb_row.add_css_class("toolbar-breadcrumbs");

@@ -1,3 +1,4 @@
+use crate::config::{shortcut_tooltip, AppConfig};
 use crate::converter::{BatchProgress, ConversionJob, ConversionJobId, ConversionJobStatus};
 use gtk::prelude::*;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, ProgressBar, Revealer};
@@ -42,7 +43,7 @@ pub struct ConvertProgressPanel {
 }
 
 impl ConvertProgressPanel {
-    pub fn build() -> Self {
+    pub fn build(config: &AppConfig) -> Self {
         let panel = GtkBox::new(Orientation::Vertical, 0);
         panel.add_css_class("convert-progress-panel");
 
@@ -87,12 +88,20 @@ impl ConvertProgressPanel {
 
         let cancel_btn = Button::with_label("Cancel");
         cancel_btn.add_css_class("convert-progress-btn");
+        crate::ui::attach_tooltip(
+            &cancel_btn,
+            shortcut_tooltip(config, "Cancel conversion", "convert_cancel"),
+        );
         footer.append(&cancel_btn);
 
         let retry_btn = Button::with_label("Retry Failed");
         retry_btn.add_css_class("convert-progress-btn");
         retry_btn.add_css_class("convert-progress-btn-retry");
         retry_btn.set_visible(false);
+        crate::ui::attach_tooltip(
+            &retry_btn,
+            shortcut_tooltip(config, "Retry failed jobs", "convert_retry_failed"),
+        );
         footer.append(&retry_btn);
 
         let spacer = Label::new(None);
@@ -102,11 +111,19 @@ impl ConvertProgressPanel {
         let open_btn = Button::with_label("Open Output");
         open_btn.add_css_class("convert-progress-btn");
         open_btn.set_visible(false);
+        crate::ui::attach_tooltip(
+            &open_btn,
+            shortcut_tooltip(config, "Open output folder", "convert_open_output"),
+        );
         footer.append(&open_btn);
 
         let dismiss_btn = Button::with_label("Dismiss");
         dismiss_btn.add_css_class("convert-progress-btn");
         dismiss_btn.set_visible(false);
+        crate::ui::attach_tooltip(
+            &dismiss_btn,
+            shortcut_tooltip(config, "Dismiss panel", "convert_dismiss"),
+        );
         footer.append(&dismiss_btn);
 
         panel.append(&footer);
@@ -411,6 +428,7 @@ impl ConvertProgressPanel {
                     let copy_btn = Button::with_label("Copy error");
                     copy_btn.add_css_class("convert-job-copy-btn");
                     copy_btn.set_halign(Align::Start);
+                    crate::ui::attach_tooltip(&copy_btn, "Copy error text");
                     let cb = Rc::clone(&cb);
                     copy_btn.connect_clicked(move |_| cb(msg.clone()));
                     error_area.append(&copy_btn);
@@ -475,12 +493,83 @@ impl ConvertProgressPanel {
         self.inner.borrow_mut().on_cancel = Some(Box::new(cb));
     }
 
+    pub fn trigger_cancel(&self) -> bool {
+        {
+            let inn = self.inner.borrow();
+            if !inn.cancel_btn.is_visible() || !inn.cancel_btn.is_sensitive() {
+                return false;
+            }
+            inn.cancel_btn.set_label("Cancelling…");
+            inn.cancel_btn.set_sensitive(false);
+        }
+        let cb = self.inner.borrow_mut().on_cancel.take();
+        let handled = if let Some(cb_ref) = cb.as_ref() {
+            cb_ref();
+            true
+        } else {
+            false
+        };
+        self.inner.borrow_mut().on_cancel = cb;
+        handled
+    }
+
     pub fn connect_retry_failed(&self, cb: impl Fn(Vec<ConversionJob>) + 'static) {
         self.inner.borrow_mut().on_retry_failed = Some(Box::new(cb));
     }
 
+    pub fn trigger_retry_failed(&self) -> bool {
+        let failed: Vec<ConversionJob> = {
+            let inn = self.inner.borrow();
+            if !inn.retry_btn.is_visible() {
+                return false;
+            }
+            inn.job_rows
+                .values()
+                .filter(|r| matches!(r.job.status, ConversionJobStatus::Failed(_)))
+                .map(|r| r.job.clone())
+                .collect()
+        };
+        self.inner.borrow().retry_btn.set_visible(false);
+        let cb = self.inner.borrow_mut().on_retry_failed.take();
+        let handled = if let Some(cb_ref) = cb.as_ref() {
+            cb_ref(failed);
+            true
+        } else {
+            false
+        };
+        self.inner.borrow_mut().on_retry_failed = cb;
+        handled
+    }
+
     pub fn connect_open_output(&self, cb: impl Fn(PathBuf) + 'static) {
         self.inner.borrow_mut().on_open_output = Some(Box::new(cb));
+    }
+
+    pub fn trigger_open_output(&self) -> bool {
+        let path = {
+            let inn = self.inner.borrow();
+            if !inn.open_btn.is_visible() {
+                return false;
+            }
+            inn.output_dir.clone()
+        };
+        let cb = self.inner.borrow_mut().on_open_output.take();
+        let handled = if let (Some(path), Some(cb_ref)) = (path, cb.as_ref()) {
+            cb_ref(path);
+            true
+        } else {
+            false
+        };
+        self.inner.borrow_mut().on_open_output = cb;
+        handled
+    }
+
+    pub fn trigger_dismiss(&self) -> bool {
+        if !self.root.reveals_child() {
+            return false;
+        }
+        self.root.set_reveal_child(false);
+        true
     }
 
     /// Set the clipboard callback used by per-job "Copy error" buttons.

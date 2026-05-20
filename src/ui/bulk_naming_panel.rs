@@ -360,6 +360,7 @@ impl BulkNamingPanel {
 
         let recursive_toggle = CheckButton::with_label("Recursive");
         recursive_toggle.add_css_class("bn-toggle");
+        crate::ui::attach_tooltip(&recursive_toggle, "Include subfolders");
         toolbar.append(&recursive_toggle);
 
         let refresh_button = Button::builder()
@@ -373,6 +374,7 @@ impl BulkNamingPanel {
         name_filter.add_css_class("bn-filter-entry");
         name_filter.set_placeholder_text(Some("contains…"));
         name_filter.set_hexpand(true);
+        crate::ui::attach_tooltip(&name_filter, "Filter by name");
         toolbar.append(&name_filter);
 
         let kind_labels: Vec<&str> = KindFilter::ALL.iter().map(|k| k.label()).collect();
@@ -380,24 +382,28 @@ impl BulkNamingPanel {
             .model(&StringList::new(&kind_labels))
             .build();
         kind_dropdown.add_css_class("bn-filter-dropdown");
+        crate::ui::attach_tooltip(&kind_dropdown, "Filter by file kind");
         toolbar.append(&kind_dropdown);
 
         let tint_dropdown = DropDown::builder()
             .model(&StringList::new(&["Any"]))
             .build();
         tint_dropdown.add_css_class("bn-filter-dropdown");
+        crate::ui::attach_tooltip(&tint_dropdown, "Filter by Tint");
         toolbar.append(&tint_dropdown);
 
         let shape_dropdown = DropDown::builder()
             .model(&StringList::new(&["Any Shape"]))
             .build();
         shape_dropdown.add_css_class("bn-filter-dropdown");
+        crate::ui::attach_tooltip(&shape_dropdown, "Filter by Shape");
         toolbar.append(&shape_dropdown);
 
         let tag_dropdown = DropDown::builder()
             .model(&StringList::new(&["Any Tag"]))
             .build();
         tag_dropdown.add_css_class("bn-filter-dropdown");
+        crate::ui::attach_tooltip(&tag_dropdown, "Filter by tag");
         toolbar.append(&tag_dropdown);
 
         root.append(&toolbar);
@@ -409,6 +415,7 @@ impl BulkNamingPanel {
         recipe_toggle.add_css_class("bn-recipe-toggle");
         recipe_toggle.set_halign(Align::Start);
         recipe_toggle.set_hexpand(true);
+        crate::ui::attach_tooltip(&recipe_toggle, "Show naming operations");
         recipe_header_box.append(&recipe_toggle);
         root.append(&recipe_header_box);
 
@@ -419,6 +426,7 @@ impl BulkNamingPanel {
         let find_entry = recipe_entry("find");
         let replace_entry = recipe_entry("replace");
         let find_btn = recipe_button("Find/Replace");
+        crate::ui::attach_tooltip(&find_btn, "Replace text in names");
         find_row.append(&find_entry);
         find_row.append(&replace_entry);
         find_row.append(&find_btn);
@@ -427,8 +435,10 @@ impl BulkNamingPanel {
         let affix_row = GtkBox::new(Orientation::Horizontal, 6);
         let prefix_entry = recipe_entry("prefix");
         let prefix_btn = recipe_button("Prefix");
+        crate::ui::attach_tooltip(&prefix_btn, "Add prefix");
         let suffix_entry = recipe_entry("suffix");
         let suffix_btn = recipe_button("Suffix");
+        crate::ui::attach_tooltip(&suffix_btn, "Add suffix");
         affix_row.append(&prefix_entry);
         affix_row.append(&prefix_btn);
         affix_row.append(&suffix_entry);
@@ -438,8 +448,11 @@ impl BulkNamingPanel {
         let ops_row = GtkBox::new(Orientation::Horizontal, 4);
         ops_row.add_css_class("bn-ops-row");
         let number_btn = ops_chip("Number");
+        crate::ui::attach_tooltip(&number_btn, "Number visible rows");
         let case_btn = ops_chip("Clean Case");
+        crate::ui::attach_tooltip(&case_btn, "Clean name casing");
         let clear_btn = ops_chip("Clear Changes");
+        crate::ui::attach_tooltip(&clear_btn, "Clear pending edits");
         ops_row.append(&number_btn);
         ops_row.append(&case_btn);
         ops_row.append(&clear_btn);
@@ -486,6 +499,7 @@ impl BulkNamingPanel {
         let apply_button = Button::with_label("Apply Renames");
         apply_button.add_css_class("bn-apply-button");
         apply_button.set_sensitive(false);
+        crate::ui::attach_tooltip(&apply_button, "Apply pending renames");
         footer.append(&apply_button);
         root.append(&footer);
 

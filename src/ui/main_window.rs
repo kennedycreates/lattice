@@ -1,11 +1,11 @@
 use crate::action_plan::ActionPlan as FileOpPlan;
-use crate::config::{AppConfig, CustomActionConfig};
+use crate::config::{shortcut_tooltip, AppConfig, CustomActionConfig};
 use crate::converter::{
     cleanup_orphaned_temps_in, ConversionQueue, ConvertItem, ConvertSettings, MediaKind,
 };
 use crate::metadata::{
-    ActivityLogEntry, CloudRecord, MetadataStore, PlaceRecord, ProjectRecord, Shape, TagRecord,
-    TintRecord,
+    ActivityLogEntry, CloudRecord, FolderViewState, MetadataStore, PlaceRecord, ProjectRecord,
+    Shape, TagRecord, TintRecord,
 };
 use crate::ui::{
     activity_log_panel::{ActivityLogAction, ActivityLogPanel},
@@ -15,13 +15,14 @@ use crate::ui::{
     convert_progress_panel::ConvertProgressPanel,
     file_grid::{FileGrid, FileItem, FileKind, ViewMode},
     holding_tray::HoldingTray,
-    media_convert_panel::MediaConvertPanel,
+    media_convert_panel::{ConvertSourceMode, MediaConvertPanel},
     modal_host::{
         build_modal_actions, build_modal_button, build_modal_prompt, ButtonKind, ModalHost,
     },
     ops_panel::{OpId, OpsPanel},
     painting_toolbar::{PaintTool, PaintingToolbar},
     palette_board_panel::PaletteBoardPanel,
+    picker::{show_picker_modal, PickerConfig, PickerResult},
     plan_queue_panel::{PlanQueuePanel, QueueAction},
     preview_pane::PreviewPane,
     project_landing_panel::ProjectLandingPanel,
@@ -263,6 +264,8 @@ enum WindowCommand {
     FocusPath,
     Refresh,
     ToggleHidden,
+    ToggleShapeBadges,
+    SortOrder,
     ToggleSidebar,
     TogglePreview,
     ToggleHoldingTray,
@@ -283,6 +286,17 @@ enum WindowCommand {
     GoUp,
     CyclePane,
     Escape,
+    OpenHome,
+    OpenSystemDrives,
+    OpenRecent,
+    OpenTrash,
+    OpenPalettes,
+    OpenTintsTags,
+    OpenSpaceViewer,
+    OpenTriage,
+    OpenBulkNaming,
+    OpenConvert,
+    OpenActivityLog,
     SetViewIcons,
     SetViewList,
     TogglePlanMode,
@@ -293,7 +307,19 @@ enum WindowCommand {
     PaintFill,
     PaintUndo,
     PaintRedo,
+    PaintToggleContents,
     EmptyTrash,
+    TrayAddByTint,
+    TrayAddByShape,
+    TrayApplyMark,
+    TrayResetMark,
+    PlanExecute,
+    PlanClear,
+    ConvertStart,
+    ConvertCancel,
+    ConvertRetryFailed,
+    ConvertOpenOutput,
+    ConvertDismiss,
     CustomAction(String),
 }
 
@@ -408,6 +434,21 @@ impl TabState {
         let secondary_view = PaneView::Directory(path.clone());
         let tertiary_view = PaneView::Directory(path.clone());
         let title = tab_title_for_view(&primary_view, &path);
+        let vs = crate::view_state::ViewState::load();
+        let vm = match vs.view_mode.as_str() {
+            "list" => ViewMode::List,
+            _ => ViewMode::Icons,
+        };
+        let sf = match vs.sort_field.as_str() {
+            "modified" => SortField::Modified,
+            "size" => SortField::Size,
+            "kind" => SortField::Kind,
+            _ => SortField::Name,
+        };
+        let sd = match vs.sort_direction.as_str() {
+            "descending" => SortDirection::Descending,
+            _ => SortDirection::Ascending,
+        };
         Self {
             title,
             primary_dir: path.clone(),
@@ -424,21 +465,21 @@ impl TabState {
             tertiary_view,
             pane_layout: PaneLayout::Single,
             active_pane: PaneSlot::Primary,
-            primary_view_mode: ViewMode::Icons,
-            secondary_view_mode: ViewMode::Icons,
-            tertiary_view_mode: ViewMode::Icons,
-            primary_show_hidden: false,
-            secondary_show_hidden: false,
-            tertiary_show_hidden: false,
-            primary_show_shape_badges: true,
-            secondary_show_shape_badges: true,
-            tertiary_show_shape_badges: true,
-            primary_sort_field: SortField::Name,
-            primary_sort_direction: SortDirection::Ascending,
-            secondary_sort_field: SortField::Name,
-            secondary_sort_direction: SortDirection::Ascending,
-            tertiary_sort_field: SortField::Name,
-            tertiary_sort_direction: SortDirection::Ascending,
+            primary_view_mode: vm,
+            secondary_view_mode: vm,
+            tertiary_view_mode: vm,
+            primary_show_hidden: vs.show_hidden,
+            secondary_show_hidden: vs.show_hidden,
+            tertiary_show_hidden: vs.show_hidden,
+            primary_show_shape_badges: vs.show_shape_badges,
+            secondary_show_shape_badges: vs.show_shape_badges,
+            tertiary_show_shape_badges: vs.show_shape_badges,
+            primary_sort_field: sf,
+            primary_sort_direction: sd,
+            secondary_sort_field: sf,
+            secondary_sort_direction: sd,
+            tertiary_sort_field: sf,
+            tertiary_sort_direction: sd,
         }
     }
 
@@ -459,6 +500,23 @@ impl TabState {
         let secondary_view = PaneView::Directory(secondary_dir.clone());
         let tertiary_view = PaneView::Directory(tertiary_dir.clone());
         let title = tab_title_for_view(&primary_view, &primary_dir);
+        let vs = crate::view_state::ViewState::load();
+        let dflt_view_mode = match vs.view_mode.as_str() {
+            "list" => ViewMode::List,
+            _ => ViewMode::Icons,
+        };
+        let dflt_sort_field = match vs.sort_field.as_str() {
+            "modified" => SortField::Modified,
+            "size" => SortField::Size,
+            "kind" => SortField::Kind,
+            _ => SortField::Name,
+        };
+        let dflt_sort_dir = match vs.sort_direction.as_str() {
+            "descending" => SortDirection::Descending,
+            _ => SortDirection::Ascending,
+        };
+        let dflt_show_hidden = vs.show_hidden;
+        let dflt_show_shape_badges = vs.show_shape_badges;
         (
             Self {
                 title,
@@ -476,21 +534,21 @@ impl TabState {
                 tertiary_view,
                 pane_layout,
                 active_pane: PaneSlot::Primary,
-                primary_view_mode: ViewMode::Icons,
-                secondary_view_mode: ViewMode::Icons,
-                tertiary_view_mode: ViewMode::Icons,
-                primary_show_hidden: false,
-                secondary_show_hidden: false,
-                tertiary_show_hidden: false,
-                primary_show_shape_badges: true,
-                secondary_show_shape_badges: true,
-                tertiary_show_shape_badges: true,
-                primary_sort_field: SortField::Name,
-                primary_sort_direction: SortDirection::Ascending,
-                secondary_sort_field: SortField::Name,
-                secondary_sort_direction: SortDirection::Ascending,
-                tertiary_sort_field: SortField::Name,
-                tertiary_sort_direction: SortDirection::Ascending,
+                primary_view_mode: dflt_view_mode,
+                secondary_view_mode: dflt_view_mode,
+                tertiary_view_mode: dflt_view_mode,
+                primary_show_hidden: dflt_show_hidden,
+                secondary_show_hidden: dflt_show_hidden,
+                tertiary_show_hidden: dflt_show_hidden,
+                primary_show_shape_badges: dflt_show_shape_badges,
+                secondary_show_shape_badges: dflt_show_shape_badges,
+                tertiary_show_shape_badges: dflt_show_shape_badges,
+                primary_sort_field: dflt_sort_field,
+                primary_sort_direction: dflt_sort_dir,
+                secondary_sort_field: dflt_sort_field,
+                secondary_sort_direction: dflt_sort_dir,
+                tertiary_sort_field: dflt_sort_field,
+                tertiary_sort_direction: dflt_sort_dir,
             },
             notice,
         )
@@ -530,7 +588,8 @@ struct PaneWidgets {
 }
 
 impl PaneWidgets {
-    fn build(slot: PaneSlot) -> Self {
+    fn build(slot: PaneSlot, config: &AppConfig) -> Self {
+        let tt = |label: &str, action: &str| shortcut_tooltip(config, label, action);
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("browser-pane");
         match slot {
@@ -559,7 +618,7 @@ impl PaneWidgets {
         filter_toggle_btn.add_css_class("pane-view-btn");
         filter_toggle_btn.add_css_class("pane-filter-btn");
         filter_toggle_btn.set_valign(Align::Center);
-        crate::ui::attach_tooltip(&filter_toggle_btn, "Tag filter (Ctrl+G)");
+        crate::ui::attach_tooltip(&filter_toggle_btn, tt("Tag filter", "filter_tags"));
         header.append(&filter_toggle_btn);
 
         let hidden_toggle_icon = gtk::Image::from_icon_name("view-reveal-symbolic");
@@ -568,7 +627,7 @@ impl PaneWidgets {
         hidden_toggle_btn.add_css_class("pane-view-btn");
         hidden_toggle_btn.add_css_class("pane-hidden-btn");
         hidden_toggle_btn.set_valign(Align::Center);
-        crate::ui::attach_tooltip(&hidden_toggle_btn, "Hidden files (Ctrl+H)");
+        crate::ui::attach_tooltip(&hidden_toggle_btn, tt("Hidden files", "show_hidden"));
         header.append(&hidden_toggle_btn);
 
         let shape_badge_toggle_icon = gtk::Image::from_icon_name("emblem-default-symbolic");
@@ -577,7 +636,10 @@ impl PaneWidgets {
         shape_badge_toggle_btn.add_css_class("pane-view-btn");
         shape_badge_toggle_btn.add_css_class("pane-shape-badge-btn");
         shape_badge_toggle_btn.set_valign(Align::Center);
-        crate::ui::attach_tooltip(&shape_badge_toggle_btn, "Shape badges");
+        crate::ui::attach_tooltip(
+            &shape_badge_toggle_btn,
+            tt("Shape badges", "toggle_shape_badges"),
+        );
         header.append(&shape_badge_toggle_btn);
 
         let sort_icon = gtk::Image::from_icon_name("view-sort-ascending-symbolic");
@@ -585,7 +647,7 @@ impl PaneWidgets {
         sort_btn.set_child(Some(&sort_icon));
         sort_btn.add_css_class("pane-view-btn");
         sort_btn.set_valign(Align::Center);
-        crate::ui::attach_tooltip(&sort_btn, "Sort order");
+        crate::ui::attach_tooltip(&sort_btn, tt("Sort order", "sort_order"));
         header.append(&sort_btn);
 
         let view_mode_icon = gtk::Image::from_icon_name("view-grid-symbolic");
@@ -593,7 +655,16 @@ impl PaneWidgets {
         view_mode_btn.set_child(Some(&view_mode_icon));
         view_mode_btn.add_css_class("pane-view-btn");
         view_mode_btn.set_valign(Align::Center);
-        crate::ui::attach_tooltip(&view_mode_btn, "Toggle icon/list view (Ctrl+1/Ctrl+2)");
+        let view_tt = match (
+            crate::config::configured_shortcut(config, "view_icons"),
+            crate::config::configured_shortcut(config, "view_list"),
+        ) {
+            (Some(icons), Some(list)) => format!("Icon/list view ({icons}/{list})"),
+            (Some(icons), None) => format!("Icon/list view ({icons})"),
+            (None, Some(list)) => format!("Icon/list view ({list})"),
+            (None, None) => "Icon/list view".to_string(),
+        };
+        crate::ui::attach_tooltip(&view_mode_btn, view_tt);
         header.append(&view_mode_btn);
 
         let view_strip = GtkBox::new(Orientation::Vertical, 8);
@@ -653,7 +724,7 @@ impl PaneWidgets {
         let tag_manager_panel = TintsTagsPanel::build();
         let bulk_naming_panel = BulkNamingPanel::build();
         let space_viewer_panel = SpaceViewerPanel::build();
-        let media_convert_panel = MediaConvertPanel::build();
+        let media_convert_panel = MediaConvertPanel::build(config);
 
         root.append(&header);
         root.append(&tag_filter_revealer);
@@ -722,19 +793,19 @@ impl MainWindow {
         window.set_titlebar(Some(&build_titlebar(&window)));
 
         let places = Places::discover();
-        let toolbar = Toolbar::build();
-        let sidebar = Sidebar::build();
-        let tab_strip = TabStrip::build();
-        let primary_pane = PaneWidgets::build(PaneSlot::Primary);
-        let secondary_pane = PaneWidgets::build(PaneSlot::Secondary);
-        let tertiary_pane = PaneWidgets::build(PaneSlot::Tertiary);
+        let toolbar = Toolbar::build(&config);
+        let sidebar = Sidebar::build(&config);
+        let tab_strip = TabStrip::build(&config);
+        let primary_pane = PaneWidgets::build(PaneSlot::Primary, &config);
+        let secondary_pane = PaneWidgets::build(PaneSlot::Secondary, &config);
+        let tertiary_pane = PaneWidgets::build(PaneSlot::Tertiary, &config);
         let preview = PreviewPane::build();
-        let holding_tray = HoldingTray::build();
-        let plan_queue_panel = PlanQueuePanel::build();
+        let holding_tray = HoldingTray::build(&config);
+        let plan_queue_panel = PlanQueuePanel::build(&config);
         let ops_panel = OpsPanel::build();
-        let convert_progress = ConvertProgressPanel::build();
+        let convert_progress = ConvertProgressPanel::build(&config);
         let status = StatusBar::build();
-        let painting_toolbar = PaintingToolbar::build();
+        let painting_toolbar = PaintingToolbar::build(&config);
 
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.append(&toolbar.root);
@@ -1072,6 +1143,21 @@ impl BrowserController {
         });
         let metadata = metadata.expect("Lattice could not initialize metadata storage.");
         let (initial_tab, launch_notice) = TabState::for_launch(launch, &places, &metadata);
+        let vs = crate::view_state::ViewState::load();
+        let dflt_view_mode = match vs.view_mode.as_str() {
+            "list" => ViewMode::List,
+            _ => ViewMode::Icons,
+        };
+        let dflt_sort_field = match vs.sort_field.as_str() {
+            "modified" => SortField::Modified,
+            "size" => SortField::Size,
+            "kind" => SortField::Kind,
+            _ => SortField::Name,
+        };
+        let dflt_sort_dir = match vs.sort_direction.as_str() {
+            "descending" => SortDirection::Descending,
+            _ => SortDirection::Ascending,
+        };
         let default_tint = metadata
             .list_tints()
             .unwrap_or_default()
@@ -1131,25 +1217,25 @@ impl BrowserController {
             secondary_pending_reveal_path: RefCell::new(None),
             tertiary_pending_reveal_path: RefCell::new(None),
             pending_status_message: RefCell::new(launch_notice),
-            primary_show_hidden: Cell::new(false),
-            secondary_show_hidden: Cell::new(false),
-            tertiary_show_hidden: Cell::new(false),
-            primary_show_shape_badges: Cell::new(true),
-            secondary_show_shape_badges: Cell::new(true),
-            tertiary_show_shape_badges: Cell::new(true),
-            sidebar_visible: Cell::new(true),
-            preview_visible: Cell::new(true),
+            primary_show_hidden: Cell::new(vs.show_hidden),
+            secondary_show_hidden: Cell::new(vs.show_hidden),
+            tertiary_show_hidden: Cell::new(vs.show_hidden),
+            primary_show_shape_badges: Cell::new(vs.show_shape_badges),
+            secondary_show_shape_badges: Cell::new(vs.show_shape_badges),
+            tertiary_show_shape_badges: Cell::new(vs.show_shape_badges),
+            sidebar_visible: Cell::new(vs.sidebar_visible),
+            preview_visible: Cell::new(vs.preview_visible),
             suppress_panel_toggle_handlers: Cell::new(false),
             pane_layout: Cell::new(PaneLayout::Single),
-            primary_view_mode: Cell::new(ViewMode::Icons),
-            secondary_view_mode: Cell::new(ViewMode::Icons),
-            tertiary_view_mode: Cell::new(ViewMode::Icons),
-            primary_sort_field: Cell::new(SortField::Name),
-            primary_sort_direction: Cell::new(SortDirection::Ascending),
-            secondary_sort_field: Cell::new(SortField::Name),
-            secondary_sort_direction: Cell::new(SortDirection::Ascending),
-            tertiary_sort_field: Cell::new(SortField::Name),
-            tertiary_sort_direction: Cell::new(SortDirection::Ascending),
+            primary_view_mode: Cell::new(dflt_view_mode),
+            secondary_view_mode: Cell::new(dflt_view_mode),
+            tertiary_view_mode: Cell::new(dflt_view_mode),
+            primary_sort_field: Cell::new(dflt_sort_field),
+            primary_sort_direction: Cell::new(dflt_sort_dir),
+            secondary_sort_field: Cell::new(dflt_sort_field),
+            secondary_sort_direction: Cell::new(dflt_sort_dir),
+            tertiary_sort_field: Cell::new(dflt_sort_field),
+            tertiary_sort_direction: Cell::new(dflt_sort_dir),
             load_generation: Cell::new(0),
             load_cancellable: RefCell::new(None),
             secondary_load_generation: Cell::new(0),
@@ -1735,7 +1821,7 @@ impl BrowserController {
         let controller = Rc::clone(self);
         self.sidebar
             .cloud_add_button
-            .connect_clicked(move |_| controller.show_add_cloud_dialog());
+            .connect_clicked(move |_| controller.show_add_cloud_dialog(None));
         let controller = Rc::clone(self);
         self.sidebar
             .rclone_setup_button
@@ -1744,21 +1830,46 @@ impl BrowserController {
 
     fn open_convert_from_sidebar(self: &Rc<Self>) {
         let slot = self.active_slot();
-        // Use currently selected files if there are media files among them;
-        // otherwise pass the full item list for the current directory so the
-        // panel can show the "No media files selected." empty state with
-        // a clear prompt.
-        let selected = self.selected_items_for(slot);
-        let has_media = selected
-            .iter()
-            .any(|i| matches!(i.kind, FileKind::Image | FileKind::Video | FileKind::Audio));
-        let items = if has_media {
-            selected
-        } else {
-            // Pass an empty vec — panel will show the empty state message
-            Vec::new()
-        };
+        let items = self.resolve_convert_source_items(slot);
         self.open_media_convert_with_items(slot, items);
+    }
+
+    fn resolve_convert_source_items(self: &Rc<Self>, slot: PaneSlot) -> Vec<FileItem> {
+        let mode = self.pane_widgets(slot).media_convert_panel.source_mode();
+        let tray = self.holding_tray_items.borrow().clone();
+        let sel = self.selected_items_for(slot);
+        match mode {
+            ConvertSourceMode::Auto => {
+                if !tray.is_empty() {
+                    tray
+                } else {
+                    sel
+                }
+            }
+            ConvertSourceMode::Tray => tray,
+            ConvertSourceMode::Selection => sel,
+        }
+    }
+
+    fn reload_convert_items(self: &Rc<Self>, slot: PaneSlot) {
+        let items = self.resolve_convert_source_items(slot);
+        let convert_items: Vec<crate::converter::ConvertItem> = items
+            .into_iter()
+            .filter(|i| matches!(i.kind, FileKind::Image | FileKind::Video | FileKind::Audio))
+            .map(|i| crate::converter::ConvertItem {
+                path: i.path.clone(),
+                kind: match i.kind {
+                    FileKind::Image => crate::converter::MediaKind::Image,
+                    FileKind::Audio => crate::converter::MediaKind::Audio,
+                    _ => crate::converter::MediaKind::Video,
+                },
+            })
+            .collect();
+        self.pane_widgets(slot).media_convert_panel.set_items(
+            convert_items,
+            &self.conversion_queue.tools,
+            None,
+        );
     }
 
     fn open_space_viewer(self: &Rc<Self>) {
@@ -1767,7 +1878,7 @@ impl BrowserController {
             return;
         }
         self.save_dir_to_history_if_in_directory(slot);
-        let dir = self.current_dir_for(slot).to_path_buf();
+        let dir = self.tool_scope_dir_for(slot);
         self.current_view_cell(slot)
             .replace(PaneView::SpaceViewer { root: dir });
         self.sync_active_tab_state();
@@ -1785,7 +1896,10 @@ impl BrowserController {
         self.dismiss_context_menu();
 
         let pane = self.pane_widgets(slot);
-        let dir = self.current_dir_for(slot).to_path_buf();
+        let dir = match self.current_view_for(slot) {
+            PaneView::SpaceViewer { root } => root,
+            _ => self.tool_scope_dir_for(slot),
+        };
         let display_label = self.display_label_for(slot);
         pane.path_label.set_label(&display_label);
         pane.file_grid.clear_selection();
@@ -2460,6 +2574,18 @@ impl BrowserController {
             .populate(&entries, move |action, entry| {
                 controller.handle_activity_log_action(action, entry);
             });
+
+        pane.activity_log_panel.connect_cleanup({
+            let controller = Rc::clone(self);
+            move |cutoff_ms| {
+                controller
+                    .metadata
+                    .borrow()
+                    .delete_activity_before(cutoff_ms);
+                controller.load_activity_log_view(slot);
+            }
+        });
+
         self.update_view_strip(slot);
 
         if slot == self.active_slot() {
@@ -2518,7 +2644,7 @@ impl BrowserController {
 
         let controller = Rc::clone(self);
         let on_pin_folder = move || {
-            controller.show_pin_folder_dialog(project_id, slot);
+            controller.show_pin_folder_dialog(project_id, slot, None, None);
         };
 
         pane.project_landing_panel.populate(
@@ -2676,19 +2802,27 @@ impl BrowserController {
     }
 
     fn show_add_file_card_dialog(self: &Rc<Self>, slot: PaneSlot, palette_id: i64) {
-        let initial = self.current_dir_for(slot).to_string_lossy().to_string();
+        let initial_dir = self.current_dir_for(slot);
+        let places = self.user_places.borrow().clone();
+        let cloud_locs = self.cloud_locations.borrow().clone();
+        let recent = self
+            .metadata
+            .borrow()
+            .list_recent_locations(8)
+            .unwrap_or_default();
         let controller = Rc::clone(self);
-        self.modal_host.show_input(
-            "Add File Card",
-            "Enter the path of the file to add:",
-            &initial,
-            "Add",
-            move |path_str| {
-                let path_str = path_str.trim().to_string();
-                if path_str.is_empty() {
+        show_picker_modal(
+            &self.modal_host,
+            PickerConfig::open_file(initial_dir),
+            &places,
+            &cloud_locs,
+            &recent,
+            move |result| {
+                let PickerResult::Single(path) = result else {
                     return;
-                }
-                let name = std::path::Path::new(&path_str)
+                };
+                let path_str = path.to_string_lossy().to_string();
+                let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| path_str.clone());
@@ -2718,23 +2852,32 @@ impl BrowserController {
                         .add_card(item);
                 }
             },
+            || {},
         );
     }
 
     fn show_add_folder_card_dialog(self: &Rc<Self>, slot: PaneSlot, palette_id: i64) {
-        let initial = self.current_dir_for(slot).to_string_lossy().to_string();
+        let initial_dir = self.current_dir_for(slot);
+        let places = self.user_places.borrow().clone();
+        let cloud_locs = self.cloud_locations.borrow().clone();
+        let recent = self
+            .metadata
+            .borrow()
+            .list_recent_locations(8)
+            .unwrap_or_default();
         let controller = Rc::clone(self);
-        self.modal_host.show_input(
-            "Add Folder Card",
-            "Enter the path of the folder to add:",
-            &initial,
-            "Add",
-            move |path_str| {
-                let path_str = path_str.trim().to_string();
-                if path_str.is_empty() {
+        show_picker_modal(
+            &self.modal_host,
+            PickerConfig::open_folder(initial_dir),
+            &places,
+            &cloud_locs,
+            &recent,
+            move |result| {
+                let PickerResult::Single(path) = result else {
                     return;
-                }
-                let name = std::path::Path::new(&path_str)
+                };
+                let path_str = path.to_string_lossy().to_string();
+                let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| path_str.clone());
@@ -2764,6 +2907,7 @@ impl BrowserController {
                         .add_card(item);
                 }
             },
+            || {},
         );
     }
 
@@ -2793,40 +2937,132 @@ impl BrowserController {
         }
     }
 
-    fn show_pin_folder_dialog(self: &Rc<Self>, project_id: i64, slot: PaneSlot) {
+    fn show_pin_folder_dialog(
+        self: &Rc<Self>,
+        project_id: i64,
+        slot: PaneSlot,
+        prefill_name: Option<String>,
+        prefill_path: Option<PathBuf>,
+    ) {
         let content = GtkBox::new(Orientation::Vertical, 12);
         content.append(&build_modal_prompt(
-            "Enter a name and absolute path for the folder to pin.",
+            "Enter a name and choose the folder to pin.",
         ));
 
         let name_entry = Entry::new();
         name_entry.set_placeholder_text(Some("Display name (e.g. Inbox)"));
+        if let Some(ref n) = prefill_name {
+            name_entry.set_text(n);
+        }
         content.append(&name_entry);
 
-        let path_entry = Entry::new();
-        path_entry.set_placeholder_text(Some("Absolute path (e.g. /home/user/projects/inbox)"));
-        content.append(&path_entry);
+        // Path row: read-only display + Browse button
+        let path_display = Entry::new();
+        path_display.set_editable(false);
+        path_display.add_css_class("picker-chosen-path-display");
+        path_display.set_hexpand(true);
+        if let Some(ref p) = prefill_path {
+            path_display.set_text(&p.to_string_lossy());
+        } else {
+            path_display.set_placeholder_text(Some("No folder chosen"));
+        }
+
+        let chosen_path: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(prefill_path.clone()));
+
+        let browse_btn = build_modal_button("Browse…", ButtonKind::Secondary, || {});
+        browse_btn.connect_clicked({
+            let controller = Rc::clone(self);
+            let name_entry = name_entry.clone();
+            let chosen_path = Rc::clone(&chosen_path);
+            move |_| {
+                let current_name = name_entry.text().to_string();
+                let prev_path = chosen_path.borrow().clone();
+                let places = controller.user_places.borrow().clone();
+                let cloud_locs = controller.cloud_locations.borrow().clone();
+                let recent = controller
+                    .metadata
+                    .borrow()
+                    .list_recent_locations(8)
+                    .unwrap_or_default();
+                let ctrl = Rc::clone(&controller);
+                let ctrl2 = Rc::clone(&controller);
+                let nm = current_name.clone();
+                show_picker_modal(
+                    &controller.modal_host,
+                    PickerConfig::open_folder(glib::home_dir()),
+                    &places,
+                    &cloud_locs,
+                    &recent,
+                    move |result| {
+                        let PickerResult::Single(path) = result else {
+                            return;
+                        };
+                        ctrl.show_pin_folder_dialog(
+                            project_id,
+                            slot,
+                            Some(current_name.clone()),
+                            Some(path),
+                        );
+                    },
+                    move || {
+                        ctrl2.show_pin_folder_dialog(
+                            project_id,
+                            slot,
+                            Some(nm.clone()),
+                            prev_path.clone(),
+                        );
+                    },
+                );
+            }
+        });
+
+        let path_row = GtkBox::new(Orientation::Horizontal, 6);
+        path_row.set_hexpand(true);
+        path_row.append(&path_display);
+        path_row.append(&browse_btn);
+        content.append(&path_row);
 
         let actions = build_modal_actions();
         let host = self.modal_host.clone();
         let cancel_btn = build_modal_button("Cancel", ButtonKind::Secondary, move || host.hide());
         actions.append(&cancel_btn);
 
-        let host = self.modal_host.clone();
-        let controller = Rc::clone(self);
-        let add_btn = build_modal_button("Pin", ButtonKind::Primary, move || {
-            let name = name_entry.text().trim().to_string();
-            let path = path_entry.text().trim().to_string();
-            if !name.is_empty() && !path.is_empty() {
-                let _ = controller
-                    .metadata
-                    .borrow_mut()
-                    .add_project_destination(project_id, &name, &path);
-                controller.load_project_landing_view(slot, project_id);
+        let pin_btn = build_modal_button("Pin", ButtonKind::Primary, || {});
+        let has_name = prefill_name
+            .as_ref()
+            .map(|n| !n.trim().is_empty())
+            .unwrap_or(false);
+        pin_btn.set_sensitive(has_name && prefill_path.is_some());
+
+        // Update sensitivity as name changes
+        {
+            let pin_btn = pin_btn.clone();
+            let chosen = Rc::clone(&chosen_path);
+            name_entry.connect_changed(move |e| {
+                pin_btn.set_sensitive(!e.text().trim().is_empty() && chosen.borrow().is_some());
+            });
+        }
+
+        pin_btn.connect_clicked({
+            let host = self.modal_host.clone();
+            let controller = Rc::clone(self);
+            let name_entry = name_entry.clone();
+            let chosen = Rc::clone(&chosen_path);
+            move |_| {
+                let name = name_entry.text().trim().to_string();
+                let path = chosen.borrow().clone();
+                if let (false, Some(p)) = (name.is_empty(), path) {
+                    let path_str = p.to_string_lossy().to_string();
+                    let _ = controller
+                        .metadata
+                        .borrow_mut()
+                        .add_project_destination(project_id, &name, &path_str);
+                    controller.load_project_landing_view(slot, project_id);
+                }
+                host.hide();
             }
-            host.hide();
         });
-        actions.append(&add_btn);
+        actions.append(&pin_btn);
 
         self.modal_host
             .show_with_custom_ui("Pin Folder", &content, &actions, false, None);
@@ -3109,6 +3345,21 @@ impl BrowserController {
                 controller.sort_field_cell(slot).set(new_field);
                 controller.sort_direction_cell(slot).set(new_dir);
                 controller.apply_sort(slot);
+                let mut vs = crate::view_state::ViewState::load();
+                vs.sort_field = match new_field {
+                    SortField::Modified => "modified",
+                    SortField::Size => "size",
+                    SortField::Kind => "kind",
+                    _ => "name",
+                }
+                .to_string();
+                vs.sort_direction = match new_dir {
+                    SortDirection::Descending => "descending",
+                    _ => "ascending",
+                }
+                .to_string();
+                vs.save();
+                controller.save_folder_view_state_for(slot);
             });
         }
 
@@ -3127,6 +3378,22 @@ impl BrowserController {
             append_menu_button(&menu_box, label, icon, false, move || {
                 controller.sort_direction_cell(slot).set(dir);
                 controller.apply_sort(slot);
+                let field = controller.sort_field_cell(slot).get();
+                let mut vs = crate::view_state::ViewState::load();
+                vs.sort_field = match field {
+                    SortField::Modified => "modified",
+                    SortField::Size => "size",
+                    SortField::Kind => "kind",
+                    _ => "name",
+                }
+                .to_string();
+                vs.sort_direction = match dir {
+                    SortDirection::Descending => "descending",
+                    _ => "ascending",
+                }
+                .to_string();
+                vs.save();
+                controller.save_folder_view_state_for(slot);
             });
         }
 
@@ -3588,7 +3855,7 @@ impl BrowserController {
 
         let controller = Rc::clone(self);
         let on_edit = move || {
-            controller.show_edit_cloud_dialog(cloud_id);
+            controller.show_edit_cloud_dialog(cloud_id, None);
         };
 
         let controller = Rc::clone(self);
@@ -3652,31 +3919,69 @@ impl BrowserController {
         }
     }
 
-    fn show_add_cloud_dialog(self: &Rc<Self>) {
+    fn show_add_cloud_dialog(self: &Rc<Self>, prefill_path: Option<String>) {
+        let path_str = prefill_path.unwrap_or_default();
         let controller = Rc::clone(self);
-        self.show_cloud_form_dialog(None, None, move |name, path, kind, notes, remote_name| {
-            let result = controller.metadata.borrow_mut().create_cloud_location(
-                &name,
-                &path,
-                &kind,
-                remote_name.as_deref(),
-                notes.as_deref(),
-            );
-            match result {
-                Ok(record) => {
-                    controller.refresh_metadata_sidebar();
-                    controller.open_cloud(record.id);
+        let on_browse: Rc<dyn Fn()> = {
+            let ctrl = Rc::clone(self);
+            Rc::new(move || {
+                let places = ctrl.user_places.borrow().clone();
+                let cloud_locs = ctrl.cloud_locations.borrow().clone();
+                let recent = ctrl
+                    .metadata
+                    .borrow()
+                    .list_recent_locations(8)
+                    .unwrap_or_default();
+                let ctrl2 = Rc::clone(&ctrl);
+                show_picker_modal(
+                    &ctrl.modal_host,
+                    PickerConfig::open_folder(glib::home_dir()),
+                    &places,
+                    &cloud_locs,
+                    &recent,
+                    move |result| {
+                        let PickerResult::Single(path) = result else {
+                            return;
+                        };
+                        ctrl2.show_add_cloud_dialog(Some(path.to_string_lossy().to_string()));
+                    },
+                    || {},
+                );
+            })
+        };
+        let prefill = if path_str.is_empty() {
+            None
+        } else {
+            Some(("", path_str.as_str(), "manual", None::<&str>))
+        };
+        self.show_cloud_form_dialog(
+            None,
+            prefill,
+            move |name, path, kind, notes, remote_name| {
+                let result = controller.metadata.borrow_mut().create_cloud_location(
+                    &name,
+                    &path,
+                    &kind,
+                    remote_name.as_deref(),
+                    notes.as_deref(),
+                );
+                match result {
+                    Ok(record) => {
+                        controller.refresh_metadata_sidebar();
+                        controller.open_cloud(record.id);
+                    }
+                    Err(err) => {
+                        controller
+                            .status
+                            .set_message(&format!("Failed to add cloud location: {err}"));
+                    }
                 }
-                Err(err) => {
-                    controller
-                        .status
-                        .set_message(&format!("Failed to add cloud location: {err}"));
-                }
-            }
-        });
+            },
+            Some(on_browse),
+        );
     }
 
-    fn show_edit_cloud_dialog(self: &Rc<Self>, cloud_id: i64) {
+    fn show_edit_cloud_dialog(self: &Rc<Self>, cloud_id: i64, prefill_path: Option<String>) {
         let Some(record) = self
             .cloud_locations
             .borrow()
@@ -3686,33 +3991,70 @@ impl BrowserController {
         else {
             return;
         };
+        let on_browse: Rc<dyn Fn()> = {
+            let ctrl = Rc::clone(self);
+            Rc::new(move || {
+                let places = ctrl.user_places.borrow().clone();
+                let cloud_locs = ctrl.cloud_locations.borrow().clone();
+                let recent = ctrl
+                    .metadata
+                    .borrow()
+                    .list_recent_locations(8)
+                    .unwrap_or_default();
+                let ctrl2 = Rc::clone(&ctrl);
+                show_picker_modal(
+                    &ctrl.modal_host,
+                    PickerConfig::open_folder(glib::home_dir()),
+                    &places,
+                    &cloud_locs,
+                    &recent,
+                    move |result| {
+                        let PickerResult::Single(path) = result else {
+                            return;
+                        };
+                        ctrl2.show_edit_cloud_dialog(
+                            cloud_id,
+                            Some(path.to_string_lossy().to_string()),
+                        );
+                    },
+                    || {},
+                );
+            })
+        };
+        // prefill overrides just the path field when Browse was used
+        let prefill_path_str = prefill_path.unwrap_or_else(|| record.path.clone());
         let controller = Rc::clone(self);
-        self.show_cloud_form_dialog(Some(&record), None, move |name, path, kind, notes, remote_name| {
-            let result = controller.metadata.borrow_mut().update_cloud_location(
-                cloud_id,
-                &name,
-                &path,
-                &kind,
-                remote_name.as_deref(),
-                notes.as_deref(),
-            );
-            match result {
-                Ok(()) => {
-                    controller.refresh_metadata_sidebar();
-                    for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
-                        if matches!(controller.current_view_for(slot), PaneView::CloudLanding(id) if id == cloud_id)
-                        {
-                            controller.load_cloud_landing_view(slot, cloud_id);
+        self.show_cloud_form_dialog(
+            Some(&record),
+            Some(("", prefill_path_str.as_str(), "", None::<&str>)),
+            move |name, path, kind, notes, remote_name| {
+                let result = controller.metadata.borrow_mut().update_cloud_location(
+                    cloud_id,
+                    &name,
+                    &path,
+                    &kind,
+                    remote_name.as_deref(),
+                    notes.as_deref(),
+                );
+                match result {
+                    Ok(()) => {
+                        controller.refresh_metadata_sidebar();
+                        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+                            if matches!(controller.current_view_for(slot), PaneView::CloudLanding(id) if id == cloud_id)
+                            {
+                                controller.load_cloud_landing_view(slot, cloud_id);
+                            }
                         }
                     }
+                    Err(err) => {
+                        controller
+                            .status
+                            .set_message(&format!("Failed to update cloud location: {err}"));
+                    }
                 }
-                Err(err) => {
-                    controller
-                        .status
-                        .set_message(&format!("Failed to update cloud location: {err}"));
-                }
-            }
-        });
+            },
+            Some(on_browse),
+        );
     }
 
     fn show_cloud_form_dialog<F>(
@@ -3720,6 +4062,7 @@ impl BrowserController {
         existing: Option<&CloudRecord>,
         prefill: Option<(&str, &str, &str, Option<&str>)>,
         on_save: F,
+        on_browse_path: Option<Rc<dyn Fn()>>,
     ) where
         F: Fn(String, String, String, Option<String>, Option<String>) + 'static,
     {
@@ -3776,17 +4119,26 @@ impl BrowserController {
             }
         }
 
-        // Pre-fill for new entries (e.g. from rclone setup dialog)
-        if existing.is_none() {
-            if let Some((pf_name, pf_path, pf_kind, pf_remote)) = prefill {
-                name_entry.set_text(pf_name);
-                path_entry.set_text(pf_path);
-                if let Some(pos) = kind_options.iter().position(|k| *k == pf_kind) {
-                    kind_dropdown.set_selected(pos as u32);
+        // Pre-fill: full prefill for new entries; path-only override for edits (Browse button)
+        if let Some((pf_name, pf_path, pf_kind, pf_remote)) = prefill {
+            if existing.is_none() {
+                if !pf_name.is_empty() {
+                    name_entry.set_text(pf_name);
+                }
+                if !pf_path.is_empty() {
+                    path_entry.set_text(pf_path);
+                }
+                if !pf_kind.is_empty() {
+                    if let Some(pos) = kind_options.iter().position(|k| *k == pf_kind) {
+                        kind_dropdown.set_selected(pos as u32);
+                    }
                 }
                 if let Some(rn) = pf_remote {
                     remote_entry.set_text(rn);
                 }
+            } else if !pf_path.is_empty() {
+                // Partial override for edits: only path (used when Browse button picks a new folder)
+                path_entry.set_text(pf_path);
             }
         }
 
@@ -3804,8 +4156,21 @@ impl BrowserController {
             row
         };
 
+        // Path row: entry + optional Browse button
+        let path_row = GtkBox::new(Orientation::Horizontal, 4);
+        path_row.set_hexpand(true);
+        path_entry.set_hexpand(true);
+        path_row.append(&path_entry);
+        if let Some(ref browse_fn) = on_browse_path {
+            let browse_fn = Rc::clone(browse_fn);
+            let browse_btn = Button::with_label("…");
+            browse_btn.add_css_class("picker-browse-btn");
+            browse_btn.connect_clicked(move |_| browse_fn());
+            path_row.append(&browse_btn);
+        }
+
         form.append(&make_row("Name", name_entry.upcast_ref()));
-        form.append(&make_row("Path", path_entry.upcast_ref()));
+        form.append(&make_row("Path", path_row.upcast_ref()));
         form.append(&make_row("Kind", kind_dropdown.upcast_ref()));
         form.append(&make_row("Remote", remote_entry.upcast_ref()));
         form.append(&make_row("Notes", notes_entry.upcast_ref()));
@@ -4020,6 +4385,7 @@ impl BrowserController {
                                         }
                                     }
                                 },
+                                None,
                             );
                         });
                     }
@@ -4334,7 +4700,7 @@ impl BrowserController {
         let popover_c = popover.clone();
         edit_btn.connect_clicked(move |_| {
             popover_c.popdown();
-            controller.show_edit_cloud_dialog(cloud_id);
+            controller.show_edit_cloud_dialog(cloud_id, None);
         });
 
         let controller = Rc::clone(self);
@@ -4465,21 +4831,13 @@ impl BrowserController {
 
     fn triage_active_folder(self: &Rc<Self>) {
         let slot = self.active_slot();
-        let Some(root) = self.tool_scope_dir_for(slot) else {
-            self.status
-                .set_message("Navigate to a folder first, then click Triage.");
-            return;
-        };
+        let root = self.tool_scope_dir_for(slot);
         self.open_triage(root, TriageFilter::All);
     }
 
     fn open_bulk_naming_tool(self: &Rc<Self>) {
         let slot = self.active_slot();
-        let Some(root) = self.tool_scope_dir_for(slot) else {
-            self.status
-                .set_message("Bulk Naming is only available from folder-backed views.");
-            return;
-        };
+        let root = self.tool_scope_dir_for(slot);
         if matches!(self.current_view_for(slot), PaneView::BulkNaming { root: ref current } if current == &root)
         {
             return;
@@ -4502,7 +4860,7 @@ impl BrowserController {
             return;
         }
         let slot = self.active_slot();
-        let root = common_parent_for_items(&items).unwrap_or_else(|| self.current_dir_for(slot));
+        let root = common_parent_for_items(&items).unwrap_or_else(|| self.tool_scope_dir_for(slot));
         let selected_paths = items
             .iter()
             .map(|item| item.path.clone())
@@ -4540,7 +4898,7 @@ impl BrowserController {
             .first()
             .and_then(|i| i.path.parent())
             .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| self.current_dir_for(slot));
+            .unwrap_or_else(|| self.tool_scope_dir_for(slot));
 
         self.save_dir_to_history_if_in_directory(slot);
         self.current_dir_cell(slot).replace(from_dir.clone());
@@ -4692,21 +5050,28 @@ impl BrowserController {
                 let controller = Rc::clone(&controller);
                 let panel = self.pane_widgets(slot).media_convert_panel.clone();
                 move || {
-                    let dialog = gtk::FileDialog::new();
-                    dialog.set_title("Choose output folder");
-                    let panel = panel.clone();
-                    dialog.select_folder(
-                        Some(&controller.window),
-                        None::<&gio::Cancellable>,
-                        move |result| match result {
-                            Ok(file) => match file.path() {
-                                Some(path) => panel.set_chosen_folder(path),
-                                // File object returned but has no local path (shouldn't happen for folder picker)
-                                None => panel.folder_pick_cancelled(),
-                            },
-                            // User dismissed the dialog without picking
-                            Err(_) => panel.folder_pick_cancelled(),
+                    let places = controller.user_places.borrow().clone();
+                    let cloud_locs = controller.cloud_locations.borrow().clone();
+                    let recent = controller
+                        .metadata
+                        .borrow()
+                        .list_recent_locations(8)
+                        .unwrap_or_default();
+                    let panel_confirm = panel.clone();
+                    let panel_cancel = panel.clone();
+                    show_picker_modal(
+                        &controller.modal_host,
+                        PickerConfig::open_folder(glib::home_dir()),
+                        &places,
+                        &cloud_locs,
+                        &recent,
+                        move |result| {
+                            let PickerResult::Single(path) = result else {
+                                return;
+                            };
+                            panel_confirm.set_chosen_folder(path);
                         },
+                        move || panel_cancel.folder_pick_cancelled(),
                     );
                 }
             });
@@ -4742,6 +5107,14 @@ impl BrowserController {
                         OutputConflictPolicy::Overwrite => "overwrite".to_string(),
                     };
                     s.save();
+                }
+            });
+
+            // source mode toggle — reload items without nav side effects
+            panel.connect_source_mode_changed({
+                let controller = Rc::clone(&controller);
+                move |_mode| {
+                    controller.reload_convert_items(slot);
                 }
             });
         }
@@ -4944,6 +5317,13 @@ impl BrowserController {
 
     fn update_view_strip(&self, slot: PaneSlot) {
         let pane = self.pane_widgets(slot);
+        let show_file_controls = pane_view_uses_file_grid_controls(&self.current_view_for(slot));
+        pane.filter_toggle_btn.set_visible(show_file_controls);
+        pane.hidden_toggle_btn.set_visible(show_file_controls);
+        pane.shape_badge_toggle_btn.set_visible(show_file_controls);
+        pane.sort_btn.set_visible(show_file_controls);
+        pane.view_mode_btn.set_visible(show_file_controls);
+
         let is_search = matches!(self.current_view_for(slot), PaneView::Search(_));
         pane.search_panel.root.set_visible(is_search);
         pane.search_revealer.set_reveal_child(is_search);
@@ -5345,6 +5725,7 @@ impl BrowserController {
                 ViewMode::List => ViewMode::Icons,
             };
             controller.set_view_mode(slot, next);
+            controller.save_folder_view_state_for(slot);
         });
 
         let controller = Rc::clone(self);
@@ -5413,6 +5794,18 @@ impl BrowserController {
             WindowCommand::ToggleHidden => {
                 let slot = self.active_slot();
                 self.set_show_hidden_for_slot(slot, !self.show_hidden_cell(slot).get());
+                true
+            }
+            WindowCommand::ToggleShapeBadges => {
+                let slot = self.active_slot();
+                self.set_show_shape_badges_for_slot(slot, !self.show_shape_badges_cell(slot).get());
+                true
+            }
+            WindowCommand::SortOrder => {
+                let slot = self.active_slot();
+                let pane = self.pane_widgets(slot);
+                let widget: gtk::Widget = pane.sort_btn.clone().upcast();
+                self.show_sort_popover(slot, widget);
                 true
             }
             WindowCommand::ToggleSidebar => {
@@ -5494,12 +5887,60 @@ impl BrowserController {
                 true
             }
             WindowCommand::Escape => self.handle_escape(self.focused_context()),
+            WindowCommand::OpenHome => {
+                self.navigate_to(self.active_slot(), self.places.home.clone(), true);
+                true
+            }
+            WindowCommand::OpenSystemDrives => {
+                self.open_system_drives();
+                true
+            }
+            WindowCommand::OpenRecent => {
+                self.open_recent();
+                true
+            }
+            WindowCommand::OpenTrash => {
+                self.open_trash();
+                true
+            }
+            WindowCommand::OpenPalettes => {
+                self.open_project_manager();
+                true
+            }
+            WindowCommand::OpenTintsTags => {
+                self.open_tag_manager();
+                true
+            }
+            WindowCommand::OpenSpaceViewer => {
+                self.open_space_viewer();
+                true
+            }
+            WindowCommand::OpenTriage => {
+                self.triage_active_folder();
+                true
+            }
+            WindowCommand::OpenBulkNaming => {
+                self.open_bulk_naming_tool();
+                true
+            }
+            WindowCommand::OpenConvert => {
+                self.open_convert_from_sidebar();
+                true
+            }
+            WindowCommand::OpenActivityLog => {
+                self.open_activity_log();
+                true
+            }
             WindowCommand::SetViewIcons => {
-                self.set_view_mode(self.active_slot(), ViewMode::Icons);
+                let slot = self.active_slot();
+                self.set_view_mode(slot, ViewMode::Icons);
+                self.save_folder_view_state_for(slot);
                 true
             }
             WindowCommand::SetViewList => {
-                self.set_view_mode(self.active_slot(), ViewMode::List);
+                let slot = self.active_slot();
+                self.set_view_mode(slot, ViewMode::List);
+                self.save_folder_view_state_for(slot);
                 true
             }
             WindowCommand::TogglePlanMode => {
@@ -5556,10 +5997,69 @@ impl BrowserController {
                     false
                 }
             }
+            WindowCommand::PaintToggleContents => {
+                if self.paint_mode_active.get() {
+                    let next = !self.paint_contents.get();
+                    self.paint_contents.set(next);
+                    self.painting_toolbar.set_paint_contents(next);
+                    true
+                } else {
+                    false
+                }
+            }
             WindowCommand::EmptyTrash => {
                 self.empty_trash();
                 true
             }
+            WindowCommand::TrayAddByTint => {
+                let widget: gtk::Widget = self.holding_tray.add_by_tint_button.clone().upcast();
+                self.show_add_to_tray_by_tint_popover(&widget);
+                true
+            }
+            WindowCommand::TrayAddByShape => {
+                let widget: gtk::Widget = self.holding_tray.add_by_shape_button.clone().upcast();
+                self.show_add_to_tray_by_shape_popover(&widget);
+                true
+            }
+            WindowCommand::TrayApplyMark => {
+                self.show_tray_apply_mark_preview();
+                true
+            }
+            WindowCommand::TrayResetMark => {
+                self.show_tray_reset_mark_preview();
+                true
+            }
+            WindowCommand::PlanExecute => {
+                if self.plan_mode_active.get() && !self.action_queue.borrow().is_empty() {
+                    self.execute_plan_queue();
+                    true
+                } else {
+                    false
+                }
+            }
+            WindowCommand::PlanClear => {
+                if self.plan_mode_active.get() && !self.action_queue.borrow().is_empty() {
+                    self.action_queue.borrow_mut().clear();
+                    self.refresh_plan_queue_panel();
+                    true
+                } else {
+                    false
+                }
+            }
+            WindowCommand::ConvertStart => {
+                let slot = self.active_slot();
+                if matches!(self.current_view_for(slot), PaneView::MediaConvert { .. }) {
+                    self.pane_widgets(slot)
+                        .media_convert_panel
+                        .start_current_batch()
+                } else {
+                    false
+                }
+            }
+            WindowCommand::ConvertCancel => self.convert_progress.trigger_cancel(),
+            WindowCommand::ConvertRetryFailed => self.convert_progress.trigger_retry_failed(),
+            WindowCommand::ConvertOpenOutput => self.convert_progress.trigger_open_output(),
+            WindowCommand::ConvertDismiss => self.convert_progress.trigger_dismiss(),
             WindowCommand::CustomAction(id) => {
                 self.run_custom_action_by_id(&id);
                 true
@@ -6046,16 +6546,12 @@ impl BrowserController {
         self.current_view_cell(slot).borrow().clone()
     }
 
-    fn tool_scope_dir_for(&self, slot: PaneSlot) -> Option<PathBuf> {
-        match self.current_view_for(slot) {
-            PaneView::Directory(path) => Some(path),
-            PaneView::Triage { root, .. } => Some(root),
-            PaneView::Search(query) => Some(query.scope_dir),
-            PaneView::BulkNaming { root } => Some(root),
-            PaneView::ActivityLog => Some(self.current_dir_for(slot)),
-            PaneView::SpaceViewer { root, .. } => Some(root),
-            _ => None,
-        }
+    fn tool_scope_dir_for(&self, slot: PaneSlot) -> PathBuf {
+        resolve_tool_scope_dir(
+            &self.current_view_for(slot),
+            &self.current_dir_for(slot),
+            &self.places.home,
+        )
     }
 
     fn is_directory_view(&self, slot: PaneSlot) -> bool {
@@ -6123,6 +6619,13 @@ impl BrowserController {
             ViewMode::List => "view-list-compact-symbolic",
         };
         pane.view_mode_icon.set_icon_name(Some(icon_name));
+        let mut vs = crate::view_state::ViewState::load();
+        vs.view_mode = match mode {
+            ViewMode::Icons => "icons",
+            ViewMode::List => "list",
+        }
+        .to_string();
+        vs.save();
     }
 
     fn set_show_hidden_for_slot(self: &Rc<Self>, slot: PaneSlot, show_hidden: bool) {
@@ -6134,6 +6637,10 @@ impl BrowserController {
         self.sync_show_hidden_button_state(slot);
         self.sync_active_tab_state();
         self.load_current_view(slot);
+        let mut vs = crate::view_state::ViewState::load();
+        vs.show_hidden = show_hidden;
+        vs.save();
+        self.save_folder_view_state_for(slot);
     }
 
     fn sync_show_hidden_button_state(&self, slot: PaneSlot) {
@@ -6162,6 +6669,10 @@ impl BrowserController {
             .set_shape_badges_visible(show_badges);
         self.sync_show_shape_badges_button_state(slot);
         self.sync_active_tab_state();
+        let mut vs = crate::view_state::ViewState::load();
+        vs.show_shape_badges = show_badges;
+        vs.save();
+        self.save_folder_view_state_for(slot);
     }
 
     fn sync_show_shape_badges_button_state(&self, slot: PaneSlot) {
@@ -6264,7 +6775,10 @@ impl BrowserController {
 
             let close_button = Button::builder().icon_name("window-close-symbolic").build();
             close_button.add_css_class("tab-close-button");
-            let close_host = crate::ui::tooltip_host(&close_button, "Close tab (Ctrl+W)");
+            let close_host = crate::ui::tooltip_host(
+                &close_button,
+                shortcut_tooltip(&self.config, "Close tab", "close_tab"),
+            );
             close_button.set_sensitive(can_close);
             let controller = Rc::clone(self);
             close_button.connect_clicked(move |_| controller.close_tab(index));
@@ -6457,13 +6971,15 @@ impl BrowserController {
     }
 
     fn update_split_button_state(&self) {
-        let (icon, tooltip) = match self.pane_layout.get() {
-            PaneLayout::Single => ("view-list-symbolic", "Switch to 2 panels (Ctrl+\\)"),
-            PaneLayout::Two => ("view-dual-symbolic", "Switch to 3 panels (Ctrl+\\)"),
-            PaneLayout::Three => ("view-grid-symbolic", "Switch to 1 panel (Ctrl+\\)"),
+        let (icon, label) = match self.pane_layout.get() {
+            PaneLayout::Single => ("view-list-symbolic", "Switch to 2 panels"),
+            PaneLayout::Two => ("view-dual-symbolic", "Switch to 3 panels"),
+            PaneLayout::Three => ("view-grid-symbolic", "Switch to 1 panel"),
         };
         self.toolbar.set_split_icon_state(icon);
-        self.toolbar.split_tooltip_label.set_label(tooltip);
+        self.toolbar
+            .split_tooltip_label
+            .set_label(&shortcut_tooltip(&self.config, label, "toggle_split"));
     }
 
     fn cycle_pane_layout(self: &Rc<Self>) {
@@ -6767,6 +7283,9 @@ impl BrowserController {
             return;
         }
         self.sidebar_visible.set(visible);
+        let mut vs = crate::view_state::ViewState::load();
+        vs.sidebar_visible = visible;
+        vs.save();
         if visible {
             self.sidebar_revealer.set_visible(true);
             self.sidebar_revealer.set_reveal_child(true);
@@ -6795,6 +7314,9 @@ impl BrowserController {
             return;
         }
         self.preview_visible.set(visible);
+        let mut vs = crate::view_state::ViewState::load();
+        vs.preview_visible = visible;
+        vs.save();
         if visible {
             self.preview_revealer.set_visible(true);
             self.preview_revealer.set_reveal_child(true);
@@ -7605,7 +8127,93 @@ impl BrowserController {
         });
     }
 
+    fn apply_folder_view_state(self: &Rc<Self>, slot: PaneSlot, path: &PathBuf) {
+        let path_str = path.to_string_lossy();
+        let fvs = self
+            .metadata
+            .borrow()
+            .get_folder_view_state(&path_str)
+            .unwrap_or_else(|| {
+                let g = crate::view_state::ViewState::load();
+                FolderViewState {
+                    view_mode: g.view_mode,
+                    show_hidden: g.show_hidden,
+                    show_shape_badges: g.show_shape_badges,
+                    sort_field: g.sort_field,
+                    sort_direction: g.sort_direction,
+                }
+            });
+
+        let vm = match fvs.view_mode.as_str() {
+            "list" => ViewMode::List,
+            _ => ViewMode::Icons,
+        };
+        let sf = match fvs.sort_field.as_str() {
+            "modified" => SortField::Modified,
+            "size" => SortField::Size,
+            "kind" => SortField::Kind,
+            _ => SortField::Name,
+        };
+        let sd = match fvs.sort_direction.as_str() {
+            "descending" => SortDirection::Descending,
+            _ => SortDirection::Ascending,
+        };
+
+        self.view_mode_cell(slot).set(vm);
+        self.show_hidden_cell(slot).set(fvs.show_hidden);
+        self.show_shape_badges_cell(slot).set(fvs.show_shape_badges);
+        self.sort_field_cell(slot).set(sf);
+        self.sort_direction_cell(slot).set(sd);
+
+        let pane = self.pane_widgets(slot);
+        pane.file_grid.set_view_mode(vm);
+        let vm_icon = match vm {
+            ViewMode::Icons => "view-grid-symbolic",
+            ViewMode::List => "view-list-compact-symbolic",
+        };
+        pane.view_mode_icon.set_icon_name(Some(vm_icon));
+        self.sync_show_hidden_button_state(slot);
+        self.sync_show_shape_badges_button_state(slot);
+        let sort_icon = match sd {
+            SortDirection::Descending => "view-sort-descending-symbolic",
+            _ => "view-sort-ascending-symbolic",
+        };
+        pane.sort_icon.set_icon_name(Some(sort_icon));
+    }
+
+    fn save_folder_view_state_for(&self, slot: PaneSlot) {
+        if !matches!(self.current_view_for(slot), PaneView::Directory(_)) {
+            return;
+        }
+        let path = self.current_dir_for(slot);
+        let state = FolderViewState {
+            view_mode: match self.view_mode_cell(slot).get() {
+                ViewMode::Icons => "icons",
+                ViewMode::List => "list",
+            }
+            .to_string(),
+            show_hidden: self.show_hidden_cell(slot).get(),
+            show_shape_badges: self.show_shape_badges_cell(slot).get(),
+            sort_field: match self.sort_field_cell(slot).get() {
+                SortField::Modified => "modified",
+                SortField::Size => "size",
+                SortField::Kind => "kind",
+                _ => "name",
+            }
+            .to_string(),
+            sort_direction: match self.sort_direction_cell(slot).get() {
+                SortDirection::Descending => "descending",
+                _ => "ascending",
+            }
+            .to_string(),
+        };
+        self.metadata
+            .borrow()
+            .set_folder_view_state(&path.to_string_lossy(), &state);
+    }
+
     fn load_directory(self: &Rc<Self>, slot: PaneSlot, path: PathBuf) {
+        self.apply_folder_view_state(slot, &path);
         self.cancel_active_load(slot);
         if slot == self.active_slot() {
             self.cancel_active_preview();
@@ -7924,8 +8532,6 @@ impl BrowserController {
     fn open_system_drives(self: &Rc<Self>) {
         let slot = self.active_slot();
         self.save_dir_to_history_if_in_directory(slot);
-        self.current_dir_cell(slot)
-            .replace(self.places.home.clone());
         self.current_view_cell(slot).replace(PaneView::SystemDrives);
         self.sync_active_tab_state();
         self.update_view_strip(slot);
@@ -8010,8 +8616,6 @@ impl BrowserController {
     fn open_recent(self: &Rc<Self>) {
         let slot = self.active_slot();
         self.save_dir_to_history_if_in_directory(slot);
-        self.current_dir_cell(slot)
-            .replace(self.places.home.clone());
         self.current_view_cell(slot).replace(PaneView::Recent);
         self.sync_active_tab_state();
         self.update_view_strip(slot);
@@ -8115,8 +8719,6 @@ impl BrowserController {
     fn open_trash(self: &Rc<Self>) {
         let slot = self.active_slot();
         self.save_dir_to_history_if_in_directory(slot);
-        self.current_dir_cell(slot)
-            .replace(self.places.home.clone());
         self.current_view_cell(slot).replace(PaneView::Trash);
         self.sync_active_tab_state();
         self.update_view_strip(slot);
@@ -8689,11 +9291,7 @@ impl BrowserController {
             });
             return;
         }
-        let Some(scope) = self.tool_scope_dir_for(slot) else {
-            self.status
-                .set_message("Search is only available in folder views.");
-            return;
-        };
+        let scope = self.tool_scope_dir_for(slot);
         let query = SearchQuery::new(scope);
         self.open_search(slot, query);
     }
@@ -9318,6 +9916,32 @@ impl BrowserController {
             }
         }
         items
+    }
+
+    fn preview_identity_for_item(
+        &self,
+        item: &FileItem,
+    ) -> (String, Shape, Option<String>, Vec<TagRecord>) {
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
+        let (tint_name, tint_color) =
+            tint_name_and_color(&tints, item.mark_tint_id, item.mark_tint_color.clone());
+        (tint_name, item.mark_shape, tint_color, item.tags.clone())
+    }
+
+    fn preview_identity_for_path(
+        &self,
+        path: &Path,
+    ) -> Option<(String, Shape, Option<String>, Vec<TagRecord>)> {
+        let path_buf = path.to_path_buf();
+        let (mark, tags, tints) = {
+            let meta = self.metadata.borrow();
+            let mark = meta.mark_for_path(path).ok()?;
+            let tags = meta.tags_for_selection(&[path_buf]).unwrap_or_default();
+            let tints = meta.list_tints().unwrap_or_default();
+            (mark, tags, tints)
+        };
+        let (tint_name, tint_color) = tint_name_and_color(&tints, mark.tint_id, None);
+        Some((tint_name, mark.shape, tint_color, tags))
     }
 
     fn init_tint_css(self: &Rc<Self>) {
@@ -10950,6 +11574,16 @@ impl BrowserController {
                             Some(item_count),
                             "Folder",
                         );
+                        if let Some((tint_name, shape, tint_color, tags)) =
+                            controller.preview_identity_for_path(&path)
+                        {
+                            controller.preview.set_identity(
+                                &tint_name,
+                                shape,
+                                tint_color.as_deref(),
+                                &tags,
+                            );
+                        }
                         controller
                             .preview
                             .set_action_state(false, true, path.parent().is_some());
@@ -11033,6 +11667,9 @@ impl BrowserController {
                 None,
                 &type_label,
             );
+            let (tint_name, shape, tint_color, tags) = self.preview_identity_for_item(&item);
+            self.preview
+                .set_identity(&tint_name, shape, tint_color.as_deref(), &tags);
             self.preview.set_action_state(true, true, true);
             return;
         }
@@ -11052,6 +11689,9 @@ impl BrowserController {
             );
             self.preview
                 .set_image_file(Some(&gio::File::for_path(&item.path)));
+            let (tint_name, shape, tint_color, tags) = self.preview_identity_for_item(&item);
+            self.preview
+                .set_identity(&tint_name, shape, tint_color.as_deref(), &tags);
             self.preview.set_mime_type(Some(mime));
             self.preview.set_action_state(true, true, true);
             return;
@@ -11086,6 +11726,9 @@ impl BrowserController {
             modified.as_deref(),
             note,
         );
+        let (tint_name, shape, tint_color, tags) = self.preview_identity_for_item(&item);
+        self.preview
+            .set_identity(&tint_name, shape, tint_color.as_deref(), &tags);
         self.preview.set_mime_type(Some(mime));
         self.preview.set_action_state(true, true, true);
     }
@@ -11148,6 +11791,14 @@ impl BrowserController {
                             &text,
                             note.as_deref(),
                         );
+                        let (tint_name, shape, tint_color, tags) =
+                            controller.preview_identity_for_item(&item);
+                        controller.preview.set_identity(
+                            &tint_name,
+                            shape,
+                            tint_color.as_deref(),
+                            &tags,
+                        );
                         controller.preview.set_mime_type(Some(&mime));
                         controller.preview.set_action_state(true, true, true);
                     }
@@ -11160,6 +11811,14 @@ impl BrowserController {
                             size.as_deref(),
                             modified.as_deref(),
                             Some(&friendly_error_detail(&error)),
+                        );
+                        let (tint_name, shape, tint_color, tags) =
+                            controller.preview_identity_for_item(&item);
+                        controller.preview.set_identity(
+                            &tint_name,
+                            shape,
+                            tint_color.as_deref(),
+                            &tags,
                         );
                         controller.preview.set_mime_type(Some(&mime));
                         controller.preview.set_action_state(true, true, true);
@@ -14395,6 +15054,8 @@ fn builtin_command(action_id: &str) -> Option<WindowCommand> {
         "focus_path" => Some(WindowCommand::FocusPath),
         "refresh" => Some(WindowCommand::Refresh),
         "show_hidden" => Some(WindowCommand::ToggleHidden),
+        "toggle_shape_badges" => Some(WindowCommand::ToggleShapeBadges),
+        "sort_order" => Some(WindowCommand::SortOrder),
         "toggle_sidebar" => Some(WindowCommand::ToggleSidebar),
         "toggle_preview" => Some(WindowCommand::TogglePreview),
         "toggle_holding_tray" => Some(WindowCommand::ToggleHoldingTray),
@@ -14415,6 +15076,17 @@ fn builtin_command(action_id: &str) -> Option<WindowCommand> {
         "up" => Some(WindowCommand::GoUp),
         "cycle_pane" => Some(WindowCommand::CyclePane),
         "escape" => Some(WindowCommand::Escape),
+        "open_home" => Some(WindowCommand::OpenHome),
+        "open_system_drives" => Some(WindowCommand::OpenSystemDrives),
+        "open_recent" => Some(WindowCommand::OpenRecent),
+        "open_trash" => Some(WindowCommand::OpenTrash),
+        "open_palettes" => Some(WindowCommand::OpenPalettes),
+        "open_tints_tags" => Some(WindowCommand::OpenTintsTags),
+        "open_space_viewer" => Some(WindowCommand::OpenSpaceViewer),
+        "open_triage" => Some(WindowCommand::OpenTriage),
+        "open_bulk_naming" => Some(WindowCommand::OpenBulkNaming),
+        "open_convert" => Some(WindowCommand::OpenConvert),
+        "open_activity_log" => Some(WindowCommand::OpenActivityLog),
         "view_icons" => Some(WindowCommand::SetViewIcons),
         "view_list" => Some(WindowCommand::SetViewList),
         "toggle_plan_mode" => Some(WindowCommand::TogglePlanMode),
@@ -14425,7 +15097,19 @@ fn builtin_command(action_id: &str) -> Option<WindowCommand> {
         "paint_fill" => Some(WindowCommand::PaintFill),
         "paint_undo" => Some(WindowCommand::PaintUndo),
         "paint_redo" => Some(WindowCommand::PaintRedo),
+        "paint_toggle_contents" => Some(WindowCommand::PaintToggleContents),
         "empty_trash" => Some(WindowCommand::EmptyTrash),
+        "tray_add_by_tint" => Some(WindowCommand::TrayAddByTint),
+        "tray_add_by_shape" => Some(WindowCommand::TrayAddByShape),
+        "tray_apply_mark" => Some(WindowCommand::TrayApplyMark),
+        "tray_reset_mark" => Some(WindowCommand::TrayResetMark),
+        "plan_execute" => Some(WindowCommand::PlanExecute),
+        "plan_clear" => Some(WindowCommand::PlanClear),
+        "convert_start" => Some(WindowCommand::ConvertStart),
+        "convert_cancel" => Some(WindowCommand::ConvertCancel),
+        "convert_retry_failed" => Some(WindowCommand::ConvertRetryFailed),
+        "convert_open_output" => Some(WindowCommand::ConvertOpenOutput),
+        "convert_dismiss" => Some(WindowCommand::ConvertDismiss),
         _ => None,
     }
 }
@@ -14450,6 +15134,10 @@ fn parse_key_binding(shortcut: &str) -> Option<KeyBinding> {
             "alt" => alt = true,
             "esc" | "escape" => key = Some(BindingKey::Named("escape")),
             "delete" | "del" => key = Some(BindingKey::Named("delete")),
+            "backspace" => key = Some(BindingKey::Named("backspace")),
+            "enter" | "return" => key = Some(BindingKey::Named("enter")),
+            "home" => key = Some(BindingKey::Named("home")),
+            "end" => key = Some(BindingKey::Named("end")),
             "left" => key = Some(BindingKey::Named("left")),
             "right" => key = Some(BindingKey::Named("right")),
             "up" => key = Some(BindingKey::Named("up")),
@@ -14510,6 +15198,11 @@ impl BindingKey {
                 (name, key),
                 ("escape", gdk::Key::Escape)
                     | ("delete", gdk::Key::Delete)
+                    | ("backspace", gdk::Key::BackSpace)
+                    | ("enter", gdk::Key::Return)
+                    | ("enter", gdk::Key::KP_Enter)
+                    | ("home", gdk::Key::Home)
+                    | ("end", gdk::Key::End)
                     | ("left", gdk::Key::Left)
                     | ("right", gdk::Key::Right)
                     | ("up", gdk::Key::Up)
@@ -15692,6 +16385,19 @@ fn view_display_label(view: &PaneView, home: &Path) -> String {
     }
 }
 
+fn pane_view_uses_file_grid_controls(view: &PaneView) -> bool {
+    matches!(
+        view,
+        PaneView::Directory(_)
+            | PaneView::Tag(_)
+            | PaneView::Triage { .. }
+            | PaneView::SystemDrives
+            | PaneView::Recent
+            | PaneView::Trash
+            | PaneView::Search(_)
+    )
+}
+
 // ── Tint CSS generation ────────────────────────────────────────────────────────
 
 fn parse_hex_rgb(hex: &str) -> (u8, u8, u8) {
@@ -15978,6 +16684,32 @@ fn is_launchable_directory(path: &Path) -> bool {
     gio::File::for_path(path)
         .query_file_type(gio::FileQueryInfoFlags::NONE, None::<&gio::Cancellable>)
         == gio::FileType::Directory
+}
+
+fn pane_view_scope_dir(view: &PaneView) -> Option<PathBuf> {
+    match view {
+        PaneView::Directory(path) => Some(path.clone()),
+        PaneView::Triage { root, .. } => Some(root.clone()),
+        PaneView::Search(query) => Some(query.scope_dir.clone()),
+        PaneView::BulkNaming { root } => Some(root.clone()),
+        PaneView::SpaceViewer { root } => Some(root.clone()),
+        PaneView::MediaConvert { from_dir } => Some(from_dir.clone()),
+        PaneView::Tag(_)
+        | PaneView::SystemDrives
+        | PaneView::Recent
+        | PaneView::Trash
+        | PaneView::ActivityLog
+        | PaneView::ProjectLanding(_)
+        | PaneView::CloudLanding(_)
+        | PaneView::ProjectManager
+        | PaneView::TagManager => None,
+    }
+}
+
+fn resolve_tool_scope_dir(view: &PaneView, current_dir: &Path, home: &Path) -> PathBuf {
+    pane_view_scope_dir(view)
+        .or_else(|| is_launchable_directory(current_dir).then(|| current_dir.to_path_buf()))
+        .unwrap_or_else(|| home.to_path_buf())
 }
 
 fn next_copy_path(destination: &Path) -> PathBuf {
@@ -16592,6 +17324,131 @@ mod tests {
     }
 
     #[test]
+    fn file_grid_controls_are_hidden_for_full_panel_tools() {
+        let tag = TagRecord {
+            id: 1,
+            name: "Work".to_string(),
+            color: None,
+            associated_tint_id: None,
+            associated_shape: None,
+        };
+
+        assert!(pane_view_uses_file_grid_controls(&PaneView::Directory(
+            PathBuf::from("/tmp")
+        )));
+        assert!(pane_view_uses_file_grid_controls(&PaneView::Tag(tag)));
+        assert!(pane_view_uses_file_grid_controls(&PaneView::Triage {
+            root: PathBuf::from("/tmp"),
+            filter: TriageFilter::Images,
+        }));
+        assert!(pane_view_uses_file_grid_controls(&PaneView::Search(
+            SearchQuery::new(PathBuf::from("/tmp"))
+        )));
+        assert!(pane_view_uses_file_grid_controls(&PaneView::Trash));
+
+        assert!(!pane_view_uses_file_grid_controls(&PaneView::ActivityLog));
+        assert!(!pane_view_uses_file_grid_controls(&PaneView::BulkNaming {
+            root: PathBuf::from("/tmp"),
+        }));
+        assert!(!pane_view_uses_file_grid_controls(&PaneView::SpaceViewer {
+            root: PathBuf::from("/tmp"),
+        }));
+        assert!(!pane_view_uses_file_grid_controls(
+            &PaneView::MediaConvert {
+                from_dir: PathBuf::from("/tmp"),
+            }
+        ));
+        assert!(!pane_view_uses_file_grid_controls(
+            &PaneView::ProjectManager
+        ));
+        assert!(!pane_view_uses_file_grid_controls(&PaneView::TagManager));
+        assert!(!pane_view_uses_file_grid_controls(
+            &PaneView::ProjectLanding(1)
+        ));
+        assert!(!pane_view_uses_file_grid_controls(&PaneView::CloudLanding(
+            1
+        )));
+    }
+
+    #[test]
+    fn tool_scope_uses_folder_backed_view_scope() {
+        let dir = PathBuf::from("/tmp/folder");
+        let triage = PathBuf::from("/tmp/triage");
+        let search = PathBuf::from("/tmp/search");
+        let bulk = PathBuf::from("/tmp/bulk");
+        let space = PathBuf::from("/tmp/space");
+        let convert = PathBuf::from("/tmp/convert");
+
+        assert_eq!(
+            pane_view_scope_dir(&PaneView::Directory(dir.clone())),
+            Some(dir)
+        );
+        assert_eq!(
+            pane_view_scope_dir(&PaneView::Triage {
+                root: triage.clone(),
+                filter: TriageFilter::All,
+            }),
+            Some(triage)
+        );
+        assert_eq!(
+            pane_view_scope_dir(&PaneView::Search(SearchQuery::new(search.clone()))),
+            Some(search)
+        );
+        assert_eq!(
+            pane_view_scope_dir(&PaneView::BulkNaming { root: bulk.clone() }),
+            Some(bulk)
+        );
+        assert_eq!(
+            pane_view_scope_dir(&PaneView::SpaceViewer {
+                root: space.clone()
+            }),
+            Some(space)
+        );
+        assert_eq!(
+            pane_view_scope_dir(&PaneView::MediaConvert {
+                from_dir: convert.clone()
+            }),
+            Some(convert)
+        );
+    }
+
+    #[test]
+    fn tool_scope_falls_back_to_last_usable_folder_for_special_views() {
+        let places = test_places();
+        let current = places.downloads.clone();
+        let tag = test_tag();
+        let special_views = vec![
+            PaneView::Tag(tag),
+            PaneView::SystemDrives,
+            PaneView::Recent,
+            PaneView::Trash,
+            PaneView::ActivityLog,
+            PaneView::ProjectLanding(1),
+            PaneView::CloudLanding(1),
+            PaneView::ProjectManager,
+            PaneView::TagManager,
+        ];
+
+        for view in special_views {
+            assert_eq!(
+                resolve_tool_scope_dir(&view, &current, &places.home),
+                current
+            );
+        }
+    }
+
+    #[test]
+    fn tool_scope_falls_back_home_when_last_folder_is_unusable() {
+        let places = test_places();
+        let missing = places.downloads.join("missing");
+
+        assert_eq!(
+            resolve_tool_scope_dir(&PaneView::Recent, &missing, &places.home),
+            places.home
+        );
+    }
+
+    #[test]
     fn window_shortcuts_dispatch_standard_commands() {
         let ctrl = gdk::ModifierType::CONTROL_MASK;
         let ctrl_shift = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
@@ -16720,6 +17577,67 @@ mod tests {
             configured_window_command_from_key(&config, gdk::Key::g, ctrl_alt),
             Some(WindowCommand::CustomAction("open_in_gimp".to_string()))
         );
+    }
+
+    #[test]
+    fn configured_shortcuts_dispatch_extended_commands() {
+        let mut config = AppConfig::default();
+        config
+            .shortcuts
+            .insert("open_convert".to_string(), "Ctrl+Alt+F".to_string());
+        config
+            .shortcuts
+            .insert("open_activity_log".to_string(), "Ctrl+Alt+J".to_string());
+        config
+            .shortcuts
+            .insert("plan_execute".to_string(), "Ctrl+Alt+Enter".to_string());
+        config
+            .shortcuts
+            .insert("toggle_shape_badges".to_string(), "Ctrl+Alt+B".to_string());
+
+        let ctrl_alt = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK;
+
+        assert_eq!(
+            configured_window_command_from_key(&config, gdk::Key::f, ctrl_alt),
+            Some(WindowCommand::OpenConvert)
+        );
+        assert_eq!(
+            configured_window_command_from_key(&config, gdk::Key::j, ctrl_alt),
+            Some(WindowCommand::OpenActivityLog)
+        );
+        assert_eq!(
+            configured_window_command_from_key(&config, gdk::Key::Return, ctrl_alt),
+            Some(WindowCommand::PlanExecute)
+        );
+        assert_eq!(
+            configured_window_command_from_key(&config, gdk::Key::b, ctrl_alt),
+            Some(WindowCommand::ToggleShapeBadges)
+        );
+    }
+
+    #[test]
+    fn configured_shortcuts_can_disable_defaults() {
+        let mut config = AppConfig::default();
+        config.shortcuts.remove("new_folder");
+
+        assert_eq!(
+            configured_window_command_from_key(
+                &config,
+                gdk::Key::n,
+                gdk::ModifierType::CONTROL_MASK
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn all_documented_builtin_shortcut_ids_dispatch() {
+        for (action_id, _) in crate::config::BUILTIN_SHORTCUT_ACTIONS {
+            assert!(
+                builtin_command(action_id).is_some(),
+                "documented shortcut action does not dispatch: {action_id}"
+            );
+        }
     }
 
     #[test]
@@ -16881,6 +17799,28 @@ fn preview_type_label(item: &FileItem, mime: &str) -> String {
         return "Audio".to_string();
     }
     item.kind.label().to_string()
+}
+
+fn tint_name_and_color(
+    tints: &[TintRecord],
+    tint_id: i64,
+    fallback_color: Option<String>,
+) -> (String, Option<String>) {
+    if let Some(tint) = tints.iter().find(|tint| tint.id == tint_id) {
+        return (
+            tint.name.clone(),
+            fallback_color.or_else(|| tint.color.clone()),
+        );
+    }
+
+    if let Some(default) = tints.iter().find(|tint| tint.is_default) {
+        return (
+            default.name.clone(),
+            fallback_color.or_else(|| default.color.clone()),
+        );
+    }
+
+    ("Beige".to_string(), fallback_color)
 }
 
 fn mime_to_friendly_type(mime: &str) -> Option<&'static str> {

@@ -151,11 +151,13 @@ impl TagFilterPanel {
         let mode_btn = Button::with_label("All match");
         mode_btn.add_css_class("tf-mode-btn");
         mode_btn.set_visible(false);
+        crate::ui::attach_tooltip(&mode_btn, "Switch tag match mode");
         header_row.append(&mode_btn);
 
         let clear_btn = Button::with_label("Clear All");
         clear_btn.add_css_class("tf-clear-btn");
         clear_btn.set_visible(false);
+        crate::ui::attach_tooltip(&clear_btn, "Clear tag filters");
         header_row.append(&clear_btn);
 
         inner.append(&header_row);

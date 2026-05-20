@@ -1,10 +1,47 @@
 use crate::config::AppConfig;
-use crate::launch::LaunchConfig;
+use crate::launch::{LaunchConfig, PickerLaunchConfig, PickerSubcommand};
 use crate::ui::main_window::MainWindow;
+use crate::ui::picker::{launch_picker_window, PickerConfig};
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, CssProvider};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Launch the picker as a standalone window (for `lattice --picker` CLI mode).
+pub fn on_activate_picker(app: &Application, picker_launch: &PickerLaunchConfig) {
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_overlay_scrolling(false);
+    }
+    let config = AppConfig::load();
+    load_css(&config.theme);
+
+    let initial_dir = picker_launch
+        .initial_path
+        .clone()
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(glib::home_dir);
+
+    let picker_config = match &picker_launch.subcommand {
+        PickerSubcommand::OpenFile => PickerConfig::open_file(initial_dir),
+        PickerSubcommand::OpenFiles => PickerConfig::open_files(initial_dir),
+        PickerSubcommand::OpenFolder => PickerConfig::open_folder(initial_dir),
+        PickerSubcommand::SaveFile => PickerConfig::save_file(
+            initial_dir,
+            picker_launch.suggested_name.as_deref().unwrap_or(""),
+        ),
+    };
+
+    let (places, cloud_locs, recent) = match crate::metadata::MetadataStore::open() {
+        Ok(store) => (
+            store.list_places().unwrap_or_default(),
+            store.list_cloud_locations().unwrap_or_default(),
+            store.list_recent_locations(8).unwrap_or_default(),
+        ),
+        Err(_) => (vec![], vec![], vec![]),
+    };
+
+    launch_picker_window(app, picker_config, &places, &cloud_locs, &recent);
+}
 
 pub fn on_activate(app: &Application, launch: &LaunchConfig) {
     // Disable overlay scrolling so scrollbars stay at a fixed size and position.

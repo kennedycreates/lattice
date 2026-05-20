@@ -1,3 +1,4 @@
+use crate::config::{shortcut_tooltip, AppConfig};
 use crate::converter::{
     all_presets, plan_batch, ConversionBatch, ConversionPreset, ConvertItem, ConvertSettings,
     MediaKind, OutputConflictPolicy, OutputLocationMode, ToolAvailability,
@@ -12,12 +13,21 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum ConvertSourceMode {
+    #[default]
+    Auto,
+    Tray,
+    Selection,
+}
+
 struct State {
     items: RefCell<Vec<ConvertItem>>,
     selected_preset_idx: Cell<usize>,
     output_mode: RefCell<OutputLocationMode>,
     conflict_policy: RefCell<OutputConflictPolicy>,
     tools: RefCell<ToolAvailability>,
+    source_mode: Cell<ConvertSourceMode>,
     tool_warning_row: GtkBox,
     tool_warning_label: Label,
     file_list: ListBox,
@@ -31,6 +41,7 @@ struct State {
     on_folder_pick: RefCell<Option<Box<dyn Fn()>>>,
     on_settings_changed:
         RefCell<Option<Box<dyn Fn(&str, &OutputLocationMode, &OutputConflictPolicy)>>>,
+    on_source_mode_changed: RefCell<Option<Box<dyn Fn(ConvertSourceMode)>>>,
 }
 
 impl State {
@@ -244,7 +255,7 @@ pub struct MediaConvertPanel {
 }
 
 impl MediaConvertPanel {
-    pub fn build() -> Self {
+    pub fn build(config: &AppConfig) -> Self {
         let root = GtkBox::new(Orientation::Vertical, 0);
         root.add_css_class("convert-panel");
         root.set_vexpand(true);
@@ -262,6 +273,37 @@ impl MediaConvertPanel {
         tool_warning_row.set_visible(false);
         root.append(&tool_warning_row);
 
+        // Source row
+        let source_row = GtkBox::new(Orientation::Horizontal, 6);
+        source_row.add_css_class("convert-source-row");
+
+        let src_label = Label::new(Some("Source:"));
+        src_label.add_css_class("convert-section-label");
+        source_row.append(&src_label);
+
+        let btn_src_auto = ToggleButton::with_label("Auto");
+        btn_src_auto.add_css_class("convert-option-btn");
+        btn_src_auto.set_active(true);
+        crate::ui::attach_tooltip(
+            &btn_src_auto,
+            "Use tray if items are present, otherwise file selection",
+        );
+
+        let btn_src_tray = ToggleButton::with_label("Tray");
+        btn_src_tray.add_css_class("convert-option-btn");
+        btn_src_tray.set_group(Some(&btn_src_auto));
+        crate::ui::attach_tooltip(&btn_src_tray, "Always use holding tray items");
+
+        let btn_src_sel = ToggleButton::with_label("Selection");
+        btn_src_sel.add_css_class("convert-option-btn");
+        btn_src_sel.set_group(Some(&btn_src_auto));
+        crate::ui::attach_tooltip(&btn_src_sel, "Always use file grid selection");
+
+        source_row.append(&btn_src_auto);
+        source_row.append(&btn_src_tray);
+        source_row.append(&btn_src_sel);
+        root.append(&source_row);
+
         // Preset toolbar
         let toolbar = GtkBox::new(Orientation::Horizontal, 8);
         toolbar.add_css_class("convert-toolbar");
@@ -276,6 +318,7 @@ impl MediaConvertPanel {
             .hexpand(true)
             .build();
         preset_dropdown.add_css_class("convert-preset-dropdown");
+        crate::ui::attach_tooltip(&preset_dropdown, "Choose conversion preset");
         toolbar.append(&preset_dropdown);
         root.append(&toolbar);
 
@@ -290,14 +333,17 @@ impl MediaConvertPanel {
         let btn_next = ToggleButton::with_label("Next to originals");
         btn_next.add_css_class("convert-option-btn");
         btn_next.set_active(true);
+        crate::ui::attach_tooltip(&btn_next, "Save beside originals");
 
         let btn_subfolder = ToggleButton::with_label("Converted subfolder");
         btn_subfolder.add_css_class("convert-option-btn");
         btn_subfolder.set_group(Some(&btn_next));
+        crate::ui::attach_tooltip(&btn_subfolder, "Save in Converted folders");
 
         let btn_choose = ToggleButton::with_label("Choose folder…");
         btn_choose.add_css_class("convert-option-btn");
         btn_choose.set_group(Some(&btn_next));
+        crate::ui::attach_tooltip(&btn_choose, "Choose output folder");
 
         let output_chosen_label = Label::new(None);
         output_chosen_label.add_css_class("convert-chosen-folder-label");
@@ -323,14 +369,17 @@ impl MediaConvertPanel {
         let btn_rename = ToggleButton::with_label("Auto-rename");
         btn_rename.add_css_class("convert-option-btn");
         btn_rename.set_active(true);
+        crate::ui::attach_tooltip(&btn_rename, "Keep both files");
 
         let btn_skip = ToggleButton::with_label("Skip existing");
         btn_skip.add_css_class("convert-option-btn");
         btn_skip.set_group(Some(&btn_rename));
+        crate::ui::attach_tooltip(&btn_skip, "Skip conflicts");
 
         let btn_overwrite = ToggleButton::with_label("Overwrite");
         btn_overwrite.add_css_class("convert-option-btn");
         btn_overwrite.set_group(Some(&btn_rename));
+        crate::ui::attach_tooltip(&btn_overwrite, "Replace conflicts");
 
         conflict_row.append(&btn_rename);
         conflict_row.append(&btn_skip);
@@ -363,6 +412,10 @@ impl MediaConvertPanel {
         let convert_button = Button::with_label("Convert");
         convert_button.add_css_class("convert-start-button");
         convert_button.set_sensitive(false);
+        crate::ui::attach_tooltip(
+            &convert_button,
+            shortcut_tooltip(config, "Start conversion", "convert_start"),
+        );
         footer.append(&convert_button);
         root.append(&footer);
 
@@ -385,10 +438,29 @@ impl MediaConvertPanel {
             summary_label,
             output_chosen_label,
             btn_next: btn_next.clone(),
+            source_mode: Cell::new(ConvertSourceMode::Auto),
             on_start: RefCell::new(None),
             on_folder_pick: RefCell::new(None),
             on_settings_changed: RefCell::new(None),
+            on_source_mode_changed: RefCell::new(None),
         });
+
+        // Wire source mode buttons
+        for (btn, mode) in [
+            (&btn_src_auto, ConvertSourceMode::Auto),
+            (&btn_src_tray, ConvertSourceMode::Tray),
+            (&btn_src_sel, ConvertSourceMode::Selection),
+        ] {
+            let state = Rc::clone(&state);
+            btn.connect_toggled(move |b| {
+                if b.is_active() {
+                    state.source_mode.set(mode);
+                    if let Some(cb) = state.on_source_mode_changed.borrow().as_ref() {
+                        cb(mode);
+                    }
+                }
+            });
+        }
 
         // Wire preset dropdown change
         {
@@ -511,6 +583,28 @@ impl MediaConvertPanel {
 
     pub fn connect_start(&self, callback: impl Fn(ConversionBatch) + 'static) {
         *self.state.on_start.borrow_mut() = Some(Box::new(callback));
+    }
+
+    pub fn source_mode(&self) -> ConvertSourceMode {
+        self.state.source_mode.get()
+    }
+
+    pub fn connect_source_mode_changed(&self, callback: impl Fn(ConvertSourceMode) + 'static) {
+        *self.state.on_source_mode_changed.borrow_mut() = Some(Box::new(callback));
+    }
+
+    pub fn start_current_batch(&self) -> bool {
+        let batch = self.state.build_batch();
+        if batch.active_count() == 0 || !self.state.convert_button.is_sensitive() {
+            return false;
+        }
+        self.state.convert_button.set_sensitive(false);
+        if let Some(cb) = self.state.on_start.borrow().as_ref() {
+            cb(batch);
+            true
+        } else {
+            false
+        }
     }
 
     /// Triggered when "Choose folder…" is toggled. Wire to a GTK FileDialog in main_window.

@@ -67,56 +67,99 @@ impl AppConfig {
     }
 }
 
-fn default_shortcuts() -> HashMap<String, String> {
-    [
-        ("copy_selection", "Ctrl+C"),
-        ("cut_selection", "Ctrl+X"),
-        ("paste_clipboard", "Ctrl+V"),
-        ("copy_path", "Ctrl+Shift+C"),
-        ("new_folder", "Ctrl+N"),
-        ("new_text_document", "Ctrl+Shift+N"),
-        ("rename", "F2"),
-        ("trash", "Delete"),
-        ("search", "Ctrl+F"),
-        ("filter_tags", "Ctrl+G"),
-        ("focus_path", "Ctrl+L"),
-        ("refresh", "Ctrl+R"),
-        ("show_hidden", "Ctrl+H"),
-        ("toggle_sidebar", "Ctrl+B"),
-        ("toggle_preview", "Ctrl+P"),
-        ("toggle_holding_tray", "Ctrl+Alt+H"),
-        ("new_tab", "Ctrl+T"),
-        ("close_tab", "Ctrl+W"),
-        ("toggle_split", "Ctrl+\\"),
-        ("previous_tab", "Ctrl+Page_Up"),
-        ("next_tab", "Ctrl+Page_Down"),
-        ("back", "Alt+Left"),
-        ("forward", "Alt+Right"),
-        ("up", "Alt+Up"),
-        ("cycle_pane", "F6"),
-        ("escape", "Escape"),
-        ("view_icons", "Ctrl+1"),
-        ("view_list", "Ctrl+2"),
-        ("toggle_plan_mode", "Ctrl+Shift+P"),
-        ("toggle_paint_mode", "Ctrl+Shift+M"),
-        ("paint_brush", "b"),
-        ("paint_eraser", "e"),
-        ("paint_eyedropper", "i"),
-        ("paint_fill", "f"),
-        ("paint_undo", "Ctrl+Z"),
-        ("paint_redo", "Ctrl+Y"),
-        ("empty_trash", "Ctrl+Shift+Delete"),
-        ("tray_add_selection", "Ctrl+Alt+A"),
-        ("tray_move_to_project", "Ctrl+Alt+M"),
-        ("tray_copy_to_project", "Ctrl+Alt+C"),
-        ("tray_tag", "Ctrl+Alt+T"),
-        ("tray_trash", "Ctrl+Alt+Delete"),
-        ("tray_copy_paths", "Ctrl+Alt+P"),
-        ("tray_clear", "Ctrl+Alt+K"),
-    ]
-    .into_iter()
-    .map(|(action, shortcut)| (action.to_string(), shortcut.to_string()))
-    .collect()
+pub const BUILTIN_SHORTCUT_ACTIONS: &[(&str, Option<&str>)] = &[
+    ("copy_selection", Some("Ctrl+C")),
+    ("cut_selection", Some("Ctrl+X")),
+    ("paste_clipboard", Some("Ctrl+V")),
+    ("copy_path", Some("Ctrl+Shift+C")),
+    ("new_folder", Some("Ctrl+N")),
+    ("new_text_document", Some("Ctrl+Shift+N")),
+    ("rename", Some("F2")),
+    ("trash", Some("Delete")),
+    ("empty_trash", Some("Ctrl+Shift+Delete")),
+    ("search", Some("Ctrl+F")),
+    ("filter_tags", Some("Ctrl+G")),
+    ("focus_path", Some("Ctrl+L")),
+    ("refresh", Some("Ctrl+R")),
+    ("show_hidden", Some("Ctrl+H")),
+    ("toggle_shape_badges", None),
+    ("view_icons", Some("Ctrl+1")),
+    ("view_list", Some("Ctrl+2")),
+    ("sort_order", None),
+    ("toggle_sidebar", Some("Ctrl+B")),
+    ("toggle_preview", Some("Ctrl+P")),
+    ("toggle_holding_tray", Some("Ctrl+Alt+H")),
+    ("toggle_plan_mode", Some("Ctrl+Shift+P")),
+    ("toggle_paint_mode", Some("Ctrl+Shift+M")),
+    ("new_tab", Some("Ctrl+T")),
+    ("close_tab", Some("Ctrl+W")),
+    ("toggle_split", Some("Ctrl+\\")),
+    ("previous_tab", Some("Ctrl+Page_Up")),
+    ("next_tab", Some("Ctrl+Page_Down")),
+    ("back", Some("Alt+Left")),
+    ("forward", Some("Alt+Right")),
+    ("up", Some("Alt+Up")),
+    ("cycle_pane", Some("F6")),
+    ("escape", Some("Escape")),
+    ("open_home", None),
+    ("open_system_drives", None),
+    ("open_recent", None),
+    ("open_trash", None),
+    ("open_palettes", None),
+    ("open_tints_tags", None),
+    ("open_space_viewer", None),
+    ("open_triage", None),
+    ("open_bulk_naming", None),
+    ("open_convert", None),
+    ("open_activity_log", None),
+    ("paint_brush", Some("b")),
+    ("paint_eraser", Some("e")),
+    ("paint_eyedropper", Some("i")),
+    ("paint_fill", Some("f")),
+    ("paint_undo", Some("Ctrl+Z")),
+    ("paint_redo", Some("Ctrl+Y")),
+    ("paint_toggle_contents", None),
+    ("tray_add_selection", Some("Ctrl+Alt+A")),
+    ("tray_add_by_tint", None),
+    ("tray_add_by_shape", None),
+    ("tray_move_to_project", Some("Ctrl+Alt+M")),
+    ("tray_copy_to_project", Some("Ctrl+Alt+C")),
+    ("tray_tag", Some("Ctrl+Alt+T")),
+    ("tray_apply_mark", None),
+    ("tray_reset_mark", None),
+    ("tray_trash", Some("Ctrl+Alt+Delete")),
+    ("tray_copy_paths", Some("Ctrl+Alt+P")),
+    ("tray_clear", Some("Ctrl+Alt+K")),
+    ("plan_execute", None),
+    ("plan_clear", None),
+    ("convert_start", None),
+    ("convert_cancel", None),
+    ("convert_retry_failed", None),
+    ("convert_open_output", None),
+    ("convert_dismiss", None),
+];
+
+pub fn default_shortcuts() -> HashMap<String, String> {
+    BUILTIN_SHORTCUT_ACTIONS
+        .iter()
+        .filter_map(|(action, shortcut)| {
+            shortcut.map(|value| ((*action).to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+pub fn configured_shortcut(config: &AppConfig, action_id: &str) -> Option<String> {
+    config
+        .shortcuts
+        .get(action_id)
+        .filter(|s| !s.is_empty())
+        .cloned()
+}
+
+pub fn shortcut_tooltip(config: &AppConfig, label: &str, action_id: &str) -> String {
+    configured_shortcut(config, action_id)
+        .map(|shortcut| format!("{label} ({shortcut})"))
+        .unwrap_or_else(|| label.to_string())
 }
 
 fn parse_config(content: &str) -> AppConfig {
@@ -353,10 +396,10 @@ const EXAMPLE_CONFIG: &str = r#"# Lattice config
 # ~/.config/lattice/themes/<name>.css when present.
 theme = "default"
 
-# Built-in keyboard shortcuts. Uncomment a line to override its default.
-# Set a shortcut to "" to disable it.
-# Supported key names include letters, Delete, Escape, Left, Right, Up, Down,
-# Page_Up, Page_Down, F1-F12, and Backslash.
+# Built-in keyboard shortcuts. Uncomment a line to override or add a binding.
+# Set a shortcut to "" to disable a default binding.
+# Supported key names include letters/digits, Delete, Backspace, Enter, Escape,
+# Home, End, Left, Right, Up, Down, Page_Up, Page_Down, F1-F12, and Backslash.
 # Supported modifiers are Ctrl, Shift, and Alt, joined with "+".
 [shortcuts]
 # copy_selection = "Ctrl+C"
@@ -367,14 +410,21 @@ theme = "default"
 # new_text_document = "Ctrl+Shift+N"
 # rename = "F2"
 # trash = "Delete"
+# empty_trash = "Ctrl+Shift+Delete"
 # search = "Ctrl+F"
 # filter_tags = "Ctrl+G"
 # focus_path = "Ctrl+L"
 # refresh = "Ctrl+R"
 # show_hidden = "Ctrl+H"
+# toggle_shape_badges = "Ctrl+Alt+B"
+# sort_order = "Ctrl+Alt+S"
+# view_icons = "Ctrl+1"
+# view_list = "Ctrl+2"
 # toggle_sidebar = "Ctrl+B"
 # toggle_preview = "Ctrl+P"
 # toggle_holding_tray = "Ctrl+Alt+H"
+# toggle_plan_mode = "Ctrl+Shift+P"
+# toggle_paint_mode = "Ctrl+Shift+M"
 # new_tab = "Ctrl+T"
 # close_tab = "Ctrl+W"
 # toggle_split = "Ctrl+Backslash"
@@ -385,24 +435,42 @@ theme = "default"
 # up = "Alt+Up"
 # cycle_pane = "F6"
 # escape = "Escape"
-# view_icons = "Ctrl+1"
-# view_list = "Ctrl+2"
-# toggle_plan_mode = "Ctrl+Shift+P"
-# toggle_paint_mode = "Ctrl+Shift+M"
+# open_home = "Ctrl+Alt+Home"
+# open_system_drives = "Ctrl+Alt+D"
+# open_recent = "Ctrl+Alt+R"
+# open_trash = "Ctrl+Alt+U"
+# open_palettes = "Ctrl+Alt+L"
+# open_tints_tags = "Ctrl+Alt+I"
+# open_space_viewer = "Ctrl+Alt+V"
+# open_triage = "Ctrl+Alt+Y"
+# open_bulk_naming = "Ctrl+Alt+N"
+# open_convert = "Ctrl+Alt+F"
+# open_activity_log = "Ctrl+Alt+J"
 # paint_brush = "b"
 # paint_eraser = "e"
 # paint_eyedropper = "i"
 # paint_fill = "f"
 # paint_undo = "Ctrl+Z"
 # paint_redo = "Ctrl+Y"
-# empty_trash = "Ctrl+Shift+Delete"
+# paint_toggle_contents = "Ctrl+Alt+W"
 # tray_add_selection = "Ctrl+Alt+A"
+# tray_add_by_tint = "Ctrl+Alt+1"
+# tray_add_by_shape = "Ctrl+Alt+2"
 # tray_move_to_project = "Ctrl+Alt+M"
 # tray_copy_to_project = "Ctrl+Alt+C"
 # tray_tag = "Ctrl+Alt+T"
+# tray_apply_mark = "Ctrl+Alt+3"
+# tray_reset_mark = "Ctrl+Alt+4"
 # tray_trash = "Ctrl+Alt+Delete"
 # tray_copy_paths = "Ctrl+Alt+P"
 # tray_clear = "Ctrl+Alt+K"
+# plan_execute = "Ctrl+Alt+Enter"
+# plan_clear = "Ctrl+Alt+Backspace"
+# convert_start = "Ctrl+Alt+5"
+# convert_cancel = "Ctrl+Alt+Escape"
+# convert_retry_failed = "Ctrl+Alt+6"
+# convert_open_output = "Ctrl+Alt+O"
+# convert_dismiss = "Ctrl+Alt+0"
 #
 # Custom actions can also be bound with custom.<id>.
 # custom.open_in_gimp = "Ctrl+Alt+G"
@@ -527,7 +595,7 @@ contexts = ["file"]
 
     #[test]
     fn generated_example_documents_supported_config_surface() {
-        for shortcut in default_shortcuts().keys() {
+        for (shortcut, _) in BUILTIN_SHORTCUT_ACTIONS {
             assert!(
                 EXAMPLE_CONFIG.contains(&format!("# {shortcut} = ")),
                 "missing shortcut example for {shortcut}"

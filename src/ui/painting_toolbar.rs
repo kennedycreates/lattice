@@ -1,3 +1,4 @@
+use crate::config::{shortcut_tooltip, AppConfig};
 use crate::metadata::{Shape, TintRecord};
 use gtk::prelude::*;
 use gtk::{
@@ -63,7 +64,7 @@ pub struct PaintingToolbar {
 }
 
 impl PaintingToolbar {
-    pub fn build() -> Self {
+    pub fn build(config: &AppConfig) -> Self {
         let revealer = Revealer::new();
         revealer.set_transition_type(RevealerTransitionType::SlideDown);
         revealer.set_transition_duration(150);
@@ -166,10 +167,17 @@ impl PaintingToolbar {
         bar.append(&sep1);
 
         // ── Tool buttons ───────────────────────────────────────────────
-        let brush_btn = build_tool_toggle("🖌", "Brush — click or drag to apply mark");
-        let eraser_btn = build_tool_toggle("◻", "Eraser — click or drag to reset mark");
-        let eyedropper_btn = build_tool_toggle("💧", "Eyedropper — pick mark from a file");
-        let fill_btn = build_tool_toggle("⬛", "Fill Selection — apply mark to all selected");
+        let brush_btn = build_tool_toggle("🖌", &shortcut_tooltip(config, "Brush", "paint_brush"));
+        let eraser_btn =
+            build_tool_toggle("◻", &shortcut_tooltip(config, "Eraser", "paint_eraser"));
+        let eyedropper_btn = build_tool_toggle(
+            "💧",
+            &shortcut_tooltip(config, "Eyedropper", "paint_eyedropper"),
+        );
+        let fill_btn = build_tool_toggle(
+            "⬛",
+            &shortcut_tooltip(config, "Fill Selection", "paint_fill"),
+        );
 
         eraser_btn.set_group(Some(&brush_btn));
         eyedropper_btn.set_group(Some(&brush_btn));
@@ -193,7 +201,7 @@ impl PaintingToolbar {
         paint_contents_btn.set_active(false);
         crate::ui::attach_tooltip(
             &paint_contents_btn,
-            "Paint Contents — when on, painting a folder marks its contents recursively",
+            shortcut_tooltip(config, "Paint folder contents", "paint_toggle_contents"),
         );
         bar.append(&paint_contents_btn);
 
@@ -206,13 +214,19 @@ impl PaintingToolbar {
         let undo_btn = Button::with_label("↩");
         undo_btn.add_css_class("paint-tool-btn");
         undo_btn.set_sensitive(false);
-        crate::ui::attach_tooltip(&undo_btn, "Undo last paint action (Ctrl+Z)");
+        crate::ui::attach_tooltip(
+            &undo_btn,
+            shortcut_tooltip(config, "Undo paint action", "paint_undo"),
+        );
         bar.append(&undo_btn);
 
         let redo_btn = Button::with_label("↪");
         redo_btn.add_css_class("paint-tool-btn");
         redo_btn.set_sensitive(false);
-        crate::ui::attach_tooltip(&redo_btn, "Redo paint action (Ctrl+Y)");
+        crate::ui::attach_tooltip(
+            &redo_btn,
+            shortcut_tooltip(config, "Redo paint action", "paint_redo"),
+        );
         bar.append(&redo_btn);
 
         revealer.set_child(Some(&bar));

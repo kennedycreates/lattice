@@ -1,3 +1,4 @@
+use crate::config::{shortcut_tooltip, AppConfig};
 use crate::metadata::TintRecord;
 use crate::thumbnail::{ThumbnailKind, ThumbnailTarget};
 use crate::ui::file_grid::FileItem;
@@ -30,7 +31,7 @@ pub struct HoldingTray {
 }
 
 impl HoldingTray {
-    pub fn build() -> Self {
+    pub fn build(config: &AppConfig) -> Self {
         let panel = GtkBox::new(Orientation::Vertical, 0);
         panel.add_css_class("holding-tray");
 
@@ -48,48 +49,71 @@ impl HoldingTray {
         count_label.set_hexpand(true);
         header.append(&count_label);
 
-        let (add_selection_button, add_selection_host) =
-            action_button("Add selection (Ctrl+Alt+A)", "list-add-symbolic");
+        let (add_selection_button, add_selection_host) = action_button(
+            &shortcut_tooltip(config, "Add selection", "tray_add_selection"),
+            "list-add-symbolic",
+        );
         header.append(&add_selection_host);
 
-        let (add_by_tint_button, add_by_tint_host) =
-            action_button("Add by Tint", "color-select-symbolic");
+        let (add_by_tint_button, add_by_tint_host) = action_button(
+            &shortcut_tooltip(config, "Add by Tint", "tray_add_by_tint"),
+            "color-select-symbolic",
+        );
         header.append(&add_by_tint_host);
 
-        let (add_by_shape_button, add_by_shape_host) =
-            action_button("Add by Shape", "shapes-symbolic");
+        let (add_by_shape_button, add_by_shape_host) = action_button(
+            &shortcut_tooltip(config, "Add by Shape", "tray_add_by_shape"),
+            "shapes-symbolic",
+        );
         header.append(&add_by_shape_host);
 
-        let (move_to_project_button, move_to_project_host) =
-            action_button("Move to project (Ctrl+Alt+M)", "go-next-symbolic");
+        let (move_to_project_button, move_to_project_host) = action_button(
+            &shortcut_tooltip(config, "Move to palette", "tray_move_to_project"),
+            "go-next-symbolic",
+        );
         header.append(&move_to_project_host);
 
-        let (copy_to_project_button, copy_to_project_host) =
-            action_button("Copy to project (Ctrl+Alt+C)", "edit-copy-symbolic");
+        let (copy_to_project_button, copy_to_project_host) = action_button(
+            &shortcut_tooltip(config, "Copy to palette", "tray_copy_to_project"),
+            "edit-copy-symbolic",
+        );
         header.append(&copy_to_project_host);
 
-        let (tag_button, tag_host) = action_button("Tag tray (Ctrl+Alt+T)", "tag-symbolic");
+        let (tag_button, tag_host) = action_button(
+            &shortcut_tooltip(config, "Tag tray", "tray_tag"),
+            "tag-symbolic",
+        );
         header.append(&tag_host);
 
-        let (apply_mark_button, apply_mark_host) =
-            action_button("Apply Mark to tray items", "emblem-symbolic");
+        let (apply_mark_button, apply_mark_host) = action_button(
+            &shortcut_tooltip(config, "Apply Mark", "tray_apply_mark"),
+            "emblem-symbolic",
+        );
         header.append(&apply_mark_host);
 
-        let (reset_mark_button, reset_mark_host) =
-            action_button("Reset tray items to Beige Square", "edit-undo-symbolic");
+        let (reset_mark_button, reset_mark_host) = action_button(
+            &shortcut_tooltip(config, "Reset Mark", "tray_reset_mark"),
+            "edit-undo-symbolic",
+        );
         header.append(&reset_mark_host);
 
-        let (trash_button, trash_host) =
-            action_button("Trash tray (Ctrl+Alt+Delete)", "user-trash-symbolic");
+        let (trash_button, trash_host) = action_button(
+            &shortcut_tooltip(config, "Trash tray", "tray_trash"),
+            "user-trash-symbolic",
+        );
         trash_button.add_css_class("holding-tray-danger-action");
         header.append(&trash_host);
 
-        let (copy_path_button, copy_path_host) =
-            action_button("Copy paths (Ctrl+Alt+P)", "edit-copy-symbolic");
+        let (copy_path_button, copy_path_host) = action_button(
+            &shortcut_tooltip(config, "Copy paths", "tray_copy_paths"),
+            "edit-copy-symbolic",
+        );
         header.append(&copy_path_host);
 
-        let (clear_button, clear_host) =
-            action_button("Clear tray (Ctrl+Alt+K)", "edit-clear-symbolic");
+        let (clear_button, clear_host) = action_button(
+            &shortcut_tooltip(config, "Clear tray", "tray_clear"),
+            "edit-clear-symbolic",
+        );
         header.append(&clear_host);
 
         panel.append(&header);

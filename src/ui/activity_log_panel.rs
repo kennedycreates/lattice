@@ -1,6 +1,11 @@
 use crate::metadata::ActivityLogEntry;
 use gtk::prelude::*;
-use gtk::{Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow};
+use gtk::{
+    Align, Box as GtkBox, Button, DropDown, Label, Orientation, ScrolledWindow, StringList,
+    ToggleButton,
+};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActivityLogAction {
@@ -10,10 +15,50 @@ pub enum ActivityLogAction {
     CopyPath,
 }
 
+// (display label, op strings to match) — empty slice = match all
+const OP_FILTERS: &[(&str, &[&str])] = &[
+    ("All types", &[]),
+    ("Copy", &["copy", "duplicate"]),
+    ("Move", &["move"]),
+    ("Trash", &["trash", "permanent_delete"]),
+    ("Rename", &["rename", "bulk_rename"]),
+    ("New", &["new_folder", "new_file"]),
+    ("Tray", &["holding_tray", "send_to_project"]),
+    ("Mark", &["paint_mark", "erase_mark"]),
+];
+
+// (display label, lookback seconds) — 0 = no cutoff
+const TIME_FILTERS: &[(&str, i64)] = &[
+    ("All time", 0),
+    ("Last hour", 3_600),
+    ("Last 24 h", 86_400),
+    ("Last 7 days", 604_800),
+    ("Last 30 days", 2_592_000),
+];
+
+// (display label, age in seconds; entries older than this are deleted)
+const CLEANUP_AGES: &[(&str, i64)] = &[
+    ("1 week", 7 * 86_400),
+    ("1 month", 30 * 86_400),
+    ("3 months", 90 * 86_400),
+    ("1 year", 365 * 86_400),
+];
+
+struct State {
+    all_entries: RefCell<Vec<ActivityLogEntry>>,
+    on_action: RefCell<Option<Box<dyn Fn(ActivityLogAction, ActivityLogEntry)>>>,
+    on_cleanup: RefCell<Option<Box<dyn Fn(i64)>>>,
+    op_filter_idx: Cell<usize>,
+    time_filter_idx: Cell<usize>,
+    list_box: GtkBox,
+    cleanup_bar: GtkBox,
+    cleanup_age_dd: DropDown,
+}
+
 #[derive(Clone)]
 pub struct ActivityLogPanel {
     pub root: GtkBox,
-    list_box: GtkBox,
+    state: Rc<State>,
 }
 
 impl ActivityLogPanel {
@@ -24,6 +69,70 @@ impl ActivityLogPanel {
         root.set_hexpand(true);
         root.set_visible(false);
 
+        // ── Filter toolbar ────────────────────────────────────────────────
+        let toolbar = GtkBox::new(Orientation::Horizontal, 6);
+        toolbar.add_css_class("activity-log-toolbar");
+
+        let type_label = Label::new(Some("Type:"));
+        type_label.add_css_class("activity-log-filter-label");
+        toolbar.append(&type_label);
+
+        let op_labels: Vec<&str> = OP_FILTERS.iter().map(|(l, _)| *l).collect();
+        let op_dd = DropDown::builder()
+            .model(&StringList::new(&op_labels))
+            .build();
+        op_dd.add_css_class("activity-log-filter-dd");
+        toolbar.append(&op_dd);
+
+        let time_label = Label::new(Some("Time:"));
+        time_label.add_css_class("activity-log-filter-label");
+        toolbar.append(&time_label);
+
+        let time_labels: Vec<&str> = TIME_FILTERS.iter().map(|(l, _)| *l).collect();
+        let time_dd = DropDown::builder()
+            .model(&StringList::new(&time_labels))
+            .build();
+        time_dd.add_css_class("activity-log-filter-dd");
+        toolbar.append(&time_dd);
+
+        let spacer = GtkBox::new(Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        toolbar.append(&spacer);
+
+        let cleanup_toggle = ToggleButton::with_label("Clean up…");
+        cleanup_toggle.add_css_class("activity-log-cleanup-btn");
+        toolbar.append(&cleanup_toggle);
+
+        root.append(&toolbar);
+
+        // ── Cleanup bar (hidden until toggled) ────────────────────────────
+        let cleanup_bar = GtkBox::new(Orientation::Horizontal, 8);
+        cleanup_bar.add_css_class("activity-log-cleanup-bar");
+        cleanup_bar.set_visible(false);
+
+        let age_label = Label::new(Some("Delete entries older than:"));
+        age_label.add_css_class("activity-log-filter-label");
+        cleanup_bar.append(&age_label);
+
+        let age_labels: Vec<&str> = CLEANUP_AGES.iter().map(|(l, _)| *l).collect();
+        let cleanup_age_dd = DropDown::builder()
+            .model(&StringList::new(&age_labels))
+            .build();
+        cleanup_age_dd.add_css_class("activity-log-filter-dd");
+        cleanup_bar.append(&cleanup_age_dd);
+
+        let delete_btn = Button::with_label("Delete");
+        delete_btn.add_css_class("destructive-action");
+        delete_btn.add_css_class("activity-log-delete-btn");
+        cleanup_bar.append(&delete_btn);
+
+        let cancel_btn = Button::with_label("Cancel");
+        cancel_btn.add_css_class("activity-log-cancel-btn");
+        cleanup_bar.append(&cancel_btn);
+
+        root.append(&cleanup_bar);
+
+        // ── Entry list ────────────────────────────────────────────────────
         let scroll = ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -35,32 +144,151 @@ impl ActivityLogPanel {
         scroll.set_child(Some(&list_box));
         root.append(&scroll);
 
-        Self { root, list_box }
+        let state = Rc::new(State {
+            all_entries: RefCell::new(Vec::new()),
+            on_action: RefCell::new(None),
+            on_cleanup: RefCell::new(None),
+            op_filter_idx: Cell::new(0),
+            time_filter_idx: Cell::new(0),
+            list_box,
+            cleanup_bar: cleanup_bar.clone(),
+            cleanup_age_dd: cleanup_age_dd.clone(),
+        });
+
+        // Wire type filter dropdown
+        {
+            let state = Rc::clone(&state);
+            op_dd.connect_selected_notify(move |dd| {
+                state.op_filter_idx.set(dd.selected() as usize);
+                re_render(&state);
+            });
+        }
+
+        // Wire time filter dropdown
+        {
+            let state = Rc::clone(&state);
+            time_dd.connect_selected_notify(move |dd| {
+                state.time_filter_idx.set(dd.selected() as usize);
+                re_render(&state);
+            });
+        }
+
+        // Wire Clean up… toggle
+        {
+            let bar = cleanup_bar.clone();
+            cleanup_toggle.connect_toggled(move |btn| {
+                bar.set_visible(btn.is_active());
+            });
+        }
+
+        // Wire Delete button
+        {
+            let state = Rc::clone(&state);
+            let toggle = cleanup_toggle.clone();
+            delete_btn.connect_clicked(move |_| {
+                let age_idx = state.cleanup_age_dd.selected() as usize;
+                let age_secs = CLEANUP_AGES.get(age_idx).map(|(_, s)| *s).unwrap_or(0);
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let cutoff_ms = now_ms - age_secs * 1000;
+                state.cleanup_bar.set_visible(false);
+                toggle.set_active(false);
+                if let Some(cb) = state.on_cleanup.borrow().as_ref() {
+                    cb(cutoff_ms);
+                }
+            });
+        }
+
+        // Wire Cancel button
+        {
+            let bar = cleanup_bar.clone();
+            cancel_btn.connect_clicked(move |_| {
+                bar.set_visible(false);
+                cleanup_toggle.set_active(false);
+            });
+        }
+
+        Self { root, state }
     }
 
     pub fn populate<F>(&self, entries: &[ActivityLogEntry], on_action: F)
     where
-        F: Fn(ActivityLogAction, ActivityLogEntry) + Clone + 'static,
+        F: Fn(ActivityLogAction, ActivityLogEntry) + 'static,
     {
-        self.clear_rows();
-        if entries.is_empty() {
-            let hint = Label::new(Some("No file operations recorded yet."));
-            hint.add_css_class("activity-log-empty");
-            hint.set_halign(Align::Center);
-            hint.set_valign(Align::Center);
-            hint.set_vexpand(true);
-            self.list_box.append(&hint);
-            return;
-        }
-        for entry in entries {
-            self.list_box.append(&build_row(entry, on_action.clone()));
-        }
+        *self.state.all_entries.borrow_mut() = entries.to_vec();
+        *self.state.on_action.borrow_mut() = Some(Box::new(on_action));
+        re_render(&self.state);
     }
 
-    pub fn clear_rows(&self) {
-        while let Some(child) = self.list_box.first_child() {
-            self.list_box.remove(&child);
-        }
+    pub fn connect_cleanup(&self, callback: impl Fn(i64) + 'static) {
+        *self.state.on_cleanup.borrow_mut() = Some(Box::new(callback));
+    }
+
+}
+
+fn re_render(state: &Rc<State>) {
+    clear_list(&state.list_box);
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let time_secs = TIME_FILTERS
+        .get(state.time_filter_idx.get())
+        .map(|(_, s)| *s)
+        .unwrap_or(0);
+    let cutoff_ms = if time_secs == 0 {
+        0
+    } else {
+        now_ms - time_secs * 1000
+    };
+
+    let op_ops = OP_FILTERS
+        .get(state.op_filter_idx.get())
+        .map(|(_, ops)| *ops)
+        .unwrap_or(&[]);
+
+    let entries = state.all_entries.borrow();
+    let filtered: Vec<ActivityLogEntry> = entries
+        .iter()
+        .filter(|e| op_ops.is_empty() || op_ops.contains(&e.operation.as_str()))
+        .filter(|e| cutoff_ms == 0 || e.timestamp_ms >= cutoff_ms)
+        .cloned()
+        .collect();
+    drop(entries);
+
+    if filtered.is_empty() {
+        let msg = if state.all_entries.borrow().is_empty() {
+            "No file operations recorded yet."
+        } else {
+            "No entries match the current filters."
+        };
+        let hint = Label::new(Some(msg));
+        hint.add_css_class("activity-log-empty");
+        hint.set_halign(Align::Center);
+        hint.set_valign(Align::Center);
+        hint.set_vexpand(true);
+        state.list_box.append(&hint);
+        return;
+    }
+
+    for entry in &filtered {
+        let state2 = Rc::clone(state);
+        let on_action = move |action: ActivityLogAction, e: ActivityLogEntry| {
+            if let Some(cb) = state2.on_action.borrow().as_ref() {
+                cb(action, e);
+            }
+        };
+        state.list_box.append(&build_row(entry, on_action));
+    }
+}
+
+fn clear_list(list_box: &GtkBox) {
+    while let Some(child) = list_box.first_child() {
+        list_box.remove(&child);
     }
 }
 

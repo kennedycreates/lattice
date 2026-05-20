@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DB_FILE_NAME: &str = "metadata.db";
-const DB_SCHEMA_VERSION: i32 = 8;
+const DB_SCHEMA_VERSION: i32 = 9;
 const DEFAULT_TINT_NAME: &str = "Beige";
 const DEFAULT_TINT_COLOR: &str = "#806040";
 
@@ -213,6 +213,18 @@ pub struct ActivityLogItem {
     pub destination_path: Option<String>,
     pub status: String,
     pub error_detail: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FolderViewState {
+    /// "icons" | "list"
+    pub view_mode: String,
+    pub show_hidden: bool,
+    pub show_shape_badges: bool,
+    /// "name" | "modified" | "size" | "kind"
+    pub sort_field: String,
+    /// "ascending" | "descending"
+    pub sort_direction: String,
 }
 
 pub struct MetadataStore {
@@ -1277,6 +1289,56 @@ impl MetadataStore {
         entries
     }
 
+    pub fn delete_activity_before(&self, cutoff_ms: i64) -> usize {
+        self.conn
+            .execute(
+                "DELETE FROM activity_log WHERE timestamp_ms < ?1",
+                params![cutoff_ms],
+            )
+            .unwrap_or(0) as usize
+    }
+
+    pub fn get_folder_view_state(&self, folder_path: &str) -> Option<FolderViewState> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT view_mode, show_hidden, show_shape_badges, sort_field, sort_direction
+                 FROM folder_view_state WHERE folder_path = ?1",
+            )
+            .ok()?;
+        stmt.query_row(params![folder_path], |row| {
+            Ok(FolderViewState {
+                view_mode: row.get(0)?,
+                show_hidden: row.get::<_, i64>(1)? != 0,
+                show_shape_badges: row.get::<_, i64>(2)? != 0,
+                sort_field: row.get(3)?,
+                sort_direction: row.get(4)?,
+            })
+        })
+        .ok()
+    }
+
+    pub fn set_folder_view_state(&self, folder_path: &str, state: &FolderViewState) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO folder_view_state
+             (folder_path, view_mode, show_hidden, show_shape_badges, sort_field, sort_direction, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                folder_path,
+                state.view_mode,
+                state.show_hidden as i64,
+                state.show_shape_badges as i64,
+                state.sort_field,
+                state.sort_direction,
+                now
+            ],
+        );
+    }
+
     fn list_activity_items(&self, activity_id: i64) -> Vec<ActivityLogItem> {
         let mut stmt = match self.conn.prepare(
             "SELECT source_path, destination_path, status, error_detail
@@ -1441,6 +1503,16 @@ impl MetadataStore {
                     destination_path TEXT,
                     status TEXT NOT NULL DEFAULT 'success',
                     error_detail TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS folder_view_state (
+                    folder_path       TEXT PRIMARY KEY,
+                    view_mode         TEXT NOT NULL DEFAULT 'icons',
+                    show_hidden       INTEGER NOT NULL DEFAULT 0,
+                    show_shape_badges INTEGER NOT NULL DEFAULT 1,
+                    sort_field        TEXT NOT NULL DEFAULT 'name',
+                    sort_direction    TEXT NOT NULL DEFAULT 'ascending',
+                    updated_at        INTEGER NOT NULL
                 );
                 ",
             )

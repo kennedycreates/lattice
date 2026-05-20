@@ -1,3 +1,4 @@
+use crate::config::{shortcut_tooltip, AppConfig};
 use crate::metadata::{CloudRecord, PlaceRecord};
 use gtk::prelude::*;
 use gtk::{Box, Button, Label, Orientation, Revealer, ScrolledWindow};
@@ -45,7 +46,7 @@ pub struct Sidebar {
 }
 
 impl Sidebar {
-    pub fn build() -> Self {
+    pub fn build(config: &AppConfig) -> Self {
         let root = ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -59,6 +60,10 @@ impl Sidebar {
         vbox.set_margin_bottom(8);
 
         let home_button = section_button("🏠  Home", true);
+        crate::ui::attach_tooltip(
+            &home_button,
+            shortcut_tooltip(config, "Open Home", "open_home"),
+        );
         let places_section = Box::new(Orientation::Vertical, 0);
         places_section.add_css_class("sidebar-section");
         let (places_hdr, places_content_box, places_revealer) =
@@ -72,8 +77,20 @@ impl Sidebar {
         vbox.append(&places_section);
 
         let drives_button = section_button("💾  System Drives", true);
+        crate::ui::attach_tooltip(
+            &drives_button,
+            shortcut_tooltip(config, "Show system drives", "open_system_drives"),
+        );
         let recent_button = section_button("🕐  Recent", true);
+        crate::ui::attach_tooltip(
+            &recent_button,
+            shortcut_tooltip(config, "Show recent files", "open_recent"),
+        );
         let trash_button = section_button("🗑  Trash", true);
+        crate::ui::attach_tooltip(
+            &trash_button,
+            shortcut_tooltip(config, "Open Trash", "open_trash"),
+        );
         append_section(
             &vbox,
             "SYSTEM",
@@ -88,21 +105,55 @@ impl Sidebar {
         cloud_list.add_css_class("sidebar-dynamic-list");
         cloud_content_box.append(&cloud_list);
         let cloud_add_button = section_button("☁  Add Cloud Drive", true);
+        crate::ui::attach_tooltip(&cloud_add_button, "Add cloud drive");
         cloud_content_box.append(&cloud_add_button);
         let rclone_setup_button = section_button("⚙  rclone Remotes", true);
+        crate::ui::attach_tooltip(&rclone_setup_button, "Show rclone remotes");
         cloud_content_box.append(&rclone_setup_button);
         cloud_section.append(&cloud_hdr);
         cloud_section.append(&cloud_revealer);
         vbox.append(&cloud_section);
 
         let search_button = section_button("🔍  Search", true);
+        crate::ui::attach_tooltip(
+            &search_button,
+            shortcut_tooltip(config, "Search files", "search"),
+        );
         let bulk_naming_button = section_button("✏  Bulk Naming", true);
+        crate::ui::attach_tooltip(
+            &bulk_naming_button,
+            shortcut_tooltip(config, "Bulk rename", "open_bulk_naming"),
+        );
         let space_viewer_button = section_button("📊  Space Viewer", true);
+        crate::ui::attach_tooltip(
+            &space_viewer_button,
+            shortcut_tooltip(config, "Open Space Viewer", "open_space_viewer"),
+        );
         let triage_button = section_button("🧹  Triage", true);
+        crate::ui::attach_tooltip(
+            &triage_button,
+            shortcut_tooltip(config, "Open Triage", "open_triage"),
+        );
         let activity_log_button = section_button("📋  Activity Log", true);
+        crate::ui::attach_tooltip(
+            &activity_log_button,
+            shortcut_tooltip(config, "Open Activity Log", "open_activity_log"),
+        );
         let tags_button = section_button("🎨  Tints & Tags", true);
+        crate::ui::attach_tooltip(
+            &tags_button,
+            shortcut_tooltip(config, "Manage Tints & Tags", "open_tints_tags"),
+        );
         let projects_button = section_button("🗂  Palettes", true);
+        crate::ui::attach_tooltip(
+            &projects_button,
+            shortcut_tooltip(config, "Open Palettes", "open_palettes"),
+        );
         let convert_button = section_button("🔄  Convert Media", true);
+        crate::ui::attach_tooltip(
+            &convert_button,
+            shortcut_tooltip(config, "Convert media", "open_convert"),
+        );
         append_section(
             &vbox,
             "TOOLS",
