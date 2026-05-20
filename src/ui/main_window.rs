@@ -1223,8 +1223,8 @@ impl BrowserController {
             primary_show_shape_badges: Cell::new(vs.show_shape_badges),
             secondary_show_shape_badges: Cell::new(vs.show_shape_badges),
             tertiary_show_shape_badges: Cell::new(vs.show_shape_badges),
-            sidebar_visible: Cell::new(vs.sidebar_visible),
-            preview_visible: Cell::new(vs.preview_visible),
+            sidebar_visible: Cell::new(true),
+            preview_visible: Cell::new(true),
             suppress_panel_toggle_handlers: Cell::new(false),
             pane_layout: Cell::new(PaneLayout::Single),
             primary_view_mode: Cell::new(dflt_view_mode),
@@ -1301,6 +1301,11 @@ impl BrowserController {
         self.init_tint_css();
         self.apply_tint_css();
         self.connect_navigation();
+        {
+            let vs = crate::view_state::ViewState::load();
+            self.apply_sidebar_visibility(vs.sidebar_visible);
+            self.apply_preview_visibility(vs.preview_visible);
+        }
         self.cleanup_convert_temps();
         self.connect_sidebar();
         self.connect_tab_strip();
