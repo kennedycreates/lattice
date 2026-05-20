@@ -5,6 +5,7 @@ use gtk::{Box, Label, Orientation};
 pub struct StatusBar {
     pub root: Box,
     info_label: Label,
+    cloud_label: Label,
     message_label: Label,
     path_label: Label,
 }
@@ -19,6 +20,12 @@ impl StatusBar {
         info_label.set_halign(gtk::Align::Start);
         info_label.set_margin_start(10);
         root.append(&info_label);
+
+        let cloud_label = Label::new(None);
+        cloud_label.add_css_class("status-cloud");
+        cloud_label.set_halign(gtk::Align::Start);
+        cloud_label.set_visible(false);
+        root.append(&cloud_label);
 
         let message_label = Label::new(None);
         message_label.add_css_class("status-message");
@@ -35,6 +42,7 @@ impl StatusBar {
         Self {
             root,
             info_label,
+            cloud_label,
             message_label,
             path_label,
         }
@@ -55,5 +63,18 @@ impl StatusBar {
 
     pub fn set_path(&self, path: &str) {
         self.path_label.set_label(path);
+    }
+
+    pub fn set_cloud_context(&self, context: Option<&str>) {
+        match context {
+            Some(text) => {
+                self.cloud_label.set_label(text);
+                self.cloud_label.set_visible(true);
+            }
+            None => {
+                self.cloud_label.set_label("");
+                self.cloud_label.set_visible(false);
+            }
+        }
     }
 }

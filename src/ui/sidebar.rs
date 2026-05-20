@@ -1,12 +1,13 @@
-use crate::metadata::PlaceRecord;
+use crate::metadata::{CloudRecord, PlaceRecord};
 use gtk::prelude::*;
-use gtk::{Box, Button, Label, Orientation, Revealer, ScrolledWindow, Separator};
+use gtk::{Box, Button, Label, Orientation, Revealer, ScrolledWindow};
 use std::cell::RefCell;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarTarget {
     Home,
     Place(i64),
+    Cloud(i64),
     Search,
     BulkNaming,
     SpaceViewer,
@@ -17,6 +18,7 @@ pub enum SidebarTarget {
     SystemDrives,
     Recent,
     Trash,
+    Convert,
 }
 
 #[derive(Clone)]
@@ -33,8 +35,13 @@ pub struct Sidebar {
     pub drives_button: Button,
     pub recent_button: Button,
     pub trash_button: Button,
+    pub convert_button: Button,
     place_list: Box,
     place_buttons: RefCell<Vec<(PlaceRecord, Button)>>,
+    cloud_list: Box,
+    pub cloud_add_button: Button,
+    pub rclone_setup_button: Button,
+    cloud_buttons: RefCell<Vec<(CloudRecord, Button)>>,
 }
 
 impl Sidebar {
@@ -63,9 +70,6 @@ impl Sidebar {
         places_section.append(&places_hdr);
         places_section.append(&places_revealer);
         vbox.append(&places_section);
-        let sep = Separator::new(Orientation::Horizontal);
-        sep.add_css_class("sidebar-sep");
-        vbox.append(&sep);
 
         let drives_button = section_button("💾  System Drives", true);
         let recent_button = section_button("🕐  Recent", true);
@@ -76,6 +80,21 @@ impl Sidebar {
             [&drives_button, &recent_button, &trash_button].as_slice(),
         );
 
+        // CLOUD section (dynamic, between SYSTEM and TOOLS)
+        let cloud_section = Box::new(Orientation::Vertical, 0);
+        cloud_section.add_css_class("sidebar-section");
+        let (cloud_hdr, cloud_content_box, cloud_revealer) = collapsible_section_header("CLOUD");
+        let cloud_list = Box::new(Orientation::Vertical, 0);
+        cloud_list.add_css_class("sidebar-dynamic-list");
+        cloud_content_box.append(&cloud_list);
+        let cloud_add_button = section_button("☁  Add Cloud Drive", true);
+        cloud_content_box.append(&cloud_add_button);
+        let rclone_setup_button = section_button("⚙  rclone Remotes", true);
+        cloud_content_box.append(&rclone_setup_button);
+        cloud_section.append(&cloud_hdr);
+        cloud_section.append(&cloud_revealer);
+        vbox.append(&cloud_section);
+
         let search_button = section_button("🔍  Search", true);
         let bulk_naming_button = section_button("✏  Bulk Naming", true);
         let space_viewer_button = section_button("📊  Space Viewer", true);
@@ -83,6 +102,7 @@ impl Sidebar {
         let activity_log_button = section_button("📋  Activity Log", true);
         let tags_button = section_button("🎨  Tints & Tags", true);
         let projects_button = section_button("🗂  Palettes", true);
+        let convert_button = section_button("🔄  Convert Media", true);
         append_section(
             &vbox,
             "TOOLS",
@@ -93,6 +113,7 @@ impl Sidebar {
                 &space_viewer_button,
                 &triage_button,
                 &bulk_naming_button,
+                &convert_button,
                 &activity_log_button,
             ]
             .as_slice(),
@@ -113,8 +134,13 @@ impl Sidebar {
             drives_button,
             recent_button,
             trash_button,
+            convert_button,
             place_list,
             place_buttons: RefCell::new(Vec::new()),
+            cloud_list,
+            cloud_add_button,
+            rclone_setup_button,
+            cloud_buttons: RefCell::new(Vec::new()),
         }
     }
 
@@ -138,6 +164,26 @@ impl Sidebar {
         self.place_buttons.borrow().clone()
     }
 
+    pub fn set_cloud_locations(&self, locations: &[CloudRecord]) {
+        clear_box(&self.cloud_list);
+        let mut buttons = Vec::with_capacity(locations.len());
+        if locations.is_empty() {
+            self.cloud_list
+                .append(&section_note("Add mounted cloud drives here."));
+        }
+
+        for loc in locations {
+            let button = dynamic_button("☁", &loc.name);
+            self.cloud_list.append(&button);
+            buttons.push((loc.clone(), button));
+        }
+        self.cloud_buttons.replace(buttons);
+    }
+
+    pub fn cloud_buttons(&self) -> Vec<(CloudRecord, Button)> {
+        self.cloud_buttons.borrow().clone()
+    }
+
     pub fn set_active(&self, active: Option<&SidebarTarget>) {
         for (button, location) in [
             (&self.home_button, SidebarTarget::Home),
@@ -151,6 +197,7 @@ impl Sidebar {
             (&self.drives_button, SidebarTarget::SystemDrives),
             (&self.recent_button, SidebarTarget::Recent),
             (&self.trash_button, SidebarTarget::Trash),
+            (&self.convert_button, SidebarTarget::Convert),
         ] {
             if active == Some(&location) {
                 button.add_css_class("active");
@@ -161,6 +208,14 @@ impl Sidebar {
 
         for (place, button) in self.place_buttons.borrow().iter() {
             if active == Some(&SidebarTarget::Place(place.id)) {
+                button.add_css_class("active");
+            } else {
+                button.remove_css_class("active");
+            }
+        }
+
+        for (loc, button) in self.cloud_buttons.borrow().iter() {
+            if active == Some(&SidebarTarget::Cloud(loc.id)) {
                 button.add_css_class("active");
             } else {
                 button.remove_css_class("active");
@@ -182,10 +237,6 @@ fn append_section(vbox: &Box, heading_text: &str, buttons: &[&Button]) {
     section_box.append(&hdr);
     section_box.append(&revealer);
     vbox.append(&section_box);
-
-    let sep = Separator::new(Orientation::Horizontal);
-    sep.add_css_class("sidebar-sep");
-    vbox.append(&sep);
 }
 
 fn section_button(label: &str, sensitive: bool) -> Button {
@@ -223,7 +274,9 @@ fn collapsible_section_header(heading_text: &str) -> (Button, Box, Revealer) {
     btn.set_child(Some(&row));
 
     let content_box = Box::new(Orientation::Vertical, 0);
+    content_box.add_css_class("sidebar-section-content");
     let revealer = Revealer::new();
+    revealer.add_css_class("sidebar-section-revealer");
     revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
     revealer.set_transition_duration(150);
     revealer.set_reveal_child(true);

@@ -467,6 +467,7 @@ impl PaletteBoardPanel {
         // ── Drag handle (card header) ─────────────────────────────────────
         let drag_handle = GtkBox::new(Orientation::Horizontal, 4);
         drag_handle.add_css_class("card-drag-handle");
+        drag_handle.set_cursor_from_name(Some("grab"));
         drag_handle.set_margin_start(6);
         drag_handle.set_margin_end(4);
         drag_handle.set_margin_top(4);
@@ -641,6 +642,7 @@ impl PaletteBoardPanel {
 
         let resize_da = DrawingArea::new();
         resize_da.add_css_class("card-resize-handle");
+        resize_da.set_cursor_from_name(Some("se-resize"));
         resize_da.set_size_request(18, 18);
         resize_da.set_content_width(18);
         resize_da.set_content_height(18);

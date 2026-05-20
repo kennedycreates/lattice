@@ -45,6 +45,14 @@ pub struct ActionPlan {
     pub file_list: Vec<String>,
     pub conflicts: Vec<String>,
     pub warn_level: WarnLevel,
+    pub cloud_note: Option<String>,
+}
+
+impl ActionPlan {
+    pub fn with_cloud_note(mut self, note: String) -> Self {
+        self.cloud_note = Some(note);
+        self
+    }
 }
 
 impl ActionPlan {
@@ -99,6 +107,7 @@ impl ActionPlan {
             file_list,
             conflicts,
             warn_level,
+            cloud_note: None,
         }
     }
 
@@ -128,6 +137,7 @@ impl ActionPlan {
             file_list,
             conflicts: Vec::new(),
             warn_level: WarnLevel::None,
+            cloud_note: None,
         }
     }
 
@@ -142,6 +152,7 @@ impl ActionPlan {
             file_list: vec![new_name.to_string()],
             conflicts: Vec::new(),
             warn_level: WarnLevel::None,
+            cloud_note: None,
         }
     }
 
@@ -169,6 +180,7 @@ impl ActionPlan {
             file_list,
             conflicts: Vec::new(),
             warn_level: WarnLevel::Danger,
+            cloud_note: None,
         }
     }
 
@@ -187,6 +199,7 @@ impl ActionPlan {
             file_list,
             conflicts: Vec::new(),
             warn_level: WarnLevel::None,
+            cloud_note: None,
         }
     }
 
@@ -214,6 +227,7 @@ impl ActionPlan {
             file_list,
             conflicts: Vec::new(),
             warn_level: WarnLevel::None,
+            cloud_note: None,
         }
     }
 
@@ -227,6 +241,7 @@ impl ActionPlan {
             file_list: vec![name.to_string()],
             conflicts: Vec::new(),
             warn_level: WarnLevel::None,
+            cloud_note: None,
         }
     }
 
@@ -240,6 +255,7 @@ impl ActionPlan {
             file_list: vec![name.to_string()],
             conflicts: Vec::new(),
             warn_level: WarnLevel::None,
+            cloud_note: None,
         }
     }
 
@@ -281,6 +297,7 @@ impl ActionPlan {
             } else {
                 WarnLevel::None
             },
+            cloud_note: None,
         }
     }
 
@@ -309,6 +326,7 @@ impl ActionPlan {
             } else {
                 WarnLevel::None
             },
+            cloud_note: None,
         }
     }
 
@@ -339,6 +357,7 @@ impl ActionPlan {
             file_list,
             conflicts: Vec::new(),
             warn_level: WarnLevel::None,
+            cloud_note: None,
         }
     }
 }

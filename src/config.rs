@@ -418,7 +418,7 @@ theme = "default"
 #   move_to_trash, delete_permanently, custom.<id>
 #
 # File-only entries:
-#   open_with
+#   open_with, convert
 #
 # Folder-only entries:
 #   open_new_tab, open_in_pane, triage_folder, pin_place, pin_project
@@ -431,7 +431,7 @@ theme = "default"
 # bulk_rename appears only with two or more selected items and opens Bulk Naming;
 # open_in_pane adapts to the current pane layout; custom actions appear only in their contexts.
 [context_menu]
-# file = ["open", "open_with", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# file = ["open", "open_with", "convert", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
 # folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
 # background = ["new_folder", "new_text_document", "separator", "pin_place", "pin_project", "terminal_here", "copy_path"]
 #
@@ -537,6 +537,7 @@ contexts = ["file"]
         for entry in [
             "open",
             "open_with",
+            "convert",
             "open_new_tab",
             "open_in_pane",
             "triage_folder",

@@ -1,8 +1,10 @@
 mod action_plan;
 mod app;
 mod config;
+mod converter;
 mod launch;
 mod metadata;
+mod rclone;
 mod thumbnail;
 mod ui;
 

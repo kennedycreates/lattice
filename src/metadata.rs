@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DB_FILE_NAME: &str = "metadata.db";
-const DB_SCHEMA_VERSION: i32 = 7;
+const DB_SCHEMA_VERSION: i32 = 8;
 const DEFAULT_TINT_NAME: &str = "Beige";
 const DEFAULT_TINT_COLOR: &str = "#806040";
 
@@ -167,6 +167,19 @@ pub struct PlaceRecord {
     pub id: i64,
     pub name: String,
     pub folder_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloudRecord {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+    /// Provider-specific remote identifier — for rclone this is the remote name (e.g. "gdrive").
+    /// Used by Lattice to call `rclone mount <remote_name>:` without reading credentials.
+    pub remote_name: Option<String>,
+    pub notes: Option<String>,
+    pub position: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -714,6 +727,124 @@ impl MetadataStore {
     pub fn remove_place(&mut self, place_id: i64) -> Result<(), String> {
         self.conn
             .execute("DELETE FROM places WHERE id = ?1", params![place_id])
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn list_cloud_locations(&self) -> Result<Vec<CloudRecord>, String> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT id, name, path, kind, remote_name, notes, position
+                 FROM cloud_locations
+                 ORDER BY position ASC, name COLLATE NOCASE ASC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(CloudRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    path: row.get(2)?,
+                    kind: row.get(3)?,
+                    remote_name: row.get(4)?,
+                    notes: row.get(5)?,
+                    position: row.get(6)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn create_cloud_location(
+        &mut self,
+        name: &str,
+        path: &str,
+        kind: &str,
+        remote_name: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<CloudRecord, String> {
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            return Err("Cloud location name cannot be empty.".to_string());
+        }
+        let trimmed_path = path.trim();
+        if trimmed_path.is_empty() {
+            return Err("Cloud location path cannot be empty.".to_string());
+        }
+        let trimmed_remote = remote_name
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let next_position = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM cloud_locations",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(1);
+        self.conn
+            .execute(
+                "INSERT INTO cloud_locations (name, path, kind, remote_name, notes, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    trimmed_name,
+                    trimmed_path,
+                    kind,
+                    trimmed_remote,
+                    notes,
+                    next_position
+                ],
+            )
+            .map_err(map_constraint_error)?;
+        let id = self.conn.last_insert_rowid();
+        Ok(CloudRecord {
+            id,
+            name: trimmed_name.to_string(),
+            path: trimmed_path.to_string(),
+            kind: kind.to_string(),
+            remote_name: trimmed_remote,
+            notes: notes.map(|s| s.to_string()),
+            position: next_position,
+        })
+    }
+
+    pub fn update_cloud_location(
+        &mut self,
+        id: i64,
+        name: &str,
+        path: &str,
+        kind: &str,
+        remote_name: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<(), String> {
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            return Err("Cloud location name cannot be empty.".to_string());
+        }
+        let trimmed_path = path.trim();
+        if trimmed_path.is_empty() {
+            return Err("Cloud location path cannot be empty.".to_string());
+        }
+        let trimmed_remote = remote_name
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        self.conn
+            .execute(
+                "UPDATE cloud_locations
+                 SET name = ?1, path = ?2, kind = ?3, remote_name = ?4, notes = ?5
+                 WHERE id = ?6",
+                params![trimmed_name, trimmed_path, kind, trimmed_remote, notes, id],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn delete_cloud_location(&mut self, id: i64) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM cloud_locations WHERE id = ?1", params![id])
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
@@ -1275,6 +1406,15 @@ impl MetadataStore {
                     position INTEGER NOT NULL DEFAULT 0
                 );
 
+                CREATE TABLE IF NOT EXISTS cloud_locations (
+                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name     TEXT NOT NULL,
+                    path     TEXT NOT NULL,
+                    kind     TEXT NOT NULL DEFAULT 'manual',
+                    notes    TEXT,
+                    position INTEGER NOT NULL DEFAULT 0
+                );
+
                 CREATE TABLE IF NOT EXISTS recent_locations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     folder_path TEXT NOT NULL UNIQUE,
@@ -1312,6 +1452,8 @@ impl MetadataStore {
             "INTEGER REFERENCES tints(id) ON DELETE SET NULL",
         )?;
         self.ensure_column("tags", "associated_shape", "TEXT")?;
+        // Cloud Profiles: remote_name stores the provider-specific identifier (e.g. rclone remote name)
+        self.ensure_column("cloud_locations", "remote_name", "TEXT")?;
         self.seed_default_tint()?;
         self.migrate_projects_to_palettes()?;
 

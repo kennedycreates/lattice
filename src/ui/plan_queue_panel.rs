@@ -161,15 +161,28 @@ fn build_row<F: Fn(QueueAction) + Clone + 'static>(
     icon.set_valign(Align::Center);
     row.append(&icon);
 
-    // Summary
+    // Summary (+ optional cloud note stacked beneath it)
+    let text_col = GtkBox::new(Orientation::Vertical, 1);
+    text_col.set_hexpand(true);
+    text_col.set_valign(Align::Center);
+
     let summary = Label::new(Some(&item.summary));
     summary.add_css_class("plan-queue-summary");
-    summary.set_hexpand(true);
     summary.set_halign(Align::Start);
     summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
     summary.set_max_width_chars(60);
-    summary.set_valign(Align::Center);
-    row.append(&summary);
+    text_col.append(&summary);
+
+    if let Some(note) = &item.cloud_note {
+        let note_label = Label::new(Some(note));
+        note_label.add_css_class("plan-queue-cloud-note");
+        note_label.set_halign(Align::Start);
+        note_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        note_label.set_max_width_chars(60);
+        text_col.append(&note_label);
+    }
+
+    row.append(&text_col);
 
     // Remove button
     let remove_btn = Button::with_label("✕");

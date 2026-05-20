@@ -766,7 +766,6 @@ fn all_shapes() -> [Shape; 7] {
     ]
 }
 
-
 fn recipe_entry(placeholder: &str) -> Entry {
     let entry = Entry::new();
     entry.add_css_class("bn-recipe-entry");
@@ -786,7 +785,6 @@ fn ops_chip(label: &str) -> Button {
     button.add_css_class("bn-ops-chip");
     button
 }
-
 
 fn invalid_name_reason(name: &str) -> Option<&'static str> {
     if name.trim().is_empty() {
@@ -857,7 +855,6 @@ fn clean_case_name(name: &str, is_dir: bool) -> String {
         format!("{cleaned}.{ext}")
     }
 }
-
 
 #[cfg(test)]
 mod tests {

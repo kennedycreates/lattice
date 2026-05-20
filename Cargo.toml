@@ -16,3 +16,6 @@ gio = { version = "0.20", features = ["v2_72"] }
 gdk-pixbuf = "0.20"
 rusqlite = { version = "0.31", features = ["bundled"] }
 cairo-rs = { package = "cairo-rs", version = "0.20" }
+
+[dev-dependencies]
+tempfile = "3"

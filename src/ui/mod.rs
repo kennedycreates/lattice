@@ -1,9 +1,12 @@
 pub mod activity_log_panel;
 pub mod bulk_naming_panel;
+pub mod cloud_landing_panel;
 pub mod conflict_resolver;
+pub mod convert_progress_panel;
 pub mod file_grid;
 pub mod holding_tray;
 pub mod main_window;
+pub mod media_convert_panel;
 pub mod modal_host;
 pub mod ops_panel;
 pub mod painting_toolbar;

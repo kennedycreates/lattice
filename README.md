@@ -8,7 +8,7 @@ Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. The suppo
 - Icon grid with folder-first sorting, per-pane hidden-file toggle, per-pane Shape badge visibility, and icon/list view switch
 - Tabbed browsing with two- and three-panel split view
 - Back, Up, Refresh, and a breadcrumb location bar with inline path editing and autocomplete
-- Sidebar: Home, user-pinned Places, System Drives, Recent, Trash, Palettes, Tints & Tags, Search, Space Viewer, Triage, Bulk Naming, and Activity Log
+- Sidebar: Home, user-pinned Places, System Drives, Recent, Trash, Cloud Drives, Palettes, Tints & Tags, Search, Space Viewer, Triage, Bulk Naming, and Activity Log
 
 **File Operations**
 - Copy, move, rename, visual bulk naming, new folder, new text document, and move to trash
@@ -24,7 +24,23 @@ Lattice is a mouse-first GTK4 file manager for Linux, built with Rust. The suppo
 - **Palette Boards**: open any Palette to enter a spatial board — add file, folder, or note cards; move and resize cards freely; draw weak (dashed) or strong (solid) links between cards; all card geometry and links persist across sessions; removing a card never deletes the underlying file
 - Space Viewer: disk usage analysis for the active folder — total size, file/folder counts, pie chart by file type, ranked largest files and subfolders, three scan depths (folder only, one level deep, full recursive with cancellation), and row actions (open, reveal, add to Holding Tray, copy path, move to trash)
 - Downloads Triage: Images, Videos, Archives, Documents, Large Files, Today, This Week, This Month, and Older filters
+- **Cloud Drives**: register mounted cloud and remote drives (rclone, pCloud Drive, GVfs, SFTP, FTP, WebDAV, or any local mount) as named sidebar entries. Landing view shows availability status and launches Space Viewer, Triage, or direct browsing. First-pass uses mounted filesystem locations — no direct provider APIs. See `docs/cloud.md` for mounting instructions.
+- **Cloud-First Tools**: Every Lattice tool is cloud-aware — Search, Triage, Space Viewer, Painting Mode, Holding Tray, Action Plans, Activity Log, Trash, and context menus all detect cloud locations and show appropriate messaging, guard unsafe operations, and include cloud context in receipts. See `docs/cloud.md` for tool support details and known limitations.
+- **GVfs / GIO Remote URIs**: Cloud entries accept GIO/GVfs URIs (`sftp://`, `ftp://`, `smb://`, `dav://`, `davs://`) as the path. Lattice resolves URIs to local GVfs FUSE mount paths when available, or enumerates directly via GIO (triggering GVfs auth transparently). The address bar also accepts these URIs for direct navigation. Kind is auto-detected from the URI scheme. See `docs/cloud.md` for required packages and troubleshooting.
+- **rclone Awareness**: the CLOUD sidebar section includes "⚙ rclone Remotes" — detects rclone, lists configured remote names (no credentials), and provides copy-ready mount commands and quick-add shortcuts.
+- **rclone Mount/Unmount**: Cloud entries with `kind = rclone` and a Remote name set show **Mount** and **Unmount** buttons on the landing page. Mount runs `rclone mount --daemon` off the main thread and confirms accessibility; Unmount calls `fusermount3`/`fusermount`/`umount`. Credentials are managed entirely by rclone config — Lattice never reads or modifies them. See `docs/cloud_rclone_mounts.md`.
 - Folder search with name, kind, date, size, and tag filters; current-folder or recursive scope
+
+**Media Conversion**
+- **Convert…** action in the file right-click menu: opens a full-pane conversion panel for any selection containing image, audio, or video files
+- Preset dropdown covering JPEG, PNG, WebP, AVIF, web-sized JPEG/WebP, MP3, FLAC, Opus, Compatible MP4, Smaller MP4, WebM, and audio extraction — auto-selected based on dominant media kind
+- Output location: Next to originals, Converted subfolder, or a folder chosen via the native file picker
+- Conflict policy: Auto-rename (default), Skip existing, or Overwrite
+- Preview table shows source → destination name for every file; incompatible-kind files are marked skipped before conversion starts
+- Tool dependency warning adapts to the selected preset (ffmpeg, ImageMagick, or Vips)
+- **Conversion Queue**: a dedicated progress panel slides up when conversion starts and stays visible while the user browses. Shows batch progress bar, per-job status rows (⏳ queued / ↻ running / ✓ done / ✗ failed / ↷ skipped), expandable error detail with selectable text and a Copy button, and footer controls: Cancel (while running), Retry Failed, Open Output, and Dismiss
+- Last preset per media kind, output mode, and conflict policy are remembered in `~/.config/lattice/convert_settings.toml`
+- See `docs/conversion.md` for required tools, supported formats, and developer notes
 
 **Preview and History**
 - Preview pane for images, text/config files, folders, and media metadata

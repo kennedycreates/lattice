@@ -243,8 +243,12 @@ headerbar windowcontrols button {
     min-width: 200px;
 }
 
-.sidebar-section {
+.sidebar-section,
+.sidebar-section-revealer,
+.sidebar-section-content {
     padding: 0;
+    border: none;
+    box-shadow: none;
 }
 
 .sidebar-section-heading {
@@ -255,16 +259,11 @@ headerbar windowcontrols button {
     text-transform: uppercase;
 }
 
-.sidebar-sep {
-    background-color: #333333;
-    min-height: 1px;
-    margin: 4px 0;
-}
-
 .sidebar-button {
     background: transparent;
     border: none;
     border-radius: 0;
+    box-shadow: none;
     color: #cccccc;
     padding: 6px 12px 6px 14px;
     font-size: 13px;
@@ -1184,3 +1183,59 @@ tooltip {
 .bn-entry-conflict { border-color: #ff3355; }
 .bn-apply-button { background: #00ffff; border: 1px solid #ffffff; border-radius: 4px; color: #000000; font-size: 12px; font-weight: 900; padding: 5px 12px; }
 .bn-apply-button:disabled { opacity: 0.45; }
+
+/* ── Media Conversion Panel (high-contrast) ─────────────────── */
+.convert-panel { background: #000000; }
+.convert-tool-warning { background: #1a0800; border-bottom: 1px solid #ff6600; padding: 4px 10px; }
+.convert-tool-warning-label { color: #ff6600; font-size: 12px; font-weight: 700; }
+.convert-toolbar { padding: 6px 10px 4px; border-bottom: 1px solid #555555; }
+.convert-preset-label { color: #aaaaaa; font-size: 12px; }
+.convert-preset-dropdown { min-height: 28px; }
+.convert-output-dir-btn { background: #050505; border: 1px solid #555555; border-radius: 4px; color: #888888; font-size: 11px; padding: 2px 8px; min-height: 26px; }
+.convert-output-dir-btn:hover { border-color: #00ffff; color: #00ffff; }
+.convert-scroll, .convert-file-list, .convert-file-row { background: transparent; }
+.convert-file-row:hover { background: #111111; }
+.convert-file-row-body { padding: 4px 10px; }
+.convert-file-row-badge { color: #00ffff; min-width: 20px; }
+.convert-file-row-name { color: #ffffff; font-size: 12px; }
+.convert-file-row-arrow { color: #555555; font-size: 11px; margin: 0 4px; }
+.convert-file-row-dest { color: #888888; font-size: 12px; opacity: 0.85; }
+.convert-empty { color: #888888; font-size: 12px; font-style: italic; }
+.convert-action-row { border-top: 1px solid #555555; padding: 6px 10px; }
+.convert-summary { color: #888888; font-size: 12px; }
+.convert-start-button { background: #00ffff; border: 1px solid #ffffff; border-radius: 4px; color: #000000; font-size: 12px; font-weight: 900; padding: 4px 18px; min-height: 28px; }
+.convert-start-button:hover { background: #33ffff; }
+.convert-start-button:disabled { background: #1a1a1a; color: #555555; border-color: #333333; }
+.convert-more-label { color: #777777; font-size: 11px; font-style: italic; }
+.convert-output-row, .convert-conflict-row { padding: 5px 10px 4px; border-bottom: 1px solid #444444; background: #0d0d0d; }
+.convert-section-label { color: #888888; font-size: 11px; min-width: 52px; }
+.convert-option-btn { background: transparent; border: 1px solid #555555; border-radius: 4px; color: #888888; font-size: 11px; padding: 2px 8px; min-height: 24px; }
+.convert-option-btn:hover { border-color: #ffffff; color: #ffffff; }
+.convert-option-btn:checked { background: #003366; border-color: #00aaff; color: #ffffff; font-weight: 700; }
+.convert-chosen-folder-label { color: #00aaff; font-size: 11px; margin-left: 4px; }
+.convert-progress-panel { background: #0d0d0d; border-top: 1px solid #555555; }
+.convert-progress-header { padding: 5px 10px 4px; border-bottom: 1px solid #333333; }
+.convert-progress-title { color: #ffffff; font-size: 11px; font-weight: 700; min-width: 68px; }
+.convert-progress-batch-bar trough { background: #222222; border-radius: 3px; min-height: 6px; }
+.convert-progress-batch-bar progress { background: #00aaff; border-radius: 3px; min-height: 6px; }
+.convert-progress-counts { color: #aaaaaa; font-size: 11px; min-width: 80px; }
+.convert-job-row { border-bottom: 1px solid #222222; }
+.convert-job-row-top { padding: 3px 10px 2px; }
+.convert-job-name { color: #ffffff; font-size: 11px; }
+.convert-job-dest { color: #4488cc; font-size: 11px; }
+.convert-job-status { color: #888888; font-size: 11px; min-width: 80px; }
+.convert-job-status.cjr-running { color: #ffff00; }
+.convert-job-status.cjr-done { color: #00ff00; font-weight: 700; }
+.convert-job-status.cjr-failed { color: #ff4444; font-weight: 700; }
+.convert-job-status.cjr-skipped { color: #555555; }
+.convert-job-pb trough { background: #1a1a1a; border-radius: 2px; min-height: 4px; }
+.convert-job-pb progress { background: #00aaff; border-radius: 2px; min-height: 4px; }
+.convert-job-error-area { background: #1a0000; border-radius: 3px; padding: 4px 6px; }
+.convert-job-error-label { color: #ff6666; font-family: monospace; font-size: 10px; }
+.convert-job-copy-btn { background: transparent; border: 1px solid #663333; border-radius: 3px; color: #aaaaaa; font-size: 10px; padding: 1px 6px; min-height: 20px; }
+.convert-job-copy-btn:hover { border-color: #ff4444; color: #ff6666; }
+.convert-progress-footer { padding: 4px 10px 5px; border-top: 1px solid #333333; }
+.convert-progress-btn { background: transparent; border: 1px solid #555555; border-radius: 4px; color: #aaaaaa; font-size: 11px; padding: 2px 10px; min-height: 24px; }
+.convert-progress-btn:hover { border-color: #ffffff; color: #ffffff; }
+.convert-progress-btn-retry { border-color: #663300; color: #ff6600; }
+.convert-progress-btn-retry:hover { border-color: #ff6600; color: #ff9900; }

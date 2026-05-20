@@ -199,7 +199,12 @@ impl FileItem {
         }
 
         let child = parent.child(&info.name());
-        let path = child.path()?;
+        // For GVfs-mounted remotes, path() may be None when GVfs FUSE is not bridging
+        // to the local filesystem. Fall back to the URI so the item is still browsable.
+        let path = match child.path() {
+            Some(p) => p,
+            None => PathBuf::from(child.uri().as_str()),
+        };
         let kind = FileKind::from_path(&path, info.file_type(), info.content_type().as_deref());
 
         Some(Self {

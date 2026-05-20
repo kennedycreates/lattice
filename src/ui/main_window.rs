@@ -1,14 +1,21 @@
 use crate::action_plan::ActionPlan as FileOpPlan;
 use crate::config::{AppConfig, CustomActionConfig};
+use crate::converter::{
+    cleanup_orphaned_temps_in, ConversionQueue, ConvertItem, ConvertSettings, MediaKind,
+};
 use crate::metadata::{
-    ActivityLogEntry, MetadataStore, PlaceRecord, ProjectRecord, Shape, TagRecord, TintRecord,
+    ActivityLogEntry, CloudRecord, MetadataStore, PlaceRecord, ProjectRecord, Shape, TagRecord,
+    TintRecord,
 };
 use crate::ui::{
     activity_log_panel::{ActivityLogAction, ActivityLogPanel},
     bulk_naming_panel::BulkNamingPanel,
+    cloud_landing_panel::CloudLandingPanel,
     conflict_resolver,
+    convert_progress_panel::ConvertProgressPanel,
     file_grid::{FileGrid, FileItem, FileKind, ViewMode},
     holding_tray::HoldingTray,
+    media_convert_panel::MediaConvertPanel,
     modal_host::{
         build_modal_actions, build_modal_button, build_modal_prompt, ButtonKind, ModalHost,
     },
@@ -58,6 +65,7 @@ const TEXT_PREVIEW_DISPLAY_CHARS: usize = 4_000;
 const TRIAGE_LARGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
 const TRASH_GVFS_DIAGNOSTIC: &str = "Trash support may require GVfs. On Arch/CachyOS, install gvfs, udisks2, and polkit, then log out/in or reboot.\n\nTroubleshooting:\nsudo pacman -Syu --needed gvfs udisks2 polkit\ngio list trash:///\ngio trash --list\ngio mount -l";
 const DRIVES_GVFS_DIAGNOSTIC: &str = "No system drives found through GIO/GVfs.\n\nInstall gvfs, udisks2, and polkit, then log out/in or reboot.\n\nTroubleshooting:\nsudo pacman -Syu --needed gvfs udisks2 polkit\ngio mount -l\nudisksctl status\nlsblk -f";
+const GVFS_REMOTE_DIAGNOSTIC: &str = "GVfs remote is unavailable. Possible causes:\n• GVfs daemon not running or backend not installed\n• Remote host unreachable or credentials expired\n• SMB shares need gvfs-smb; SFTP/FTP need gvfs-fuse\n\nUbuntu/Debian: sudo apt install gvfs gvfs-backends\nArch/CachyOS:  sudo pacman -S gvfs gvfs-smb gvfs-mtp\n\nDiagnostics:\ngio mount <uri>\ngio mount -l";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaneSlot {
@@ -311,8 +319,10 @@ enum PaneView {
     Search(SearchQuery),
     BulkNaming { root: PathBuf },
     SpaceViewer { root: PathBuf },
+    MediaConvert { from_dir: PathBuf },
     ActivityLog,
     ProjectLanding(i64),
+    CloudLanding(i64),
     ProjectManager,
     TagManager,
 }
@@ -510,11 +520,13 @@ struct PaneWidgets {
     file_grid: FileGrid,
     activity_log_panel: ActivityLogPanel,
     project_landing_panel: ProjectLandingPanel,
+    cloud_landing_panel: CloudLandingPanel,
     palette_board_panel: PaletteBoardPanel,
     project_manager_panel: ProjectManagerPanel,
     tag_manager_panel: TintsTagsPanel,
     bulk_naming_panel: BulkNamingPanel,
     space_viewer_panel: SpaceViewerPanel,
+    media_convert_panel: MediaConvertPanel,
 }
 
 impl PaneWidgets {
@@ -634,12 +646,14 @@ impl PaneWidgets {
 
         let activity_log_panel = ActivityLogPanel::build();
         let project_landing_panel = ProjectLandingPanel::build();
+        let cloud_landing_panel = CloudLandingPanel::build();
         let palette_board_panel = PaletteBoardPanel::build();
         let project_manager_panel = ProjectManagerPanel::build();
 
         let tag_manager_panel = TintsTagsPanel::build();
         let bulk_naming_panel = BulkNamingPanel::build();
         let space_viewer_panel = SpaceViewerPanel::build();
+        let media_convert_panel = MediaConvertPanel::build();
 
         root.append(&header);
         root.append(&tag_filter_revealer);
@@ -648,11 +662,13 @@ impl PaneWidgets {
         root.append(&file_grid.root);
         root.append(&activity_log_panel.root);
         root.append(&project_landing_panel.root);
+        root.append(&cloud_landing_panel.root);
         root.append(&palette_board_panel.root);
         root.append(&project_manager_panel.root);
         root.append(&tag_manager_panel.root);
         root.append(&bulk_naming_panel.root);
         root.append(&space_viewer_panel.root);
+        root.append(&media_convert_panel.root);
 
         Self {
             root,
@@ -676,11 +692,13 @@ impl PaneWidgets {
             file_grid,
             activity_log_panel,
             project_landing_panel,
+            cloud_landing_panel,
             palette_board_panel,
             project_manager_panel,
             tag_manager_panel,
             bulk_naming_panel,
             space_viewer_panel,
+            media_convert_panel,
         }
     }
 }
@@ -714,6 +732,7 @@ impl MainWindow {
         let holding_tray = HoldingTray::build();
         let plan_queue_panel = PlanQueuePanel::build();
         let ops_panel = OpsPanel::build();
+        let convert_progress = ConvertProgressPanel::build();
         let status = StatusBar::build();
         let painting_toolbar = PaintingToolbar::build();
 
@@ -734,6 +753,7 @@ impl MainWindow {
         root.append(&holding_tray.root);
         root.append(&plan_queue_panel.root);
         root.append(&ops_panel.root);
+        root.append(&convert_progress.root);
         root.append(&status.root);
 
         // Wrap the entire UI in the in-window modal overlay.
@@ -757,6 +777,7 @@ impl MainWindow {
             plan_queue_panel,
             status.clone(),
             ops_panel,
+            convert_progress,
             body.sidebar_revealer.clone(),
             body.preview_revealer.clone(),
             body.split_paned.clone(),
@@ -904,6 +925,7 @@ struct BrowserController {
     places: Places,
     metadata: RefCell<MetadataStore>,
     user_places: RefCell<Vec<PlaceRecord>>,
+    cloud_locations: RefCell<Vec<CloudRecord>>,
     projects: RefCell<Vec<ProjectRecord>>,
     tags: RefCell<Vec<TagRecord>>,
     terminal_command: Option<Vec<OsString>>,
@@ -987,7 +1009,9 @@ struct BrowserController {
     secondary_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
     tertiary_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
     ops_panel: OpsPanel,
+    convert_progress: ConvertProgressPanel,
     plan_queue_panel: PlanQueuePanel,
+    conversion_queue: ConversionQueue,
     plan_mode_active: Cell<bool>,
     action_queue: RefCell<Vec<crate::action_plan::ActionPlan>>,
     paint_mode_active: Cell<bool>,
@@ -1033,6 +1057,7 @@ impl BrowserController {
         plan_queue_panel: PlanQueuePanel,
         status: StatusBar,
         ops_panel: OpsPanel,
+        convert_progress: ConvertProgressPanel,
         sidebar_revealer: Revealer,
         preview_revealer: Revealer,
         split_paned: Paned,
@@ -1063,6 +1088,7 @@ impl BrowserController {
             window,
             metadata: RefCell::new(metadata),
             user_places: RefCell::new(Vec::new()),
+            cloud_locations: RefCell::new(Vec::new()),
             projects: RefCell::new(Vec::new()),
             tags: RefCell::new(Vec::new()),
             tabs: RefCell::new(vec![initial_tab]),
@@ -1147,7 +1173,9 @@ impl BrowserController {
             secondary_search_cancel: RefCell::new(None),
             tertiary_search_cancel: RefCell::new(None),
             ops_panel,
+            convert_progress,
             plan_queue_panel,
+            conversion_queue: ConversionQueue::new(),
             plan_mode_active: Cell::new(false),
             action_queue: RefCell::new(Vec::new()),
             paint_mode_active: Cell::new(false),
@@ -1187,6 +1215,7 @@ impl BrowserController {
         self.init_tint_css();
         self.apply_tint_css();
         self.connect_navigation();
+        self.cleanup_convert_temps();
         self.connect_sidebar();
         self.connect_tab_strip();
         self.connect_panes();
@@ -1199,6 +1228,7 @@ impl BrowserController {
         self.attach_pane_dnd(PaneSlot::Tertiary);
         self.attach_sidebar_place_dnd(self.sidebar.home_button.clone(), self.places.home.clone());
         self.wire_tag_filters();
+        self.connect_media_convert_actions();
         self.refresh_metadata_sidebar();
         self.update_action_state();
         self.rebuild_tab_strip();
@@ -1607,6 +1637,7 @@ impl BrowserController {
             self.sidebar.space_viewer_button.clone(),
             self.sidebar.triage_button.clone(),
             self.sidebar.bulk_naming_button.clone(),
+            self.sidebar.convert_button.clone(),
             self.sidebar.activity_log_button.clone(),
             self.sidebar.drives_button.clone(),
             self.sidebar.recent_button.clone(),
@@ -1696,6 +1727,38 @@ impl BrowserController {
         self.sidebar
             .space_viewer_button
             .connect_clicked(move |_| controller.open_space_viewer());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .convert_button
+            .connect_clicked(move |_| controller.open_convert_from_sidebar());
+        // cloud_add_button and rclone_setup_button are persistent, so connect once here
+        let controller = Rc::clone(self);
+        self.sidebar
+            .cloud_add_button
+            .connect_clicked(move |_| controller.show_add_cloud_dialog());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .rclone_setup_button
+            .connect_clicked(move |_| controller.show_rclone_setup_dialog());
+    }
+
+    fn open_convert_from_sidebar(self: &Rc<Self>) {
+        let slot = self.active_slot();
+        // Use currently selected files if there are media files among them;
+        // otherwise pass the full item list for the current directory so the
+        // panel can show the "No media files selected." empty state with
+        // a clear prompt.
+        let selected = self.selected_items_for(slot);
+        let has_media = selected
+            .iter()
+            .any(|i| matches!(i.kind, FileKind::Image | FileKind::Video | FileKind::Audio));
+        let items = if has_media {
+            selected
+        } else {
+            // Pass an empty vec — panel will show the empty state message
+            Vec::new()
+        };
+        self.open_media_convert_with_items(slot, items);
     }
 
     fn open_space_viewer(self: &Rc<Self>) {
@@ -1771,6 +1834,15 @@ impl BrowserController {
             self.status.set_path(&display_label);
             self.status.clear_message();
             self.status.set_counts(0, 0);
+            let cloud_ctx = self
+                .cloud_name_for_path(&dir)
+                .map(|(name, kind)| format!("☁ {name} ({kind})"));
+            self.status.set_cloud_context(cloud_ctx.as_deref());
+            if let Some((name, kind)) = self.cloud_name_for_path(&dir) {
+                self.status.set_message(&format!(
+                    "☁ Cloud drive: {name} ({kind}) — recursive scans may be slow; use cancel if needed"
+                ));
+            }
             self.update_sidebar_state();
             self.update_navigation_state();
             self.update_action_state();
@@ -3391,6 +3463,8 @@ impl BrowserController {
             button.add_controller(gesture);
         }
 
+        self.refresh_cloud_sidebar();
+
         self.refresh_search_tag_buttons(PaneSlot::Primary);
         self.refresh_search_tag_buttons(PaneSlot::Secondary);
         self.refresh_search_tag_buttons(PaneSlot::Tertiary);
@@ -3398,6 +3472,905 @@ impl BrowserController {
         self.secondary_pane.tag_filter.set_tags(&tags);
         self.tertiary_pane.tag_filter.set_tags(&tags);
         self.update_sidebar_state();
+    }
+
+    fn refresh_cloud_sidebar(self: &Rc<Self>) {
+        let locations = self
+            .metadata
+            .borrow()
+            .list_cloud_locations()
+            .unwrap_or_default();
+        self.cloud_locations.replace(locations.clone());
+        self.sidebar.set_cloud_locations(&locations);
+
+        for (loc, button) in self.sidebar.cloud_buttons() {
+            let controller = Rc::clone(self);
+            let cloud_id = loc.id;
+            button.connect_clicked(move |_| controller.open_cloud(cloud_id));
+
+            let controller = Rc::clone(self);
+            let loc_for_menu = loc.clone();
+            let gesture = gtk::GestureClick::new();
+            gesture.set_button(3);
+            gesture.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(widget) = gesture.widget() else {
+                    return;
+                };
+                controller.show_cloud_context_menu(loc_for_menu.clone(), widget, x, y);
+            });
+            button.add_controller(gesture);
+        }
+    }
+
+    fn open_cloud(self: &Rc<Self>, cloud_id: i64) {
+        let slot = self.active_slot();
+        if matches!(self.current_view_for(slot), PaneView::CloudLanding(id) if id == cloud_id) {
+            return;
+        }
+        self.save_dir_to_history_if_in_directory(slot);
+        self.current_view_cell(slot)
+            .replace(PaneView::CloudLanding(cloud_id));
+        self.sync_active_tab_state();
+        self.update_view_strip(slot);
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_cloud_landing_view(slot, cloud_id);
+        self.update_navigation_state();
+    }
+
+    fn load_cloud_landing_view(self: &Rc<Self>, slot: PaneSlot, cloud_id: i64) {
+        self.cancel_active_load(slot);
+        if slot == self.active_slot() {
+            self.cancel_active_preview();
+        }
+        self.dismiss_context_menu();
+
+        let Some(record) = self
+            .cloud_locations
+            .borrow()
+            .iter()
+            .find(|r| r.id == cloud_id)
+            .cloned()
+        else {
+            self.status.set_message("Cloud location not found.");
+            return;
+        };
+
+        let pane = self.pane_widgets(slot);
+        let display_label = record.name.clone();
+        pane.path_label.set_label(&display_label);
+        pane.file_grid.clear_selection();
+        self.reset_keyboard_state(slot);
+        self.items_cell(slot).borrow_mut().clear();
+
+        let record_path = record.path.clone();
+
+        let controller = Rc::clone(self);
+        let path_for_drive = record_path.clone();
+        let on_open_drive = move || {
+            let path = &path_for_drive;
+            if is_gio_uri(path) {
+                // Try to resolve to a local GVfs FUSE path first; fall back to URI navigation
+                let file = gio::File::for_uri(path);
+                let nav_path = file.path().unwrap_or_else(|| PathBuf::from(path));
+                controller.navigate_to(slot, nav_path, true);
+            } else {
+                controller.navigate_to(slot, PathBuf::from(path), true);
+            }
+        };
+
+        let controller = Rc::clone(self);
+        let path_for_sv = record_path.clone();
+        let on_space_viewer = move || {
+            controller
+                .current_view_cell(slot)
+                .replace(PaneView::SpaceViewer {
+                    root: PathBuf::from(&path_for_sv),
+                });
+            controller
+                .current_dir_cell(slot)
+                .replace(PathBuf::from(&path_for_sv));
+            controller.sync_active_tab_state();
+            controller.update_view_strip(slot);
+            if slot == PaneSlot::Primary {
+                controller.rebuild_tab_strip();
+            }
+            controller.load_space_viewer_view(slot);
+        };
+
+        let controller = Rc::clone(self);
+        let path_for_triage = record_path.clone();
+        let on_triage = move || {
+            controller.open_triage(PathBuf::from(&path_for_triage), TriageFilter::All);
+        };
+
+        let controller = Rc::clone(self);
+        let on_edit = move || {
+            controller.show_edit_cloud_dialog(cloud_id);
+        };
+
+        let controller = Rc::clone(self);
+        let on_remove = move || {
+            controller.show_remove_cloud_confirm(cloud_id);
+        };
+
+        let is_rclone_mountable = record.kind == "rclone" && record.remote_name.is_some();
+
+        let on_mount: Option<Box<dyn Fn()>> = if is_rclone_mountable {
+            let controller = Rc::clone(self);
+            Some(Box::new(move || controller.mount_cloud_profile(cloud_id)))
+        } else {
+            None
+        };
+
+        let on_unmount: Option<Box<dyn Fn()>> = if is_rclone_mountable {
+            let controller = Rc::clone(self);
+            Some(Box::new(move || controller.unmount_cloud_profile(cloud_id)))
+        } else {
+            None
+        };
+
+        pane.cloud_landing_panel.populate(
+            &record,
+            on_open_drive,
+            on_space_viewer,
+            on_triage,
+            on_edit,
+            on_remove,
+            on_mount,
+            on_unmount,
+        );
+
+        let controller = Rc::clone(self);
+        let path_for_check = record_path.clone();
+        glib::idle_add_local_once(move || {
+            let available =
+                if path_for_check.contains("://") && !path_for_check.starts_with("file://") {
+                    let file = gio::File::for_uri(&path_for_check);
+                    file.query_exists(gio::Cancellable::NONE)
+                } else {
+                    std::path::Path::new(&path_for_check).exists()
+                };
+            controller
+                .pane_widgets(slot)
+                .cloud_landing_panel
+                .set_availability(Some(available));
+        });
+
+        self.update_view_strip(slot);
+
+        if slot == self.active_slot() {
+            self.toolbar.set_breadcrumb_path(&display_label);
+            self.toolbar.show_breadcrumb_mode();
+            self.update_navigation_state();
+            self.status.set_path(&display_label);
+            self.status.clear_message();
+            self.update_sidebar_state();
+            self.update_action_state();
+        }
+    }
+
+    fn show_add_cloud_dialog(self: &Rc<Self>) {
+        let controller = Rc::clone(self);
+        self.show_cloud_form_dialog(None, None, move |name, path, kind, notes, remote_name| {
+            let result = controller.metadata.borrow_mut().create_cloud_location(
+                &name,
+                &path,
+                &kind,
+                remote_name.as_deref(),
+                notes.as_deref(),
+            );
+            match result {
+                Ok(record) => {
+                    controller.refresh_metadata_sidebar();
+                    controller.open_cloud(record.id);
+                }
+                Err(err) => {
+                    controller
+                        .status
+                        .set_message(&format!("Failed to add cloud location: {err}"));
+                }
+            }
+        });
+    }
+
+    fn show_edit_cloud_dialog(self: &Rc<Self>, cloud_id: i64) {
+        let Some(record) = self
+            .cloud_locations
+            .borrow()
+            .iter()
+            .find(|r| r.id == cloud_id)
+            .cloned()
+        else {
+            return;
+        };
+        let controller = Rc::clone(self);
+        self.show_cloud_form_dialog(Some(&record), None, move |name, path, kind, notes, remote_name| {
+            let result = controller.metadata.borrow_mut().update_cloud_location(
+                cloud_id,
+                &name,
+                &path,
+                &kind,
+                remote_name.as_deref(),
+                notes.as_deref(),
+            );
+            match result {
+                Ok(()) => {
+                    controller.refresh_metadata_sidebar();
+                    for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+                        if matches!(controller.current_view_for(slot), PaneView::CloudLanding(id) if id == cloud_id)
+                        {
+                            controller.load_cloud_landing_view(slot, cloud_id);
+                        }
+                    }
+                }
+                Err(err) => {
+                    controller
+                        .status
+                        .set_message(&format!("Failed to update cloud location: {err}"));
+                }
+            }
+        });
+    }
+
+    fn show_cloud_form_dialog<F>(
+        self: &Rc<Self>,
+        existing: Option<&CloudRecord>,
+        prefill: Option<(&str, &str, &str, Option<&str>)>,
+        on_save: F,
+    ) where
+        F: Fn(String, String, String, Option<String>, Option<String>) + 'static,
+    {
+        let title = if existing.is_some() {
+            "Edit Cloud Drive"
+        } else {
+            "Add Cloud Drive"
+        };
+
+        let kind_options = [
+            "rclone", "pcloud", "gvfs", "sftp", "ftp", "webdav", "manual",
+        ];
+
+        let name_entry = gtk::Entry::new();
+        name_entry.set_placeholder_text(Some("Display name"));
+        name_entry.set_width_chars(28);
+        name_entry.set_max_width_chars(28);
+        if let Some(r) = existing {
+            name_entry.set_text(&r.name);
+        }
+
+        let path_entry = gtk::Entry::new();
+        path_entry.set_placeholder_text(Some("/mnt/gdrive  or  sftp://host/path"));
+        path_entry.set_width_chars(28);
+        path_entry.set_max_width_chars(40);
+        if let Some(r) = existing {
+            path_entry.set_text(&r.path);
+        }
+
+        let kind_dropdown = gtk::DropDown::from_strings(&kind_options);
+        if let Some(r) = existing {
+            if let Some(pos) = kind_options.iter().position(|k| *k == r.kind) {
+                kind_dropdown.set_selected(pos as u32);
+            }
+        }
+
+        let remote_entry = gtk::Entry::new();
+        remote_entry.set_placeholder_text(Some("rclone remote name, e.g. gdrive (optional)"));
+        remote_entry.set_width_chars(28);
+        remote_entry.set_max_width_chars(40);
+        if let Some(r) = existing {
+            if let Some(rn) = &r.remote_name {
+                remote_entry.set_text(rn);
+            }
+        }
+
+        let notes_entry = gtk::Entry::new();
+        notes_entry.set_placeholder_text(Some("Optional notes"));
+        notes_entry.set_width_chars(28);
+        notes_entry.set_max_width_chars(40);
+        if let Some(r) = existing {
+            if let Some(notes) = &r.notes {
+                notes_entry.set_text(notes);
+            }
+        }
+
+        // Pre-fill for new entries (e.g. from rclone setup dialog)
+        if existing.is_none() {
+            if let Some((pf_name, pf_path, pf_kind, pf_remote)) = prefill {
+                name_entry.set_text(pf_name);
+                path_entry.set_text(pf_path);
+                if let Some(pos) = kind_options.iter().position(|k| *k == pf_kind) {
+                    kind_dropdown.set_selected(pos as u32);
+                }
+                if let Some(rn) = pf_remote {
+                    remote_entry.set_text(rn);
+                }
+            }
+        }
+
+        let form = GtkBox::new(Orientation::Vertical, 8);
+        form.set_margin_top(4);
+        form.set_margin_bottom(4);
+
+        let make_row = |lbl: &str, widget: &gtk::Widget| -> GtkBox {
+            let row = GtkBox::new(Orientation::Horizontal, 8);
+            let label = Label::new(Some(lbl));
+            label.set_halign(gtk::Align::End);
+            label.set_width_chars(8);
+            row.append(&label);
+            row.append(widget);
+            row
+        };
+
+        form.append(&make_row("Name", name_entry.upcast_ref()));
+        form.append(&make_row("Path", path_entry.upcast_ref()));
+        form.append(&make_row("Kind", kind_dropdown.upcast_ref()));
+        form.append(&make_row("Remote", remote_entry.upcast_ref()));
+        form.append(&make_row("Notes", notes_entry.upcast_ref()));
+
+        let name_entry_c = name_entry.clone();
+        let path_entry_c = path_entry.clone();
+        let notes_entry_c = notes_entry.clone();
+        let remote_entry_c = remote_entry.clone();
+        let kind_dropdown_c = kind_dropdown.clone();
+
+        let actions = build_modal_actions();
+
+        let host = self.modal_host.clone();
+        let cancel_btn = build_modal_button("Cancel", ButtonKind::Secondary, move || host.hide());
+        actions.append(&cancel_btn);
+
+        let host = self.modal_host.clone();
+        let on_save_rc = Rc::new(on_save);
+        let save_btn = build_modal_button(title, ButtonKind::Primary, move || {
+            let name = name_entry_c.text().to_string();
+            let path = path_entry_c.text().to_string();
+            let kind_idx = kind_dropdown_c.selected() as usize;
+            let kind = kind_options
+                .get(kind_idx)
+                .copied()
+                .unwrap_or("manual")
+                .to_string();
+            let remote_text = remote_entry_c.text().to_string();
+            let remote_name = if remote_text.trim().is_empty() {
+                None
+            } else {
+                Some(remote_text)
+            };
+            let notes_text = notes_entry_c.text().to_string();
+            let notes = if notes_text.trim().is_empty() {
+                None
+            } else {
+                Some(notes_text)
+            };
+            on_save_rc(name, path, kind, notes, remote_name);
+            host.hide();
+        });
+        let initial_ok =
+            !name_entry.text().trim().is_empty() && !path_entry.text().trim().is_empty();
+        save_btn.set_sensitive(initial_ok);
+        actions.append(&save_btn);
+
+        // Keep save button sensitive only while both Name and Path are non-empty
+        {
+            let save_btn = save_btn.clone();
+            let name_entry_v = name_entry.clone();
+            let path_entry_v = path_entry.clone();
+            let update = move || {
+                save_btn.set_sensitive(
+                    !name_entry_v.text().trim().is_empty()
+                        && !path_entry_v.text().trim().is_empty(),
+                );
+            };
+            let update2 = update.clone();
+            name_entry.connect_changed(move |_| update());
+            path_entry.connect_changed(move |_| update2());
+        }
+
+        // Auto-detect kind from URI scheme when editing is not for an existing entry
+        if existing.is_none() {
+            let kind_dropdown_uri = kind_dropdown.clone();
+            path_entry.connect_changed(move |entry| {
+                let text = entry.text();
+                let t = text.as_str();
+                let detected = if t.starts_with("sftp://") || t.starts_with("ssh://") {
+                    kind_options.iter().position(|k| *k == "sftp")
+                } else if t.starts_with("ftp://") {
+                    kind_options.iter().position(|k| *k == "ftp")
+                } else if t.starts_with("smb://") {
+                    kind_options.iter().position(|k| *k == "gvfs")
+                } else if t.starts_with("dav://") || t.starts_with("davs://") {
+                    kind_options.iter().position(|k| *k == "webdav")
+                } else {
+                    None
+                };
+                if let Some(idx) = detected {
+                    kind_dropdown_uri.set_selected(idx as u32);
+                }
+            });
+        }
+
+        let host = self.modal_host.clone();
+        self.modal_host.show_with_custom_ui(
+            title,
+            &form,
+            &actions,
+            true,
+            Some(Box::new(move || host.hide())),
+        );
+        name_entry.grab_focus();
+    }
+
+    fn show_rclone_setup_dialog(self: &Rc<Self>) {
+        let rclone = crate::rclone::detect();
+        let home = glib::home_dir();
+        let home_str = home.to_string_lossy().to_string();
+
+        let outer = GtkBox::new(Orientation::Vertical, 0);
+        outer.set_margin_top(4);
+        outer.set_margin_bottom(4);
+        outer.set_hexpand(true);
+
+        // ── Status section ──────────────────────────────────────────────────
+        let status_row = GtkBox::new(Orientation::Horizontal, 8);
+        status_row.set_margin_bottom(8);
+        match &rclone.version {
+            Some(ver) => {
+                let lbl = Label::new(Some(&format!("✓ {ver} detected")));
+                lbl.add_css_class("rclone-status-ok");
+                lbl.set_halign(gtk::Align::Start);
+                status_row.append(&lbl);
+            }
+            None => {
+                let lbl = Label::new(Some("✗ rclone not found"));
+                lbl.add_css_class("rclone-status-missing");
+                lbl.set_halign(gtk::Align::Start);
+                status_row.append(&lbl);
+                let note = Label::new(Some("  Install from rclone.org/install"));
+                note.add_css_class("rclone-status-install-note");
+                note.set_halign(gtk::Align::Start);
+                status_row.append(&note);
+            }
+        }
+        outer.append(&status_row);
+
+        // ── Remotes section (only when rclone is available) ─────────────────
+        if rclone.version.is_some() {
+            let remotes_heading = Label::new(Some("CONFIGURED REMOTES"));
+            remotes_heading.add_css_class("landing-section-heading");
+            remotes_heading.set_halign(gtk::Align::Start);
+            remotes_heading.set_margin_top(4);
+            remotes_heading.set_margin_bottom(4);
+            outer.append(&remotes_heading);
+
+            if rclone.remotes.is_empty() {
+                let empty = Label::new(Some("No remotes configured yet. Run:  rclone config"));
+                empty.add_css_class("rclone-status-install-note");
+                empty.set_halign(gtk::Align::Start);
+                empty.set_margin_bottom(8);
+                outer.append(&empty);
+            } else {
+                for remote in &rclone.remotes {
+                    let mount_path = format!("{home_str}/Cloud/Lattice/{remote}");
+                    let mount_cmd =
+                        format!("rclone mount {remote}: {mount_path} --vfs-cache-mode writes");
+
+                    let row = GtkBox::new(Orientation::Horizontal, 6);
+                    row.add_css_class("rclone-remote-row");
+                    row.set_margin_bottom(2);
+
+                    let name_lbl = Label::new(Some(remote));
+                    name_lbl.add_css_class("rclone-remote-name");
+                    name_lbl.set_halign(gtk::Align::Start);
+                    name_lbl.set_hexpand(true);
+                    row.append(&name_lbl);
+
+                    // Copy mount command button
+                    let copy_btn = Button::with_label("Copy mount cmd");
+                    copy_btn.add_css_class("landing-add-btn");
+                    {
+                        let cmd = mount_cmd.clone();
+                        let window = self.window.clone();
+                        let status = self.status.clone();
+                        copy_btn.connect_clicked(move |_| {
+                            window.clipboard().set_text(&cmd);
+                            status.set_message("Mount command copied to clipboard.");
+                        });
+                    }
+                    crate::ui::attach_tooltip(&copy_btn, &format!("Copy: {mount_cmd}"));
+                    row.append(&copy_btn);
+
+                    // Add to Cloud button
+                    let add_btn = Button::with_label("Add to Cloud");
+                    add_btn.add_css_class("landing-add-btn");
+                    {
+                        let controller = Rc::clone(self);
+                        let r = remote.clone();
+                        let mp = mount_path.clone();
+                        add_btn.connect_clicked(move |_| {
+                            controller.modal_host.hide();
+                            let r2 = r.clone();
+                            let mp2 = mp.clone();
+                            controller.show_cloud_form_dialog(
+                                None,
+                                Some((&r2, &mp2, "rclone", Some(&r2))),
+                                {
+                                    let ctrl = Rc::clone(&controller);
+                                    move |name, path, kind, notes, remote_name| {
+                                        let result =
+                                            ctrl.metadata.borrow_mut().create_cloud_location(
+                                                &name,
+                                                &path,
+                                                &kind,
+                                                remote_name.as_deref(),
+                                                notes.as_deref(),
+                                            );
+                                        match result {
+                                            Ok(record) => {
+                                                ctrl.refresh_metadata_sidebar();
+                                                ctrl.open_cloud(record.id);
+                                            }
+                                            Err(err) => {
+                                                ctrl.status.set_message(&format!(
+                                                    "Failed to add cloud location: {err}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    crate::ui::attach_tooltip(
+                        &add_btn,
+                        &format!("Pre-fill Add Cloud Drive with path: {mount_path}"),
+                    );
+                    row.append(&add_btn);
+
+                    outer.append(&row);
+                }
+            }
+        }
+
+        // ── Mount guide section ─────────────────────────────────────────────
+        let guide_heading = Label::new(Some("HOW TO MOUNT"));
+        guide_heading.add_css_class("landing-section-heading");
+        guide_heading.set_halign(gtk::Align::Start);
+        guide_heading.set_margin_top(12);
+        guide_heading.set_margin_bottom(6);
+        outer.append(&guide_heading);
+
+        let guide_text = Label::new(Some(
+            "Mount a remote externally, then register the folder as a Cloud entry in Lattice.\n\
+             Suggested mount location:\n\
+             \n\
+             \u{00a0}\u{00a0}~/Cloud/Lattice/<remote-name>\n\
+             \n\
+             Example command (run in a terminal, then keep it running):"
+                .trim_start(),
+        ));
+        guide_text.add_css_class("rclone-status-install-note");
+        guide_text.set_halign(gtk::Align::Start);
+        guide_text.set_wrap(true);
+        guide_text.set_max_width_chars(52);
+        outer.append(&guide_text);
+
+        let code_block = Label::new(Some(
+            "rclone mount <remote>: ~/Cloud/Lattice/<remote> \\\n  --vfs-cache-mode writes",
+        ));
+        code_block.add_css_class("rclone-guide-code");
+        code_block.set_halign(gtk::Align::Start);
+        code_block.set_selectable(true);
+        outer.append(&code_block);
+
+        let footer = Label::new(Some(
+            "Then use \"Add Cloud Drive\" to register the mounted folder.\n\
+             Credentials are managed by rclone config — not by Lattice.",
+        ));
+        footer.add_css_class("rclone-status-install-note");
+        footer.set_halign(gtk::Align::Start);
+        footer.set_wrap(true);
+        footer.set_max_width_chars(52);
+        footer.set_margin_top(6);
+        outer.append(&footer);
+
+        // ── Wrap in a scroll so long remote lists don't overflow ────────────
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .max_content_height(420)
+            .propagate_natural_height(true)
+            .hexpand(true)
+            .build();
+        scroll.set_child(Some(&outer));
+
+        let actions = build_modal_actions();
+        let host = self.modal_host.clone();
+        let close_btn = build_modal_button("Close", ButtonKind::Secondary, move || host.hide());
+        actions.append(&close_btn);
+
+        let host = self.modal_host.clone();
+        self.modal_host.show_with_custom_ui(
+            "rclone Remotes",
+            &scroll,
+            &actions,
+            true,
+            Some(Box::new(move || host.hide())),
+        );
+    }
+
+    fn show_remove_cloud_confirm(self: &Rc<Self>, cloud_id: i64) {
+        let Some(record) = self
+            .cloud_locations
+            .borrow()
+            .iter()
+            .find(|r| r.id == cloud_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let prompt = format!(
+            "Remove \"{}\" from Cloud?\n\nThis removes the Lattice entry only — no files are deleted.",
+            record.name
+        );
+        let controller = Rc::clone(self);
+        self.modal_host.show_confirm(
+            "Remove Cloud Drive",
+            &prompt,
+            "Remove",
+            true,
+            false,
+            move || {
+                let _ = controller
+                    .metadata
+                    .borrow_mut()
+                    .delete_cloud_location(cloud_id);
+                controller.refresh_metadata_sidebar();
+                for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+                    if matches!(controller.current_view_for(slot), PaneView::CloudLanding(id) if id == cloud_id)
+                    {
+                        controller.navigate_to(slot, controller.places.home.clone(), true);
+                    }
+                }
+            },
+        );
+    }
+
+    fn refresh_cloud_landing_availability(self: &Rc<Self>, cloud_id: i64, available: bool) {
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            if matches!(self.current_view_for(slot), PaneView::CloudLanding(id) if id == cloud_id) {
+                self.pane_widgets(slot)
+                    .cloud_landing_panel
+                    .set_availability(Some(available));
+            }
+        }
+    }
+
+    fn set_cloud_landing_mount_busy(self: &Rc<Self>, cloud_id: i64, busy: bool) {
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            if matches!(self.current_view_for(slot), PaneView::CloudLanding(id) if id == cloud_id) {
+                self.pane_widgets(slot)
+                    .cloud_landing_panel
+                    .set_mount_busy(busy);
+            }
+        }
+    }
+
+    fn mount_cloud_profile(self: &Rc<Self>, cloud_id: i64) {
+        let Some(record) = self
+            .cloud_locations
+            .borrow()
+            .iter()
+            .find(|r| r.id == cloud_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let Some(remote_name) = record.remote_name.clone() else {
+            self.status.set_message(
+                "No rclone remote name set — edit this entry and fill in the Remote field.",
+            );
+            return;
+        };
+
+        let mount_path = std::path::PathBuf::from(&record.path);
+        let op_id = self
+            .ops_panel
+            .add_op(&format!("Mounting {remote_name}…"), None);
+        self.set_cloud_landing_mount_busy(cloud_id, true);
+
+        let controller = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let result =
+                gio::spawn_blocking(move || crate::rclone::mount(&remote_name, &mount_path))
+                    .await
+                    .unwrap_or_else(|_| Err("Mount task panicked".to_string()));
+
+            match result {
+                Ok(()) => {
+                    controller.ops_panel.finish_op(op_id, &[]);
+                    controller.refresh_cloud_landing_availability(cloud_id, true);
+                    controller.status.set_message("Mounted successfully.");
+                }
+                Err(err) => {
+                    controller.ops_panel.finish_op(op_id, &[err.clone()]);
+                    controller.refresh_cloud_landing_availability(cloud_id, false);
+                    controller
+                        .status
+                        .set_message(&format!("Mount failed: {err}"));
+                }
+            }
+        });
+    }
+
+    fn unmount_cloud_profile(self: &Rc<Self>, cloud_id: i64) {
+        let Some(record) = self
+            .cloud_locations
+            .borrow()
+            .iter()
+            .find(|r| r.id == cloud_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let mount_path = std::path::PathBuf::from(&record.path);
+        let record_path = record.path.clone();
+        let op_id = self
+            .ops_panel
+            .add_op(&format!("Unmounting {}…", record.name), None);
+        self.set_cloud_landing_mount_busy(cloud_id, true);
+
+        let controller = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let result = gio::spawn_blocking(move || crate::rclone::unmount(&mount_path))
+                .await
+                .unwrap_or_else(|_| Err("Unmount task panicked".to_string()));
+
+            match result {
+                Ok(()) => {
+                    controller.ops_panel.finish_op(op_id, &[]);
+                    controller.refresh_cloud_landing_availability(cloud_id, false);
+                    controller.status.set_message("Unmounted.");
+                }
+                Err(err) => {
+                    controller.ops_panel.finish_op(op_id, &[err.clone()]);
+                    let still_mounted =
+                        crate::rclone::is_mounted(std::path::Path::new(&record_path));
+                    controller.refresh_cloud_landing_availability(cloud_id, still_mounted);
+                    controller
+                        .status
+                        .set_message(&format!("Unmount failed: {err}"));
+                }
+            }
+        });
+    }
+
+    fn show_cloud_context_menu(
+        self: &Rc<Self>,
+        record: CloudRecord,
+        widget: impl IsA<gtk::Widget>,
+        x: f64,
+        y: f64,
+    ) {
+        let menu = GtkBox::new(Orientation::Vertical, 0);
+        menu.add_css_class("context-menu");
+
+        let make_item = |label: &str| -> Button {
+            let btn = Button::with_label(label);
+            btn.add_css_class("context-menu-item");
+            btn.set_halign(gtk::Align::Fill);
+            btn
+        };
+
+        let open_btn = make_item("Open");
+        let sv_btn = make_item("Space Viewer");
+        let triage_btn = make_item("Triage");
+        let edit_btn = make_item("Edit");
+        let remove_btn = make_item("Remove");
+
+        menu.append(&open_btn);
+        menu.append(&sv_btn);
+        menu.append(&triage_btn);
+        menu.append(&edit_btn);
+        menu.append(&remove_btn);
+
+        let popover = Popover::new();
+        popover.add_css_class("context-popover");
+        popover.set_child(Some(&menu));
+        popover.set_has_arrow(false);
+        popover.set_parent(widget.upcast_ref::<gtk::Widget>());
+        let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        popover.set_pointing_to(Some(&rect));
+
+        *self.context_popover.borrow_mut() = Some(popover.clone());
+        popover.popup();
+
+        let cloud_id = record.id;
+        let path = record.path.clone();
+
+        let controller = Rc::clone(self);
+        let popover_c = popover.clone();
+        open_btn.connect_clicked(move |_| {
+            popover_c.popdown();
+            controller.navigate_to_active(PathBuf::from(&path));
+        });
+
+        let controller = Rc::clone(self);
+        let path2 = record.path.clone();
+        let popover_c = popover.clone();
+        sv_btn.connect_clicked(move |_| {
+            popover_c.popdown();
+            let slot = controller.active_slot();
+            controller
+                .current_view_cell(slot)
+                .replace(PaneView::SpaceViewer {
+                    root: PathBuf::from(&path2),
+                });
+            controller
+                .current_dir_cell(slot)
+                .replace(PathBuf::from(&path2));
+            controller.sync_active_tab_state();
+            controller.update_view_strip(slot);
+            if slot == PaneSlot::Primary {
+                controller.rebuild_tab_strip();
+            }
+            controller.load_space_viewer_view(slot);
+        });
+
+        let controller = Rc::clone(self);
+        let path3 = record.path.clone();
+        let popover_c = popover.clone();
+        triage_btn.connect_clicked(move |_| {
+            popover_c.popdown();
+            controller.open_triage(PathBuf::from(&path3), TriageFilter::All);
+        });
+
+        let controller = Rc::clone(self);
+        let popover_c = popover.clone();
+        edit_btn.connect_clicked(move |_| {
+            popover_c.popdown();
+            controller.show_edit_cloud_dialog(cloud_id);
+        });
+
+        let controller = Rc::clone(self);
+        let popover_c = popover.clone();
+        remove_btn.connect_clicked(move |_| {
+            popover_c.popdown();
+            controller.show_remove_cloud_confirm(cloud_id);
+        });
+    }
+
+    fn is_in_cloud_location(&self, path: &Path) -> bool {
+        self.cloud_locations.borrow().iter().any(|loc| {
+            let loc_path = std::path::Path::new(&loc.path);
+            path.starts_with(loc_path)
+        })
+    }
+
+    fn cloud_name_for_path(&self, path: &Path) -> Option<(String, String)> {
+        let path_str = path.to_string_lossy();
+        self.cloud_locations.borrow().iter().find_map(|loc| {
+            let matches = if is_gio_uri(&loc.path) {
+                // URI prefix match: "sftp://host/path/sub" starts with "sftp://host/path"
+                path_str.starts_with(&loc.path)
+            } else {
+                path.starts_with(std::path::Path::new(&loc.path))
+            };
+            matches.then(|| (loc.name.clone(), loc.kind.clone()))
+        })
+    }
+
+    fn cloud_summary(&self, summary: &str, path: &Path) -> String {
+        if self.cloud_name_for_path(path).is_some() {
+            format!("☁ {summary}")
+        } else {
+            summary.to_string()
+        }
     }
 
     fn open_project(self: &Rc<Self>, project_id: i64) {
@@ -3464,6 +4437,11 @@ impl BrowserController {
         self.update_view_strip(slot);
         if slot == PaneSlot::Primary {
             self.rebuild_tab_strip();
+        }
+        if let Some((name, _)) = self.cloud_name_for_path(&root) {
+            self.status.set_message(&format!(
+                "☁ Triage on '{name}' — loading metadata may be slow on cloud drives"
+            ));
         }
         self.load_triage(slot, &root);
     }
@@ -3542,6 +4520,231 @@ impl BrowserController {
         }
         self.load_bulk_naming_items(slot, root, items, sibling_names, false);
         self.update_navigation_state();
+    }
+
+    fn open_media_convert_with_items(self: &Rc<Self>, slot: PaneSlot, items: Vec<FileItem>) {
+        let convert_items: Vec<ConvertItem> = items
+            .into_iter()
+            .filter(|i| matches!(i.kind, FileKind::Image | FileKind::Video | FileKind::Audio))
+            .map(|i| ConvertItem {
+                path: i.path.clone(),
+                kind: match i.kind {
+                    FileKind::Image => MediaKind::Image,
+                    FileKind::Audio => MediaKind::Audio,
+                    _ => MediaKind::Video,
+                },
+            })
+            .collect();
+
+        let from_dir = convert_items
+            .first()
+            .and_then(|i| i.path.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.current_dir_for(slot));
+
+        self.save_dir_to_history_if_in_directory(slot);
+        self.current_dir_cell(slot).replace(from_dir.clone());
+        self.current_view_cell(slot)
+            .replace(PaneView::MediaConvert { from_dir });
+        self.sync_active_tab_state();
+        self.update_view_strip(slot);
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.pane_widgets(slot).media_convert_panel.set_items(
+            convert_items,
+            &self.conversion_queue.tools,
+            None,
+        );
+        if slot == self.active_slot() {
+            let display = self.display_label_for(slot);
+            self.toolbar.set_breadcrumb_path(&display);
+            self.toolbar.show_breadcrumb_mode();
+            self.status.set_path(&display);
+            self.status.clear_message();
+            self.status.set_counts(0, 0);
+            self.update_sidebar_state();
+            self.update_navigation_state();
+            self.update_action_state();
+        }
+    }
+
+    /// Scan common user directories for orphaned `.lattice_converting_*` temp files
+    /// left by a previous crash and delete them. Runs off the main thread.
+    fn cleanup_convert_temps(self: &Rc<Self>) {
+        let dirs: Vec<PathBuf> = std::iter::once(Some(glib::home_dir()))
+            .chain([
+                glib::user_special_dir(UserDirectory::Desktop),
+                glib::user_special_dir(UserDirectory::Downloads),
+                glib::user_special_dir(UserDirectory::Pictures),
+                glib::user_special_dir(UserDirectory::Videos),
+                glib::user_special_dir(UserDirectory::Music),
+                glib::user_special_dir(UserDirectory::Documents),
+            ])
+            .flatten()
+            .collect();
+
+        gio::spawn_blocking(move || {
+            for dir in dirs {
+                cleanup_orphaned_temps_in(&dir);
+            }
+        });
+    }
+
+    fn connect_media_convert_actions(self: &Rc<Self>) {
+        // Load and apply saved conversion settings to all panels
+        let saved = ConvertSettings::load();
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            self.pane_widgets(slot)
+                .media_convert_panel
+                .apply_settings(&saved);
+        }
+
+        // OpsPanel: overall fraction + done receipt
+        let ops_for_progress = self.ops_panel.clone();
+        self.conversion_queue
+            .connect_progress(move |op_id, fraction, detail| {
+                ops_for_progress.update_progress(op_id, fraction, detail);
+            });
+
+        let ops_for_done = self.ops_panel.clone();
+        self.conversion_queue.connect_done(move |op_id, errors| {
+            ops_for_done.finish_op(op_id, &errors);
+        });
+
+        // ConvertProgressPanel: per-job status
+        let cp = self.convert_progress.clone();
+        self.conversion_queue
+            .connect_job_status(move |job_id, status| {
+                cp.update_job_status(job_id, status);
+            });
+
+        let cp = self.convert_progress.clone();
+        self.conversion_queue
+            .connect_batch_progress(move |progress| {
+                cp.update_batch_progress(progress);
+            });
+
+        let cp = self.convert_progress.clone();
+        self.conversion_queue
+            .connect_job_progress(move |job_id, fraction| {
+                cp.update_job_progress(job_id, fraction);
+            });
+
+        // Wire copy-error to clipboard
+        let window = self.window.clone();
+        self.convert_progress.set_copy_error_fn(move |text| {
+            window.clipboard().set_text(&text);
+        });
+
+        // Cancel
+        let queue = self.conversion_queue.clone();
+        self.convert_progress.connect_cancel(move || {
+            queue.cancel();
+        });
+
+        // Retry failed
+        let queue = self.conversion_queue.clone();
+        let cp = self.convert_progress.clone();
+        self.convert_progress
+            .connect_retry_failed(move |failed_jobs| {
+                for job in failed_jobs {
+                    queue.retry_job(job);
+                }
+                let _ = cp.wire_copy_buttons();
+            });
+
+        // Open output folder in active pane
+        let controller = Rc::clone(self);
+        self.convert_progress.connect_open_output(move |path| {
+            let slot = controller.active_slot();
+            controller.navigate_to(slot, path, true);
+        });
+
+        // Per-pane: wire start callback + folder picker + settings persistence
+        for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
+            let controller = Rc::clone(self);
+            let panel = self.pane_widgets(slot).media_convert_panel.clone();
+
+            // start callback
+            panel.connect_start({
+                let controller = Rc::clone(&controller);
+                move |batch| {
+                    if batch.active_count() == 0 {
+                        return;
+                    }
+                    let output_dir = batch.representative_output_dir();
+                    let active_jobs = batch.into_active_jobs();
+                    let n = active_jobs.len();
+                    controller
+                        .convert_progress
+                        .start_batch(&active_jobs, output_dir);
+                    let op_id = controller.ops_panel.add_op(
+                        &format!("Converting {} file{}", n, if n == 1 { "" } else { "s" }),
+                        None,
+                    );
+                    controller.conversion_queue.enqueue_jobs(active_jobs, op_id);
+                }
+            });
+
+            // folder picker callback
+            panel.connect_folder_pick({
+                let controller = Rc::clone(&controller);
+                let panel = self.pane_widgets(slot).media_convert_panel.clone();
+                move || {
+                    let dialog = gtk::FileDialog::new();
+                    dialog.set_title("Choose output folder");
+                    let panel = panel.clone();
+                    dialog.select_folder(
+                        Some(&controller.window),
+                        None::<&gio::Cancellable>,
+                        move |result| match result {
+                            Ok(file) => match file.path() {
+                                Some(path) => panel.set_chosen_folder(path),
+                                // File object returned but has no local path (shouldn't happen for folder picker)
+                                None => panel.folder_pick_cancelled(),
+                            },
+                            // User dismissed the dialog without picking
+                            Err(_) => panel.folder_pick_cancelled(),
+                        },
+                    );
+                }
+            });
+
+            // settings persistence
+            panel.connect_settings_changed({
+                move |preset_id, output_mode, conflict_policy| {
+                    let mut s = ConvertSettings::load();
+                    // Update the appropriate per-kind preset slot
+                    use crate::converter::{all_presets, OutputConflictPolicy, OutputLocationMode};
+                    if let Some(preset) = all_presets().iter().find(|p| p.id == preset_id) {
+                        match preset.kind {
+                            crate::converter::MediaKind::Image => {
+                                s.last_preset_image = preset_id.to_string();
+                            }
+                            crate::converter::MediaKind::Audio => {
+                                s.last_preset_audio = preset_id.to_string();
+                            }
+                            crate::converter::MediaKind::Video => {
+                                s.last_preset_video = preset_id.to_string();
+                            }
+                            crate::converter::MediaKind::Unknown => {}
+                        }
+                    }
+                    s.output_mode = match output_mode {
+                        OutputLocationMode::NextToSource => "next_to_source".to_string(),
+                        OutputLocationMode::Subfolder(_) => "converted_subfolder".to_string(),
+                        OutputLocationMode::ChosenFolder(_) => "chosen_folder".to_string(),
+                    };
+                    s.conflict_policy = match conflict_policy {
+                        OutputConflictPolicy::AutoRename => "auto_rename".to_string(),
+                        OutputConflictPolicy::Skip => "skip".to_string(),
+                        OutputConflictPolicy::Overwrite => "overwrite".to_string(),
+                    };
+                    s.save();
+                }
+            });
+        }
     }
 
     fn load_bulk_naming_view(self: &Rc<Self>, slot: PaneSlot, root: PathBuf) {
@@ -3747,22 +4950,27 @@ impl BrowserController {
 
         let is_activity_log = matches!(self.current_view_for(slot), PaneView::ActivityLog);
         let is_project_landing = matches!(self.current_view_for(slot), PaneView::ProjectLanding(_));
+        let is_cloud_landing = matches!(self.current_view_for(slot), PaneView::CloudLanding(_));
         let is_project_manager = matches!(self.current_view_for(slot), PaneView::ProjectManager);
         let is_tag_manager = matches!(self.current_view_for(slot), PaneView::TagManager);
         let is_bulk_naming = matches!(self.current_view_for(slot), PaneView::BulkNaming { .. });
         let is_space_viewer = matches!(self.current_view_for(slot), PaneView::SpaceViewer { .. });
+        let is_media_convert = matches!(self.current_view_for(slot), PaneView::MediaConvert { .. });
         pane.file_grid.root.set_visible(
             !is_activity_log
                 && !is_project_landing
+                && !is_cloud_landing
                 && !is_project_manager
                 && !is_tag_manager
                 && !is_bulk_naming
-                && !is_space_viewer,
+                && !is_space_viewer
+                && !is_media_convert,
         );
         pane.activity_log_panel.root.set_visible(is_activity_log);
         pane.project_landing_panel
             .root
             .set_visible(is_project_landing);
+        pane.cloud_landing_panel.root.set_visible(is_cloud_landing);
         pane.palette_board_panel
             .root
             .set_visible(is_project_landing);
@@ -3772,6 +4980,7 @@ impl BrowserController {
         pane.tag_manager_panel.root.set_visible(is_tag_manager);
         pane.bulk_naming_panel.root.set_visible(is_bulk_naming);
         pane.space_viewer_panel.root.set_visible(is_space_viewer);
+        pane.media_convert_panel.root.set_visible(is_media_convert);
         if !is_space_viewer {
             pane.space_viewer_panel.cancel_scan();
         }
@@ -3840,6 +5049,12 @@ impl BrowserController {
                 pane.tag_filter_revealer.set_visible(false);
                 self.sync_filter_button_state(slot);
             }
+            PaneView::CloudLanding(_) => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
+            }
             PaneView::ProjectManager => {
                 pane.view_strip.set_visible(false);
                 pane.tag_filter_revealer.set_reveal_child(false);
@@ -3864,6 +5079,12 @@ impl BrowserController {
                 pane.tag_filter_revealer.set_visible(false);
                 self.sync_filter_button_state(slot);
             }
+            PaneView::MediaConvert { .. } => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
+            }
         }
     }
 
@@ -3881,9 +5102,13 @@ impl BrowserController {
             PaneView::ProjectLanding(project_id) => {
                 self.load_project_landing_view(slot, project_id)
             }
+            PaneView::CloudLanding(cloud_id) => self.load_cloud_landing_view(slot, cloud_id),
             PaneView::ProjectManager => self.load_project_manager_view(slot),
             PaneView::TagManager => self.load_tag_manager_view(slot),
             PaneView::SpaceViewer { .. } => self.load_space_viewer_view(slot),
+            PaneView::MediaConvert { .. } => {
+                // Items are pre-loaded by open_media_convert_with_items; nothing to reload.
+            }
         }
     }
 
@@ -5394,7 +6619,13 @@ impl BrowserController {
             return;
         }
         let current = self.current_dir_for(slot);
-        if let Some(parent) = current.parent() {
+        let current_str = current.to_string_lossy();
+        if is_gio_uri(&current_str) {
+            let file = gio::File::for_uri(current_str.as_ref());
+            if let Some(parent) = file.parent() {
+                self.navigate_to(slot, PathBuf::from(parent.uri().as_str()), true);
+            }
+        } else if let Some(parent) = current.parent() {
             self.navigate_to(slot, parent.to_path_buf(), true);
         }
     }
@@ -5425,13 +6656,22 @@ impl BrowserController {
             return;
         };
 
-        let Some(target_path) = target_file.path() else {
-            self.show_error_dialog(
-                "Unsupported Path",
-                "That location could not be resolved to a local filesystem path.",
-            );
-            self.sync_path_entry_to_display();
-            return;
+        let target_path = match target_file.path() {
+            Some(p) => p,
+            None => {
+                // No local path — allow navigation for GIO remote URIs
+                let raw = raw_input.trim();
+                if is_gio_uri(raw) {
+                    self.navigate_to(self.active_slot(), PathBuf::from(raw), true);
+                } else {
+                    self.show_error_dialog(
+                        "Unsupported Path",
+                        "That location could not be resolved to a local filesystem path.",
+                    );
+                    self.sync_path_entry_to_display();
+                }
+                return;
+            }
         };
 
         let file_type =
@@ -6033,11 +7273,18 @@ impl BrowserController {
             .and_then(|n| n.to_str())
             .unwrap_or("folder")
             .to_string();
+        let cloud_suffix = self
+            .cloud_name_for_path(&folder_path)
+            .map(|(name, _)| {
+                format!("\n\n☁ '{name}' is a cloud drive — marking many files may be slow.")
+            })
+            .unwrap_or_default();
         let prompt = format!(
-            "Paint all contents of \"{}\" as {} {} recursively?\n\nAll files and subfolders will receive this mark.",
+            "Paint all contents of \"{}\" as {} {} recursively?\n\nAll files and subfolders will receive this mark.{}",
             folder_name,
             tint_name,
-            shape.display_name()
+            shape.display_name(),
+            cloud_suffix
         );
         let title = format!("Paint Contents of {folder_name}");
         let controller = Rc::clone(self);
@@ -6104,7 +7351,20 @@ impl BrowserController {
         });
     }
 
-    fn queue_plan(self: &Rc<Self>, plan: crate::action_plan::ActionPlan) {
+    fn queue_plan(self: &Rc<Self>, mut plan: crate::action_plan::ActionPlan) {
+        // Annotate the plan with a cloud note when sources or destination touch a cloud location
+        let check_path = plan
+            .sources
+            .first()
+            .map(|p| p.as_path())
+            .or_else(|| plan.destination.as_deref());
+        if let Some(path) = check_path {
+            if let Some((name, kind)) = self.cloud_name_for_path(path) {
+                plan = plan.with_cloud_note(format!(
+                    "☁ Cloud drive: {name} ({kind}) — may be slower or sync remotely"
+                ));
+            }
+        }
         self.action_queue.borrow_mut().push(plan);
         self.refresh_plan_queue_panel();
         let n = self.action_queue.borrow().len();
@@ -6361,7 +7621,6 @@ impl BrowserController {
         pane.file_grid.set_loading();
         pane.file_grid.clear_selection();
         self.reset_keyboard_state(slot);
-        self.items_cell(slot).borrow_mut().clear();
 
         if slot == self.active_slot() {
             self.toolbar.set_breadcrumb_path(&display_path);
@@ -6369,6 +7628,10 @@ impl BrowserController {
             self.status.set_path(&display_path);
             self.status.clear_message();
             self.status.set_counts(0, 0);
+            let cloud_ctx = self
+                .cloud_name_for_path(&path)
+                .map(|(name, kind)| format!("☁ {name} ({kind})"));
+            self.status.set_cloud_context(cloud_ctx.as_deref());
         }
 
         if slot == self.active_slot() && self.preview_visible.get() {
@@ -6392,7 +7655,12 @@ impl BrowserController {
         self.load_cancellable_cell(slot)
             .replace(Some(cancellable.clone()));
 
-        let directory = gio::File::for_path(&path);
+        let path_str = path.to_string_lossy();
+        let directory = if is_gio_uri(&path_str) {
+            gio::File::for_uri(path_str.as_ref())
+        } else {
+            gio::File::for_path(&path)
+        };
         let directory_for_callback = directory.clone();
         let cancellable_for_callback = cancellable.clone();
         let controller = Rc::clone(self);
@@ -6521,7 +7789,9 @@ impl BrowserController {
                 self.start_duplicate_scan(slot, path.to_path_buf());
             }
         }
-        if matches!(self.current_view_for(slot), PaneView::Directory(_)) {
+        if matches!(self.current_view_for(slot), PaneView::Directory(_))
+            && !is_gio_uri(&path.to_string_lossy())
+        {
             if let Err(error) = self.metadata.borrow_mut().record_recent_location(path) {
                 eprintln!("Lattice recent-location update failed: {error}");
             }
@@ -6584,10 +7854,15 @@ impl BrowserController {
 
         self.load_cancellable_cell(slot).borrow_mut().take();
         self.items_cell(slot).borrow_mut().clear();
+        let dir_error = if is_gio_uri(&path.to_string_lossy()) {
+            GVFS_REMOTE_DIAGNOSTIC
+        } else {
+            "Unable to read this folder."
+        };
         self.pane_widgets(slot)
             .file_grid
             .set_empty_message(match self.current_view_for(slot) {
-                PaneView::Directory(_) => "Unable to read this folder.",
+                PaneView::Directory(_) => dir_error,
                 PaneView::Tag(_) => "Unable to read tagged files.",
                 PaneView::Triage { .. } => "Unable to read this folder.",
                 PaneView::SystemDrives => "Unable to read mounted volumes.",
@@ -6597,9 +7872,11 @@ impl BrowserController {
                 PaneView::BulkNaming { .. } => "Unable to load files for Bulk Naming.",
                 PaneView::ActivityLog => "Unable to load activity log.",
                 PaneView::ProjectLanding(_)
+                | PaneView::CloudLanding(_)
                 | PaneView::ProjectManager
                 | PaneView::TagManager
-                | PaneView::SpaceViewer { .. } => "",
+                | PaneView::SpaceViewer { .. }
+                | PaneView::MediaConvert { .. } => "",
             });
 
         let display_path = match self.current_view_for(slot) {
@@ -6608,6 +7885,24 @@ impl BrowserController {
         };
         self.pane_widgets(slot).path_label.set_label(&display_path);
         if slot == self.active_slot() {
+            self.status.set_cloud_context(None);
+            // For cloud paths, provide a more specific error message
+            if let Some((name, _)) = self.cloud_name_for_path(path) {
+                let cloud_msg =
+                    format!("☁ '{name}' is not accessible — check that the drive is mounted");
+                self.pane_widgets(slot).file_grid.set_empty_message(&format!(
+                    "☁ '{name}' is not accessible.\nCheck that the cloud drive is mounted and try again."
+                ));
+                self.status.set_message(&cloud_msg);
+                self.status.set_counts(0, 0);
+                self.status.set_path(&display_path);
+                self.toolbar.set_breadcrumb_path(&display_path);
+                self.toolbar.show_breadcrumb_mode();
+                self.update_navigation_state();
+                self.update_action_state();
+                self.preview.set_action_state(false, false, false);
+                return;
+            }
             self.preview
                 .show_error(&display_path, &friendly_error_detail(error));
             self.status.set_counts(0, 0);
@@ -6653,7 +7948,6 @@ impl BrowserController {
         pane.file_grid.set_loading();
         pane.file_grid.clear_selection();
         self.reset_keyboard_state(slot);
-        self.items_cell(slot).borrow_mut().clear();
 
         if slot == self.active_slot() {
             self.toolbar.set_breadcrumb_path(&display_label);
@@ -6740,7 +8034,6 @@ impl BrowserController {
         pane.file_grid.set_loading();
         pane.file_grid.clear_selection();
         self.reset_keyboard_state(slot);
-        self.items_cell(slot).borrow_mut().clear();
 
         if slot == self.active_slot() {
             self.toolbar.set_breadcrumb_path(&display_label);
@@ -6846,7 +8139,6 @@ impl BrowserController {
         pane.file_grid.set_loading();
         pane.file_grid.clear_selection();
         self.reset_keyboard_state(slot);
-        self.items_cell(slot).borrow_mut().clear();
 
         if slot == self.active_slot() {
             self.toolbar.set_breadcrumb_path(&display_label);
@@ -7499,7 +8791,6 @@ impl BrowserController {
         pane.file_grid.set_loading();
         pane.file_grid.clear_selection();
         self.reset_keyboard_state(slot);
-        self.items_cell(slot).borrow_mut().clear();
 
         if slot == self.active_slot() {
             self.toolbar.set_breadcrumb_path(&display_label);
@@ -7507,6 +8798,15 @@ impl BrowserController {
             self.status.set_path(&display_label);
             self.status.clear_message();
             self.status.set_counts(0, 0);
+            let cloud_ctx = self
+                .cloud_name_for_path(&query.scope_dir)
+                .map(|(name, kind)| format!("☁ {name} ({kind})"));
+            self.status.set_cloud_context(cloud_ctx.as_deref());
+            if let Some((name, _)) = self.cloud_name_for_path(&query.scope_dir) {
+                self.status.set_message(&format!(
+                    "☁ Searching in '{name}' — cloud searches may be slow"
+                ));
+            }
             self.update_sidebar_state();
             self.update_navigation_state();
             self.update_action_state();
@@ -7629,6 +8929,13 @@ impl BrowserController {
             self.update_action_state();
             self.show_empty_selection_preview(slot, &display_label, items.len());
             self.status.set_counts(items.len(), 0);
+            // Re-apply cloud context after results arrive (load_search_view cleared message)
+            if let PaneView::Search(ref q) = self.current_view_for(slot) {
+                let cloud_ctx = self
+                    .cloud_name_for_path(&q.scope_dir)
+                    .map(|(name, kind)| format!("☁ {name} ({kind})"));
+                self.status.set_cloud_context(cloud_ctx.as_deref());
+            }
             if items.len() >= MAX_SEARCH_RESULTS {
                 self.status.set_message(&format!(
                     "Showing first {MAX_SEARCH_RESULTS} results — refine your search to see more."
@@ -7793,7 +9100,6 @@ impl BrowserController {
         pane.file_grid.set_loading();
         pane.file_grid.clear_selection();
         self.reset_keyboard_state(slot);
-        self.items_cell(slot).borrow_mut().clear();
 
         if slot == self.active_slot() {
             self.toolbar.set_breadcrumb_path(&display_label);
@@ -8117,6 +9423,11 @@ impl BrowserController {
                     .show_folder("Project", display_label, None, None, "Project");
                 self.preview.set_action_state(false, false, false);
             }
+            PaneView::CloudLanding(_) => {
+                self.preview
+                    .show_folder("Cloud Drive", display_label, None, None, "Cloud");
+                self.preview.set_action_state(false, false, false);
+            }
             PaneView::ProjectManager => {
                 self.preview
                     .show_folder("Projects", display_label, None, None, "Project Manager");
@@ -8134,6 +9445,11 @@ impl BrowserController {
                     .unwrap_or_else(|| "Space Viewer".to_string());
                 self.preview
                     .show_folder(&name, display_label, None, None, "Space Viewer");
+                self.preview.set_action_state(false, false, false);
+            }
+            PaneView::MediaConvert { .. } => {
+                self.preview
+                    .show_folder("Convert", display_label, None, None, "Media Conversion");
                 self.preview.set_action_state(false, false, false);
             }
         }
@@ -8156,8 +9472,6 @@ impl BrowserController {
     ) {
         self.dismiss_context_menu();
         self.set_active_pane(slot);
-        self.pane_widgets(slot).file_grid.select_only_index(index);
-        self.set_keyboard_focus(slot, index, true);
 
         let item = match self.item_for_index(slot, index) {
             Some(item) => item,
@@ -8298,7 +9612,16 @@ impl BrowserController {
                 menu_box.append(&note);
             }
         } else {
-            // Normal directory view
+            // Normal directory view — show cloud badge header when item is on a cloud drive
+            if let Some((cloud_name, cloud_kind)) = self.cloud_name_for_path(&item.path) {
+                let note = Label::new(Some(&format!("☁ {cloud_name}  ({cloud_kind})")));
+                note.add_css_class("context-cloud-note");
+                note.set_halign(gtk::Align::Start);
+                note.set_margin_start(8);
+                note.set_margin_end(8);
+                menu_box.append(&note);
+                append_menu_sep(&menu_box);
+            }
             let entries = self.item_context_entries(item.is_dir);
             self.append_item_context_menu_entries(&menu_box, slot, &item, &entries);
         }
@@ -8323,6 +9646,8 @@ impl BrowserController {
 
         self.context_popover.replace(Some(popover.clone()));
         popover.popup();
+        self.pane_widgets(slot).file_grid.select_only_index(index);
+        self.set_keyboard_focus(slot, index, true);
     }
 
     fn show_current_folder_menu(self: &Rc<Self>, slot: PaneSlot, x: f64, y: f64) {
@@ -8353,6 +9678,17 @@ impl BrowserController {
         menu_box.set_margin_end(6);
         menu_box.set_size_request(190, -1);
 
+        // Cloud badge header when right-clicking inside a cloud folder
+        let cur_dir = self.current_dir_for(slot);
+        if let Some((cloud_name, cloud_kind)) = self.cloud_name_for_path(&cur_dir) {
+            let note = Label::new(Some(&format!("☁ {cloud_name}  ({cloud_kind})")));
+            note.add_css_class("context-cloud-note");
+            note.set_halign(gtk::Align::Start);
+            note.set_margin_start(8);
+            note.set_margin_end(8);
+            menu_box.append(&note);
+            append_menu_sep(&menu_box);
+        }
         let entries = self.background_context_entries();
         self.append_background_context_menu_entries(&menu_box, slot, &entries);
 
@@ -8390,28 +9726,11 @@ impl BrowserController {
                     "open",
                     "open_new_tab",
                     "open_in_pane",
-                    "triage_folder",
-                    "separator",
-                    "add_to_holding_tray",
                     "separator",
                     "rename",
-                    "bulk_rename",
                     "duplicate",
                     "copy_path",
                     "terminal_here",
-                    "separator",
-                    "pin_place",
-                    "pin_project",
-                    "send_to_project",
-                    "add_tag",
-                    "remove_tag",
-                    "separator",
-                    "mark_as_active",
-                    "reset_mark",
-                    "select_same_tint",
-                    "select_same_shape",
-                    "select_same_mark",
-                    "add_same_mark_to_tray",
                     "separator",
                     "move_to_trash",
                     "delete_permanently",
@@ -8420,25 +9739,12 @@ impl BrowserController {
                 vec![
                     "open",
                     "open_with",
-                    "separator",
-                    "add_to_holding_tray",
+                    "convert",
                     "separator",
                     "rename",
-                    "bulk_rename",
                     "duplicate",
                     "copy_path",
                     "terminal_here",
-                    "separator",
-                    "send_to_project",
-                    "add_tag",
-                    "remove_tag",
-                    "separator",
-                    "mark_as_active",
-                    "reset_mark",
-                    "select_same_tint",
-                    "select_same_shape",
-                    "select_same_mark",
-                    "add_same_mark_to_tray",
                     "separator",
                     "move_to_trash",
                     "delete_permanently",
@@ -8499,6 +9805,26 @@ impl BrowserController {
                         move || controller.show_open_with_dialog(item.path.clone())
                     },
                 ),
+                "convert" if !item.is_dir => {
+                    let selected = self.selected_items_for(slot);
+                    let has_media = selected.iter().any(|i| {
+                        matches!(i.kind, FileKind::Image | FileKind::Video | FileKind::Audio)
+                    });
+                    if has_media {
+                        append_menu_button(
+                            menu_box,
+                            "Convert\u{2026}",
+                            Some("media-playback-start-symbolic"),
+                            false,
+                            {
+                                let controller = Rc::clone(self);
+                                move || {
+                                    controller.open_media_convert_with_items(slot, selected.clone())
+                                }
+                            },
+                        );
+                    }
+                }
                 "open_new_tab" if item.is_dir => append_menu_button(
                     menu_box,
                     "Open in New Tab",
@@ -8586,17 +9912,31 @@ impl BrowserController {
                         move || controller.add_selection_to_holding_tray(slot)
                     },
                 ),
-                "terminal_here" => append_menu_button(
-                    menu_box,
-                    "Terminal Here",
-                    Some("utilities-terminal-symbolic"),
-                    false,
-                    {
-                        let controller = Rc::clone(self);
-                        let item = item.clone();
-                        move || controller.open_terminal_for_path(item.path.clone(), item.is_dir)
-                    },
-                ),
+                "terminal_here" => {
+                    if is_gio_uri(&item.path.to_string_lossy()) {
+                        let note = Label::new(Some("Terminal unavailable for remote URI paths"));
+                        note.add_css_class("context-note");
+                        note.set_margin_start(8);
+                        note.set_margin_end(8);
+                        note.set_halign(gtk::Align::Start);
+                        menu_box.append(&note);
+                    } else {
+                        append_menu_button(
+                            menu_box,
+                            "Terminal Here",
+                            Some("utilities-terminal-symbolic"),
+                            false,
+                            {
+                                let controller = Rc::clone(self);
+                                let item = item.clone();
+                                move || {
+                                    controller
+                                        .open_terminal_for_path(item.path.clone(), item.is_dir)
+                                }
+                            },
+                        )
+                    }
+                }
                 "pin_project" if item.is_dir => append_menu_button(
                     menu_box,
                     "Pin as Project",
@@ -8849,16 +10189,28 @@ impl BrowserController {
                         move || controller.pin_place(controller.current_dir_for(slot))
                     },
                 ),
-                "terminal_here" => append_menu_button(
-                    menu_box,
-                    "Terminal Here",
-                    Some("utilities-terminal-symbolic"),
-                    false,
-                    {
-                        let controller = Rc::clone(self);
-                        move || controller.open_current_folder_terminal()
-                    },
-                ),
+                "terminal_here" => {
+                    let cur_dir = self.current_dir_for(slot);
+                    if is_gio_uri(&cur_dir.to_string_lossy()) {
+                        let note = Label::new(Some("Terminal unavailable for remote URI paths"));
+                        note.add_css_class("context-note");
+                        note.set_margin_start(8);
+                        note.set_margin_end(8);
+                        note.set_halign(gtk::Align::Start);
+                        menu_box.append(&note);
+                    } else {
+                        append_menu_button(
+                            menu_box,
+                            "Terminal Here",
+                            Some("utilities-terminal-symbolic"),
+                            false,
+                            {
+                                let controller = Rc::clone(self);
+                                move || controller.open_current_folder_terminal()
+                            },
+                        )
+                    }
+                }
                 "copy_path" => {
                     append_menu_button(menu_box, "Copy Path", Some("edit-copy-symbolic"), false, {
                         let controller = Rc::clone(self);
@@ -9011,10 +10363,15 @@ impl BrowserController {
         let open_controller = Rc::clone(self);
         let tints = self.metadata.borrow().list_tints().unwrap_or_default();
         let tint_colors = HoldingTray::tint_color_map(&tints);
+        let cloud_flags: Vec<bool> = items
+            .iter()
+            .map(|item| self.is_in_cloud_location(&item.path))
+            .collect();
         self.holding_tray.set_items(
             &items,
             &selected,
             &tint_colors,
+            &cloud_flags,
             move |path| controller.remove_holding_tray_path(&path),
             move |path| select_controller.select_holding_tray_path(path),
             move |path| open_controller.open_holding_tray_path(path),
@@ -9857,7 +11214,12 @@ impl BrowserController {
     }
 
     fn open_file(self: &Rc<Self>, path: &Path) {
-        let file = gio::File::for_path(path);
+        let path_str = path.to_string_lossy();
+        let file = if is_gio_uri(&path_str) {
+            gio::File::for_uri(path_str.as_ref())
+        } else {
+            gio::File::for_path(path)
+        };
         let uri = file.uri().to_string();
         let uri_for_callback = uri.clone();
         let controller = Rc::clone(self);
@@ -11279,9 +12641,11 @@ impl BrowserController {
             | PaneView::BulkNaming { .. }
             | PaneView::ActivityLog
             | PaneView::ProjectLanding(_)
+            | PaneView::CloudLanding(_)
             | PaneView::ProjectManager
             | PaneView::TagManager
-            | PaneView::SpaceViewer { .. } => None,
+            | PaneView::SpaceViewer { .. }
+            | PaneView::MediaConvert { .. } => None,
         }
     }
 
@@ -11381,9 +12745,35 @@ impl BrowserController {
         if index >= total {
             let errs = errors.borrow().clone();
             self.ops_panel.finish_op(op_id, &errs);
+
+            // Cloud-specific: if trash failed with NotSupported/NotMounted on a cloud path,
+            // show a modal so the user knows to use Permanent Delete explicitly.
+            if !errs.is_empty() {
+                if let Some((name, _)) = self.cloud_name_for_path(&paths[0]) {
+                    let has_mount_error = errs.iter().any(|e| {
+                        e.contains("not support")
+                            || e.contains("Not Supported")
+                            || e.contains("not mounted")
+                            || e.contains("NotMounted")
+                    });
+                    if has_mount_error {
+                        self.modal_host.show_error(
+                            "Trash Unavailable on Cloud Drive",
+                            &format!(
+                                "'{name}' does not support Trash.\n\n\
+                                 Files on this cloud drive cannot be moved to Trash. \
+                                 To delete, use Permanent Delete (Shift+Delete or the \
+                                 context menu), which requires an explicit confirmation \
+                                 and cannot be undone."
+                            ),
+                        );
+                    }
+                }
+            }
+
             // Activity log receipt
             let n = paths.len() as i32;
-            let summary = if n == 1 {
+            let raw_summary = if n == 1 {
                 let name = paths[0]
                     .file_name()
                     .and_then(|f| f.to_str())
@@ -11392,6 +12782,7 @@ impl BrowserController {
             } else {
                 format!("Trashed {n} files")
             };
+            let summary = self.cloud_summary(&raw_summary, &paths[0]);
             let source = paths[0]
                 .parent()
                 .and_then(|p| p.to_str())
@@ -11562,11 +12953,14 @@ impl BrowserController {
                 .unwrap_or("");
             let activity_items: Vec<(PathBuf, Option<PathBuf>)> =
                 paths.iter().map(|path| (path.clone(), None)).collect();
-            let summary = if total == 1 {
+            let raw_summary = if total == 1 {
                 "Permanently deleted item".to_string()
             } else {
                 format!("Permanently deleted {total} items")
             };
+            let summary = paths
+                .first()
+                .map_or(raw_summary.clone(), |p| self.cloud_summary(&raw_summary, p));
             let _ = self.metadata.borrow().log_activity_with_items(
                 "permanent_delete",
                 total as i32,
@@ -11674,6 +13068,12 @@ impl BrowserController {
     }
 
     fn open_terminal_for_path(self: &Rc<Self>, path: PathBuf, is_dir: bool) {
+        // Terminal cannot open remote URI paths — the CWD must be a local filesystem path
+        if is_gio_uri(&path.to_string_lossy()) {
+            self.status
+                .set_message("Terminal unavailable: path is a remote URI, not a local folder.");
+            return;
+        }
         let Some(command) = self.terminal_command.clone() else {
             self.status
                 .set_message("No terminal command is configured.");
@@ -11856,10 +13256,20 @@ impl BrowserController {
     }
 
     fn update_sidebar_state(&self) {
+        // Clear the cloud context badge for any view that is not a browseable directory/tool.
+        // Directory, Triage, and SpaceViewer views manage their own cloud context inline.
+        match self.current_view_for(self.active_slot()) {
+            PaneView::Directory(_) | PaneView::Triage { .. } | PaneView::SpaceViewer { .. } => {}
+            _ => {
+                self.status.set_cloud_context(None);
+            }
+        }
+
         let active = match self.current_view_for(self.active_slot()) {
             PaneView::Tag(_) => Some(SidebarTarget::Tags),
             PaneView::TagManager => Some(SidebarTarget::Tags),
             PaneView::ProjectLanding(_) | PaneView::ProjectManager => Some(SidebarTarget::Projects),
+            PaneView::CloudLanding(cloud_id) => Some(SidebarTarget::Cloud(cloud_id)),
             PaneView::Triage { .. } => Some(SidebarTarget::Triage),
             PaneView::SystemDrives => Some(SidebarTarget::SystemDrives),
             PaneView::Recent => Some(SidebarTarget::Recent),
@@ -11868,6 +13278,7 @@ impl BrowserController {
             PaneView::Search(_) => Some(SidebarTarget::Search),
             PaneView::BulkNaming { .. } => Some(SidebarTarget::BulkNaming),
             PaneView::SpaceViewer { .. } => Some(SidebarTarget::SpaceViewer),
+            PaneView::MediaConvert { .. } => Some(SidebarTarget::Convert),
             PaneView::Directory(_) => {
                 let current = self.current_dir_for(self.active_slot());
                 self.user_places
@@ -11927,7 +13338,7 @@ impl BrowserController {
     }
 
     fn resolve_path_input(&self, input: &str) -> Option<gio::File> {
-        if input.starts_with("file://") {
+        if input.starts_with("file://") || is_gio_uri(input) {
             return Some(gio::File::for_uri(input));
         }
 
@@ -12603,7 +14014,7 @@ impl BrowserController {
                 .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str())
                 .unwrap_or("destination");
-            let summary = format!(
+            let raw_summary = format!(
                 "{verb} {n} file{} to {dest_name}",
                 if n == 1 { "" } else { "s" }
             );
@@ -12613,6 +14024,7 @@ impl BrowserController {
                 .and_then(|p| p.to_str())
                 .unwrap_or("")
                 .to_string();
+            let summary = self.cloud_summary(&raw_summary, &items[0].0);
             let dest = items[0]
                 .1
                 .parent()
@@ -13134,7 +14546,9 @@ fn action_availability(
             | PaneView::Search(_)
             | PaneView::BulkNaming { .. }
             | PaneView::ActivityLog
+            | PaneView::CloudLanding(_)
             | PaneView::SpaceViewer { .. }
+            | PaneView::MediaConvert { .. }
     );
     let can_paste_files =
         has_file_clipboard && matches!(view, PaneView::Directory(_) | PaneView::Triage { .. });
@@ -14232,6 +15646,7 @@ fn tab_title_for_view(view: &PaneView, path: &Path) -> String {
         PaneView::BulkNaming { .. } => "Bulk Naming".to_string(),
         PaneView::ActivityLog => "Activity Log".to_string(),
         PaneView::ProjectLanding(_) => "Palette".to_string(),
+        PaneView::CloudLanding(_) => "Cloud Drive".to_string(),
         PaneView::ProjectManager => "Palettes".to_string(),
         PaneView::TagManager => "Tints & Tags".to_string(),
         PaneView::SpaceViewer { root } => {
@@ -14241,6 +15656,7 @@ fn tab_title_for_view(view: &PaneView, path: &Path) -> String {
                 .unwrap_or_else(|| "Space Viewer".to_string());
             format!("Space: {folder}")
         }
+        PaneView::MediaConvert { .. } => "Convert".to_string(),
     }
 }
 
@@ -14266,9 +15682,13 @@ fn view_display_label(view: &PaneView, home: &Path) -> String {
         PaneView::BulkNaming { root } => format!("Bulk Naming in {}", format_path(root, home)),
         PaneView::ActivityLog => "Activity Log".to_string(),
         PaneView::ProjectLanding(_) => "Palette".to_string(),
+        PaneView::CloudLanding(_) => "Cloud Drive".to_string(),
         PaneView::ProjectManager => "Palettes".to_string(),
         PaneView::TagManager => "Tints & Tags".to_string(),
         PaneView::SpaceViewer { root } => format!("Space: {}", format_path(root, home)),
+        PaneView::MediaConvert { from_dir } => {
+            format!("Convert · {}", format_path(from_dir, home))
+        }
     }
 }
 
@@ -14357,6 +15777,16 @@ fn generate_tint_css(tints: &[TintRecord]) -> String {
         ));
     }
     css
+}
+
+/// Returns true for GIO/GVfs remote URI schemes (sftp, ftp, smb, dav, davs, nfs, ssh, afp).
+/// Does NOT match file://, trash://, or other virtual GIO backends.
+fn is_gio_uri(s: &str) -> bool {
+    let scheme = s.split_once("://").map(|(s, _)| s).unwrap_or("");
+    matches!(
+        scheme,
+        "sftp" | "ftp" | "smb" | "dav" | "davs" | "nfs" | "ssh" | "afp"
+    )
 }
 
 fn format_path(path: &Path, home: &Path) -> String {

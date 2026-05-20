@@ -143,6 +143,7 @@ impl HoldingTray {
         items: &[FileItem],
         selected_paths: &[PathBuf],
         tint_colors: &HashMap<i64, String>,
+        cloud_flags: &[bool],
         on_remove: F,
         on_select: G,
         on_open: H,
@@ -171,10 +172,12 @@ impl HoldingTray {
             }
             let selected = selected_paths.iter().any(|path| path == &item.path);
             let tint_color = tint_colors.get(&item.mark_tint_id).cloned();
+            let is_cloud = cloud_flags.get(index).copied().unwrap_or(false);
             let (row, target) = tray_item(
                 item,
                 selected,
                 tint_color,
+                is_cloud,
                 on_remove.clone(),
                 on_select.clone(),
                 on_open.clone(),
@@ -224,6 +227,7 @@ fn tray_item<F, G, H>(
     item: &FileItem,
     selected: bool,
     tint_color: Option<String>,
+    is_cloud: bool,
     on_remove: F,
     on_select: G,
     on_open: H,
@@ -254,6 +258,15 @@ where
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
     name.set_max_width_chars(18);
     row.append(&name);
+
+    // Cloud badge
+    if is_cloud {
+        let cloud_badge = Label::new(Some("☁"));
+        cloud_badge.add_css_class("ht-cloud-badge");
+        cloud_badge.set_valign(gtk::Align::Center);
+        super::attach_tooltip(&cloud_badge, "Item from a cloud drive");
+        row.append(&cloud_badge);
+    }
 
     // Mark badge: color chip + shape glyph
     if let Some(color) = tint_color {
