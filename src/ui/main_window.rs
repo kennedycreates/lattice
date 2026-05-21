@@ -10766,6 +10766,8 @@ impl BrowserController {
                     "copy_path",
                     "terminal_here",
                     "separator",
+                    "pin_place",
+                    "separator",
                     "move_to_trash",
                     "delete_permanently",
                 ]
@@ -10984,7 +10986,7 @@ impl BrowserController {
                 ),
                 "pin_place" if item.is_dir => append_menu_button(
                     menu_box,
-                    "Pin to Places",
+                    "Add to Places",
                     Some("bookmark-new-symbolic"),
                     false,
                     {
@@ -11215,7 +11217,7 @@ impl BrowserController {
                 ),
                 "pin_place" => append_menu_button(
                     menu_box,
-                    "Pin to Places",
+                    "Add to Places",
                     Some("bookmark-new-symbolic"),
                     false,
                     {
