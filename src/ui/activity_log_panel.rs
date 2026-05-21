@@ -225,7 +225,6 @@ impl ActivityLogPanel {
     pub fn connect_cleanup(&self, callback: impl Fn(i64) + 'static) {
         *self.state.on_cleanup.borrow_mut() = Some(Box::new(callback));
     }
-
 }
 
 fn re_render(state: &Rc<State>) {

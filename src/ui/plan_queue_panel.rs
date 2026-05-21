@@ -1,4 +1,4 @@
-use crate::action_plan::{ActionPlan, OpKind};
+use crate::action_plan::{ActionPlan, OpKind, WarnLevel};
 use crate::config::{shortcut_tooltip, AppConfig};
 use gtk::prelude::*;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Revealer, ScrolledWindow};
@@ -121,18 +121,28 @@ impl PlanQueuePanel {
 
 fn kind_icon(kind: &OpKind) -> &'static str {
     match kind {
-        OpKind::Copy => "📋",
-        OpKind::Move => "↗",
-        OpKind::Trash => "🗑",
-        OpKind::PermanentDelete => "✗",
-        OpKind::Rename => "✏",
-        OpKind::BulkRename => "✏",
-        OpKind::Duplicate => "📋",
-        OpKind::NewFolder => "📁",
-        OpKind::NewFile => "📄",
+        OpKind::CopyMove { is_copy, .. } => {
+            if *is_copy {
+                "📋"
+            } else {
+                "↗"
+            }
+        }
+        OpKind::Trash { .. } => "🗑",
+        OpKind::PermanentDelete { .. } => "✗",
+        OpKind::Rename(_) => "✏",
+        OpKind::BulkRename { .. } => "✏",
+        OpKind::Duplicate { .. } => "📋",
+        OpKind::NewFolder { .. } => "📁",
+        OpKind::NewFile { .. } => "📄",
         OpKind::SendToProject { .. } => "🗂",
         OpKind::PaintMark { .. } => "🎨",
         OpKind::ResetMark { .. } => "◻",
+        OpKind::ApplyTag { .. } => "#",
+        OpKind::RemoveTags { .. } => "#",
+        OpKind::CopyPaths { .. } => "⧉",
+        OpKind::RestoreTrash { .. } => "↩",
+        OpKind::EmptyTrash => "✗",
     }
 }
 
@@ -144,6 +154,11 @@ fn build_row<F: Fn(QueueAction) + Clone + 'static>(
 ) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 6);
     row.add_css_class("plan-queue-row");
+    match item.warn_level {
+        WarnLevel::None => {}
+        WarnLevel::Caution => row.add_css_class("plan-queue-row-caution"),
+        WarnLevel::Danger => row.add_css_class("plan-queue-row-danger"),
+    }
     row.set_margin_start(2);
     row.set_margin_end(4);
 
@@ -183,6 +198,28 @@ fn build_row<F: Fn(QueueAction) + Clone + 'static>(
     summary.set_ellipsize(gtk::pango::EllipsizeMode::End);
     summary.set_max_width_chars(60);
     text_col.append(&summary);
+
+    let mut details = Vec::new();
+    if !item.file_list.is_empty() {
+        details.push(format!(
+            "{} item{}",
+            item.file_list.len(),
+            if item.file_list.len() == 1 { "" } else { "s" }
+        ));
+    }
+    if !item.conflicts.is_empty() {
+        details.push(format!(
+            "{} conflict{}",
+            item.conflicts.len(),
+            if item.conflicts.len() == 1 { "" } else { "s" }
+        ));
+    }
+    if !details.is_empty() {
+        let detail_label = Label::new(Some(&details.join(" · ")));
+        detail_label.add_css_class("plan-queue-detail");
+        detail_label.set_halign(Align::Start);
+        text_col.append(&detail_label);
+    }
 
     if let Some(note) = &item.cloud_note {
         let note_label = Label::new(Some(note));

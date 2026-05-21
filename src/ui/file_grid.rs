@@ -16,8 +16,10 @@ use std::time::Duration;
 struct MarkRef {
     icon_card: Box,
     icon_overlay: Overlay,
+    icon_tags: Box,
     list_row: ListBoxRow,
     list_overlay: Overlay,
+    list_tags: Box,
     shape: Shape,
     tint_color: Option<String>,
 }
@@ -407,7 +409,7 @@ impl FileGrid {
         let show_shape_badges = self.show_shape_badges.get();
 
         for (index, item) in items.iter().enumerate() {
-            let (card, icon_overlay, target) = build_card(item, show_shape_badges);
+            let (card, icon_overlay, icon_tags, target) = build_card(item, show_shape_badges);
             card.add_css_class("card-anim");
             card.add_css_class(&format!("card-delay-{}", index.min(15)));
             // card is the shell; the actual .file-card box is its first child
@@ -420,15 +422,17 @@ impl FileGrid {
                 targets.push(t);
             }
             // Build the list row here too so we can store both refs together
-            let (row, list_overlay) = build_list_row(item, show_shape_badges);
+            let (row, list_overlay, list_tags) = build_list_row(item, show_shape_badges);
             row.add_css_class("list-row-anim");
             row.add_css_class(&format!("card-delay-{}", index.min(15)));
             self.list_box.append(&row);
             refs.push(MarkRef {
                 icon_card,
                 icon_overlay,
+                icon_tags,
                 list_row: row,
                 list_overlay,
+                list_tags,
                 shape: item.mark_shape,
                 tint_color: item.mark_tint_color.clone(),
             });
@@ -458,6 +462,14 @@ impl FileGrid {
             remove_shape_badge(&r.icon_overlay);
             remove_shape_badge(&r.list_overlay);
         }
+    }
+
+    /// Update the tag chips for a single item in place.
+    pub fn update_item_tags(&self, index: usize, tags: &[TagRecord]) {
+        let refs = self.mark_refs.borrow();
+        let Some(r) = refs.get(index) else { return };
+        rebuild_tag_chips(&r.icon_tags, tags, 1);
+        rebuild_tag_chips(&r.list_tags, tags, 2);
     }
 
     /// Take all pending thumbnail targets out of this grid so the caller can
@@ -611,7 +623,7 @@ impl FileGrid {
     }
 }
 
-fn build_card(file: &FileItem, show_shape_badge: bool) -> (Box, Overlay, Option<ThumbnailTarget>) {
+fn build_card(file: &FileItem, show_shape_badge: bool) -> (Box, Overlay, Box, Option<ThumbnailTarget>) {
     let shell = Box::new(Orientation::Vertical, 0);
     shell.add_css_class("file-card-shell");
     shell.set_size_request(FILE_CARD_WIDTH, FILE_CARD_HEIGHT);
@@ -736,29 +748,13 @@ fn build_card(file: &FileItem, show_shape_badge: bool) -> (Box, Overlay, Option<
     tags.add_css_class("file-card-tags");
     tags.set_halign(gtk::Align::Center);
     tags.set_size_request(-1, FILE_CARD_TAGS_HEIGHT);
-
-    if !file.tags.is_empty() {
-        for tag in file.tags.iter().take(1) {
-            let chip = Label::new(Some(&tag.name));
-            chip.add_css_class("file-tag-chip");
-            tags.append(&chip);
-        }
-
-        if file.tags.len() > 1 {
-            let overflow = Label::new(Some(&format!("+{}", file.tags.len() - 1)));
-            overflow.add_css_class("file-tag-chip");
-            overflow.add_css_class("file-tag-chip-muted");
-            tags.append(&overflow);
-        }
-    } else {
-        tags.set_visible(false);
-    }
+    rebuild_tag_chips(&tags, &file.tags, 1);
     card.append(&tags);
 
-    (shell, media_overlay, thumb_target)
+    (shell, media_overlay, tags, thumb_target)
 }
 
-fn build_list_row(file: &FileItem, show_shape_badge: bool) -> (ListBoxRow, Overlay) {
+fn build_list_row(file: &FileItem, show_shape_badge: bool) -> (ListBoxRow, Overlay, Box) {
     let row = ListBoxRow::new();
     row.add_css_class("file-list-row");
     row.add_css_class(file.kind.css_class());
@@ -857,8 +853,37 @@ fn build_list_row(file: &FileItem, show_shape_badge: bool) -> (ListBoxRow, Overl
     date.set_xalign(1.0);
     inner.append(&date);
 
+    let list_tags = Box::new(Orientation::Horizontal, 4);
+    list_tags.add_css_class("file-list-tags");
+    rebuild_tag_chips(&list_tags, &file.tags, 2);
+    name_box.append(&list_tags);
+
     row.set_child(Some(&inner));
-    (row, icon_overlay)
+    (row, icon_overlay, list_tags)
+}
+
+// ── Tag chip helpers ───────────────────────────────────────────────────────────
+
+fn rebuild_tag_chips(container: &Box, tags: &[TagRecord], max_shown: usize) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+    if tags.is_empty() {
+        container.set_visible(false);
+        return;
+    }
+    container.set_visible(true);
+    for tag in tags.iter().take(max_shown) {
+        let chip = Label::new(Some(&tag.name));
+        chip.add_css_class("file-tag-chip");
+        container.append(&chip);
+    }
+    if tags.len() > max_shown {
+        let overflow = Label::new(Some(&format!("+{}", tags.len() - max_shown)));
+        overflow.add_css_class("file-tag-chip");
+        overflow.add_css_class("file-tag-chip-muted");
+        container.append(&overflow);
+    }
 }
 
 // ── Mark CSS and badge helpers ─────────────────────────────────────────────────

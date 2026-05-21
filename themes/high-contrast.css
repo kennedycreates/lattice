@@ -1111,7 +1111,10 @@ tooltip {
 .plan-queue-execute-btn { background: #220033; border-color: #aa00ff; color: #dd88ff; }
 .plan-queue-execute-btn:hover { background: #330044; border-color: #cc44ff; color: #ffffff; }
 .plan-queue-row { padding: 3px 2px; border-bottom: 1px solid #333333; }
+.plan-queue-row-caution { background: #221a00; }
+.plan-queue-row-danger { background: #2a0010; }
 .plan-queue-summary { color: #ffffff; font-size: 12px; }
+.plan-queue-detail { color: #aaaaaa; font-size: 10px; }
 .pq-reorder-btn, .pq-remove-btn { background: transparent; border: none; color: #666666; min-width: 22px; min-height: 22px; padding: 0; }
 .pq-reorder-btn:hover { color: #cccccc; }
 .pq-remove-btn:hover { color: #ff3355; }

@@ -1,5 +1,5 @@
 use crate::config::{shortcut_tooltip, AppConfig};
-use crate::metadata::{Shape, TintRecord};
+use crate::metadata::{Shape, TagRecord, TintRecord};
 use gtk::prelude::*;
 use gtk::{
     Box as GtkBox, Button, DrawingArea, Label, Orientation, Popover, Revealer,
@@ -17,11 +17,20 @@ pub enum PaintTool {
     FillSelection,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PaintType {
+    #[default]
+    Mark,
+    Tag,
+}
+
 struct Callbacks {
     on_tint_changed: Box<dyn Fn(i64)>,
     on_shape_changed: Box<dyn Fn(Shape)>,
     on_tool_changed: Box<dyn Fn(PaintTool)>,
     on_paint_contents_changed: Box<dyn Fn(bool)>,
+    on_paint_type_changed: Box<dyn Fn(PaintType)>,
+    on_tag_changed: Box<dyn Fn(i64)>,
     on_undo: Box<dyn Fn()>,
     on_redo: Box<dyn Fn()>,
 }
@@ -33,6 +42,8 @@ impl Default for Callbacks {
             on_shape_changed: Box::new(|_| {}),
             on_tool_changed: Box::new(|_| {}),
             on_paint_contents_changed: Box::new(|_| {}),
+            on_paint_type_changed: Box::new(|_| {}),
+            on_tag_changed: Box::new(|_| {}),
             on_undo: Box::new(|| {}),
             on_redo: Box::new(|| {}),
         }
@@ -45,6 +56,13 @@ struct Inner {
     tint_list: GtkBox,
     tint_popover: Popover,
     shape_label: Label,
+    mark_section: GtkBox,
+    tag_section: GtkBox,
+    tag_label: Label,
+    tag_list: GtkBox,
+    tag_popover: Popover,
+    mark_mode_btn: ToggleButton,
+    tag_mode_btn: ToggleButton,
     brush_btn: ToggleButton,
     eraser_btn: ToggleButton,
     eyedropper_btn: ToggleButton,
@@ -54,6 +72,7 @@ struct Inner {
     redo_btn: Button,
     active_tint_color: Rc<RefCell<String>>,
     active_shape: Cell<Shape>,
+    active_paint_type: Cell<PaintType>,
     cbs: Callbacks,
 }
 
@@ -77,10 +96,30 @@ impl PaintingToolbar {
         bar.set_margin_top(3);
         bar.set_margin_bottom(3);
 
+        // ── Paint type toggle (Mark / Tag) ─────────────────────────────
+        let mark_mode_btn = ToggleButton::with_label("Mark");
+        mark_mode_btn.add_css_class("paint-type-btn");
+        crate::ui::attach_tooltip(&mark_mode_btn, "Paint tint + shape marks");
+
+        let tag_mode_btn = ToggleButton::with_label("Tag");
+        tag_mode_btn.add_css_class("paint-type-btn");
+        tag_mode_btn.set_group(Some(&mark_mode_btn));
+        crate::ui::attach_tooltip(&tag_mode_btn, "Paint word tags");
+
+        mark_mode_btn.set_active(true);
+        bar.append(&mark_mode_btn);
+        bar.append(&tag_mode_btn);
+
+        let sep0 = Separator::new(Orientation::Vertical);
+        sep0.add_css_class("paint-toolbar-sep");
+        bar.append(&sep0);
+
         // Shared color Rc — both the swatch draw func and Inner hold a clone.
         let active_tint_color: Rc<RefCell<String>> = Rc::new(RefCell::new("#806040".to_string()));
 
-        // ── Tint selector ──────────────────────────────────────────────
+        // ── Mark section (tint + shape) ────────────────────────────────
+        let mark_section = GtkBox::new(Orientation::Horizontal, 4);
+
         let tint_swatch = DrawingArea::new();
         tint_swatch.set_content_width(14);
         tint_swatch.set_content_height(14);
@@ -113,7 +152,7 @@ impl PaintingToolbar {
         tint_btn.set_child(Some(&tint_btn_inner));
         tint_btn.add_css_class("paint-selector-btn");
         crate::ui::attach_tooltip(&tint_btn, "Active tint — click to change");
-        bar.append(&tint_btn);
+        mark_section.append(&tint_btn);
 
         let tint_popover = Popover::new();
         tint_popover.add_css_class("paint-tint-popover");
@@ -133,7 +172,6 @@ impl PaintingToolbar {
             move |_| pop.popup()
         });
 
-        // ── Shape selector ─────────────────────────────────────────────
         let shape_label = Label::new(Some("■ Square"));
         shape_label.add_css_class("paint-selector-label");
         shape_label.set_single_line_mode(true);
@@ -141,7 +179,7 @@ impl PaintingToolbar {
         shape_btn.set_child(Some(&shape_label));
         shape_btn.add_css_class("paint-selector-btn");
         crate::ui::attach_tooltip(&shape_btn, "Active shape — click to change");
-        bar.append(&shape_btn);
+        mark_section.append(&shape_btn);
 
         let shape_popover = Popover::new();
         shape_popover.add_css_class("paint-shape-popover");
@@ -160,6 +198,46 @@ impl PaintingToolbar {
             let pop = shape_popover.clone();
             move |_| pop.popup()
         });
+
+        bar.append(&mark_section);
+
+        // ── Tag section ────────────────────────────────────────────────
+        let tag_section = GtkBox::new(Orientation::Horizontal, 4);
+        tag_section.set_visible(false);
+
+        let tag_label = Label::new(Some("(no tags)"));
+        tag_label.add_css_class("paint-selector-label");
+        tag_label.set_single_line_mode(true);
+
+        let tag_btn_inner = GtkBox::new(Orientation::Horizontal, 4);
+        let tag_icon = Label::new(Some("🏷"));
+        tag_btn_inner.append(&tag_icon);
+        tag_btn_inner.append(&tag_label);
+        let tag_btn = Button::new();
+        tag_btn.set_child(Some(&tag_btn_inner));
+        tag_btn.add_css_class("paint-selector-btn");
+        crate::ui::attach_tooltip(&tag_btn, "Active tag — click to change");
+        tag_section.append(&tag_btn);
+
+        let tag_popover = Popover::new();
+        tag_popover.add_css_class("paint-tag-popover");
+        tag_popover.set_has_arrow(true);
+        tag_popover.set_position(gtk::PositionType::Bottom);
+        tag_popover.set_parent(&tag_btn);
+
+        let tag_list = GtkBox::new(Orientation::Vertical, 2);
+        tag_list.set_margin_top(4);
+        tag_list.set_margin_bottom(4);
+        tag_list.set_margin_start(4);
+        tag_list.set_margin_end(4);
+        tag_popover.set_child(Some(&tag_list));
+
+        tag_btn.connect_clicked({
+            let pop = tag_popover.clone();
+            move |_| pop.popup()
+        });
+
+        bar.append(&tag_section);
 
         // ── Separator ──────────────────────────────────────────────────
         let sep1 = Separator::new(Orientation::Vertical);
@@ -237,6 +315,13 @@ impl PaintingToolbar {
             tint_list: tint_list.clone(),
             tint_popover: tint_popover.clone(),
             shape_label: shape_label.clone(),
+            mark_section: mark_section.clone(),
+            tag_section: tag_section.clone(),
+            tag_label: tag_label.clone(),
+            tag_list: tag_list.clone(),
+            tag_popover: tag_popover.clone(),
+            mark_mode_btn: mark_mode_btn.clone(),
+            tag_mode_btn: tag_mode_btn.clone(),
             brush_btn: brush_btn.clone(),
             eraser_btn: eraser_btn.clone(),
             eyedropper_btn: eyedropper_btn.clone(),
@@ -246,6 +331,7 @@ impl PaintingToolbar {
             redo_btn: redo_btn.clone(),
             active_tint_color,
             active_shape: Cell::new(Shape::Square),
+            active_paint_type: Cell::new(PaintType::Mark),
             cbs: Callbacks::default(),
         }));
 
@@ -267,6 +353,32 @@ impl PaintingToolbar {
         wire_tool_btn(&eraser_btn, PaintTool::Eraser, Rc::clone(&inner));
         wire_tool_btn(&eyedropper_btn, PaintTool::Eyedropper, Rc::clone(&inner));
         wire_tool_btn(&fill_btn, PaintTool::FillSelection, Rc::clone(&inner));
+
+        // Wire paint type toggle
+        {
+            let inner_rc = Rc::clone(&inner);
+            mark_mode_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    let inner = inner_rc.borrow();
+                    inner.active_paint_type.set(PaintType::Mark);
+                    inner.mark_section.set_visible(true);
+                    inner.tag_section.set_visible(false);
+                    inner.cbs.on_paint_type_changed.as_ref()(PaintType::Mark);
+                }
+            });
+        }
+        {
+            let inner_rc = Rc::clone(&inner);
+            tag_mode_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    let inner = inner_rc.borrow();
+                    inner.active_paint_type.set(PaintType::Tag);
+                    inner.mark_section.set_visible(false);
+                    inner.tag_section.set_visible(true);
+                    inner.cbs.on_paint_type_changed.as_ref()(PaintType::Tag);
+                }
+            });
+        }
 
         // Wire paint_contents
         {
@@ -307,6 +419,14 @@ impl PaintingToolbar {
 
     pub fn connect_paint_contents_changed(&self, f: impl Fn(bool) + 'static) {
         self.inner.borrow_mut().cbs.on_paint_contents_changed = Box::new(f);
+    }
+
+    pub fn connect_paint_type_changed(&self, f: impl Fn(PaintType) + 'static) {
+        self.inner.borrow_mut().cbs.on_paint_type_changed = Box::new(f);
+    }
+
+    pub fn connect_tag_changed(&self, f: impl Fn(i64) + 'static) {
+        self.inner.borrow_mut().cbs.on_tag_changed = Box::new(f);
     }
 
     pub fn connect_undo(&self, f: impl Fn() + 'static) {
@@ -372,11 +492,73 @@ impl PaintingToolbar {
         }
     }
 
+    pub fn set_tags(&self, tags: &[TagRecord], active_id: i64) {
+        let inner = self.inner.borrow();
+        while let Some(child) = inner.tag_list.first_child() {
+            inner.tag_list.remove(&child);
+        }
+        if tags.is_empty() {
+            let hint = Label::new(Some("No tags — create tags in the Tags panel first."));
+            hint.add_css_class("paint-tag-empty-hint");
+            hint.set_margin_top(4);
+            hint.set_margin_bottom(4);
+            hint.set_margin_start(4);
+            hint.set_margin_end(4);
+            inner.tag_list.append(&hint);
+            return;
+        }
+        for tag in tags {
+            let row = GtkBox::new(Orientation::Horizontal, 6);
+            row.set_margin_start(2);
+            row.set_margin_end(2);
+
+            let lbl = Label::new(Some(&tag.name));
+            lbl.set_halign(gtk::Align::Start);
+            lbl.set_hexpand(true);
+            row.append(&lbl);
+
+            if tag.id == active_id {
+                let check = Label::new(Some("✓"));
+                check.add_css_class("paint-tint-check");
+                row.append(&check);
+            }
+
+            let btn = Button::new();
+            btn.set_child(Some(&row));
+            btn.add_css_class("paint-tint-option");
+
+            let tag_id = tag.id;
+            let pop = inner.tag_popover.clone();
+            let inner_rc = Rc::clone(&self.inner);
+            btn.connect_clicked(move |_| {
+                pop.popdown();
+                inner_rc.borrow().cbs.on_tag_changed.as_ref()(tag_id);
+            });
+            inner.tag_list.append(&btn);
+        }
+
+        if let Some(t) = tags.iter().find(|t| t.id == active_id) {
+            drop(inner);
+            self.set_active_tag_display(&t.name);
+        } else if let Some(first) = tags.first() {
+            // Auto-select the first tag if none is active yet
+            let first_id = first.id;
+            let first_name = first.name.clone();
+            drop(inner);
+            self.set_active_tag_display(&first_name);
+            self.inner.borrow().cbs.on_tag_changed.as_ref()(first_id);
+        }
+    }
+
     pub fn set_active_tint_display(&self, hex_color: &str, name: &str) {
         let inner = self.inner.borrow();
         *inner.active_tint_color.borrow_mut() = hex_color.to_string();
         inner.tint_label.set_text(name);
         inner.tint_swatch.queue_draw();
+    }
+
+    pub fn set_active_tag_display(&self, name: &str) {
+        self.inner.borrow().tag_label.set_text(name);
     }
 
     pub fn set_active_shape(&self, shape: Shape) {
@@ -402,6 +584,27 @@ impl PaintingToolbar {
         let inner = self.inner.borrow();
         if inner.paint_contents_btn.is_active() != on {
             inner.paint_contents_btn.set_active(on);
+        }
+    }
+
+    pub fn set_paint_type(&self, pt: PaintType) {
+        let inner = self.inner.borrow();
+        inner.active_paint_type.set(pt);
+        match pt {
+            PaintType::Mark => {
+                if !inner.mark_mode_btn.is_active() {
+                    inner.mark_mode_btn.set_active(true);
+                }
+                inner.mark_section.set_visible(true);
+                inner.tag_section.set_visible(false);
+            }
+            PaintType::Tag => {
+                if !inner.tag_mode_btn.is_active() {
+                    inner.tag_mode_btn.set_active(true);
+                }
+                inner.mark_section.set_visible(false);
+                inner.tag_section.set_visible(true);
+            }
         }
     }
 

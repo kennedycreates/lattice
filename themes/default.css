@@ -2098,7 +2098,20 @@ flowboxchild:hover > .file-card-shell.drop-hover > .file-card,
     border-bottom: 1px solid #302e2828;
 }
 
+.plan-queue-row-caution {
+    background: rgba(201, 150, 46, 0.06);
+}
+
+.plan-queue-row-danger {
+    background: rgba(200, 64, 112, 0.08);
+}
+
 .plan-queue-summary { color: #e8dcc8; font-size: 12px; }
+
+.plan-queue-detail {
+    color: #806040;
+    font-size: 10px;
+}
 
 .pq-reorder-btn, .pq-remove-btn {
     background: transparent;

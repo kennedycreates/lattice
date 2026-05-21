@@ -1,4 +1,4 @@
-use crate::action_plan::ActionPlan as FileOpPlan;
+use crate::action_plan::{ActionPlan as FileOpPlan, OpKind as FileOpKind, RestoreSpec};
 use crate::config::{shortcut_tooltip, AppConfig, CustomActionConfig};
 use crate::converter::{
     cleanup_orphaned_temps_in, ConversionQueue, ConvertItem, ConvertSettings, MediaKind,
@@ -20,7 +20,7 @@ use crate::ui::{
         build_modal_actions, build_modal_button, build_modal_prompt, ButtonKind, ModalHost,
     },
     ops_panel::{OpId, OpsPanel},
-    painting_toolbar::{PaintTool, PaintingToolbar},
+    painting_toolbar::{PaintTool, PaintType, PaintingToolbar},
     palette_board_panel::PaletteBoardPanel,
     picker::{show_picker_modal, PickerConfig, PickerResult},
     plan_queue_panel::{PlanQueuePanel, QueueAction},
@@ -354,12 +354,18 @@ enum PaneView {
 }
 
 /// One file/folder change captured for undo/redo.
+enum PaintOp {
+    Mark {
+        prev: Option<(i64, Shape)>,
+        next: Option<(i64, Shape)>,
+    },
+    /// `added = true` → brush applied tag; `false` → eraser removed tag.
+    Tag { tag_id: i64, added: bool },
+}
+
 struct PaintHistoryEntry {
     path: PathBuf,
-    /// Mark that existed before this action (None = no explicit row, i.e. was default).
-    prev: Option<(i64, Shape)>,
-    /// Mark set by this action (None = mark was erased).
-    next: Option<(i64, Shape)>,
+    op: PaintOp,
 }
 
 /// A group of changes that constitute one undoable paint operation.
@@ -962,14 +968,14 @@ struct BatchResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ActionPlan {
+struct ConfirmationPreview {
     title: String,
     confirm_label: String,
     destructive: bool,
     lines: Vec<String>,
 }
 
-impl ActionPlan {
+impl ConfirmationPreview {
     fn new(
         title: impl Into<String>,
         confirm_label: impl Into<String>,
@@ -1085,12 +1091,16 @@ struct BrowserController {
     conversion_queue: ConversionQueue,
     plan_mode_active: Cell<bool>,
     action_queue: RefCell<Vec<crate::action_plan::ActionPlan>>,
+    executing_plan_queue: Cell<bool>,
     paint_mode_active: Cell<bool>,
+    active_paint_type: Cell<PaintType>,
     active_paint_tint_id: Cell<i64>,
     active_paint_tint_color: RefCell<String>,
     active_paint_tint_name: RefCell<String>,
     active_paint_shape: Cell<Shape>,
     active_paint_tool: Cell<PaintTool>,
+    active_paint_tag_id: Cell<i64>,
+    active_paint_tag_name: RefCell<String>,
     paint_contents: Cell<bool>,
     current_drag_painted: RefCell<std::collections::HashSet<PathBuf>>,
     drag_history_accumulator: RefCell<Option<Vec<PaintHistoryEntry>>>,
@@ -1264,7 +1274,9 @@ impl BrowserController {
             conversion_queue: ConversionQueue::new(),
             plan_mode_active: Cell::new(false),
             action_queue: RefCell::new(Vec::new()),
+            executing_plan_queue: Cell::new(false),
             paint_mode_active: Cell::new(false),
+            active_paint_type: Cell::new(PaintType::Mark),
             active_paint_tint_id: Cell::new(default_tint.id),
             active_paint_tint_color: RefCell::new(
                 default_tint
@@ -1275,6 +1287,8 @@ impl BrowserController {
             active_paint_tint_name: RefCell::new(default_tint.name.clone()),
             active_paint_shape: Cell::new(Shape::DEFAULT),
             active_paint_tool: Cell::new(PaintTool::Brush),
+            active_paint_tag_id: Cell::new(0),
+            active_paint_tag_name: RefCell::new(String::new()),
             paint_contents: Cell::new(false),
             current_drag_painted: RefCell::new(std::collections::HashSet::new()),
             drag_history_accumulator: RefCell::new(None),
@@ -7400,6 +7414,11 @@ impl BrowserController {
                 .set_active_tool(self.active_paint_tool.get());
             self.painting_toolbar
                 .set_paint_contents(self.paint_contents.get());
+            self.painting_toolbar
+                .set_paint_type(self.active_paint_type.get());
+            let tags = self.metadata.borrow().list_tags().unwrap_or_default();
+            self.painting_toolbar
+                .set_tags(&tags, self.active_paint_tag_id.get());
             {
                 let ctrl = Rc::clone(self);
                 self.painting_toolbar
@@ -7426,6 +7445,16 @@ impl BrowserController {
             {
                 let ctrl = Rc::clone(self);
                 self.painting_toolbar
+                    .connect_paint_type_changed(move |pt| ctrl.active_paint_type.set(pt));
+            }
+            {
+                let ctrl = Rc::clone(self);
+                self.painting_toolbar
+                    .connect_tag_changed(move |id| ctrl.on_paint_tag_changed(id));
+            }
+            {
+                let ctrl = Rc::clone(self);
+                self.painting_toolbar
                     .connect_undo(move || ctrl.paint_undo());
             }
             {
@@ -7435,7 +7464,7 @@ impl BrowserController {
             }
             self.refresh_paint_undo_redo_state();
             self.status
-                .set_message("🎨 Painting Mode — click files to apply marks.");
+                .set_message("🎨 Painting Mode — click files to apply marks or tags.");
         } else {
             self.status.set_message("Painting Mode OFF.");
         }
@@ -7455,15 +7484,33 @@ impl BrowserController {
         }
     }
 
+    fn on_paint_tag_changed(self: &Rc<Self>, tag_id: i64) {
+        let tags = self.metadata.borrow().list_tags().unwrap_or_default();
+        if let Some(t) = tags.iter().find(|t| t.id == tag_id) {
+            self.active_paint_tag_id.set(tag_id);
+            *self.active_paint_tag_name.borrow_mut() = t.name.clone();
+            self.painting_toolbar.set_active_tag_display(&t.name);
+            self.painting_toolbar.set_tags(&tags, tag_id);
+        }
+    }
+
     fn dispatch_paint_tool(self: &Rc<Self>, slot: PaneSlot, index: i32) {
         let Some(item) = self.item_for_index(slot, index) else {
             return;
         };
-        match self.active_paint_tool.get() {
-            PaintTool::Brush => self.paint_brush_item(slot, &item),
-            PaintTool::Eraser => self.paint_eraser_item(slot, &item),
-            PaintTool::Eyedropper => self.paint_eyedropper_item(&item),
-            PaintTool::FillSelection => self.paint_fill_selection(slot),
+        match self.active_paint_type.get() {
+            PaintType::Mark => match self.active_paint_tool.get() {
+                PaintTool::Brush => self.paint_brush_item(slot, &item),
+                PaintTool::Eraser => self.paint_eraser_item(slot, &item),
+                PaintTool::Eyedropper => self.paint_eyedropper_item(&item),
+                PaintTool::FillSelection => self.paint_fill_selection(slot),
+            },
+            PaintType::Tag => match self.active_paint_tool.get() {
+                PaintTool::Brush => self.paint_tag_brush_item(slot, &item),
+                PaintTool::Eraser => self.paint_tag_eraser_item(slot, &item),
+                PaintTool::Eyedropper => self.paint_tag_eyedropper_item(&item),
+                PaintTool::FillSelection => self.paint_tag_fill_selection(slot),
+            },
         }
     }
 
@@ -7474,6 +7521,17 @@ impl BrowserController {
         }
         let tint_id = self.active_paint_tint_id.get();
         let shape = self.active_paint_shape.get();
+        let tint_name = self.active_paint_tint_name.borrow().clone();
+        if self.should_queue_actions() {
+            self.queue_plan(FileOpPlan::for_paint_mark(
+                std::slice::from_ref(&item.path),
+                tint_id,
+                &tint_name,
+                shape,
+                false,
+            ));
+            return;
+        }
         // Capture previous mark before overwriting
         let prev = self.read_explicit_mark(&item.path);
         let result = self
@@ -7487,16 +7545,19 @@ impl BrowserController {
             self.update_item_mark_in_grid(slot, &item.path, tint_id, shape);
             let entry = PaintHistoryEntry {
                 path: item.path.clone(),
-                prev,
-                next: Some((tint_id, shape)),
+                op: PaintOp::Mark {
+                    prev,
+                    next: Some((tint_id, shape)),
+                },
             };
             if !self.append_or_commit_history(entry) {
-                // Not in a drag — commit as standalone step
                 self.commit_paint_history(PaintHistoryStep {
                     entries: vec![PaintHistoryEntry {
                         path: item.path.clone(),
-                        prev,
-                        next: Some((tint_id, shape)),
+                        op: PaintOp::Mark {
+                            prev,
+                            next: Some((tint_id, shape)),
+                        },
                     }],
                 });
             }
@@ -7505,6 +7566,13 @@ impl BrowserController {
     }
 
     fn paint_eraser_item(self: &Rc<Self>, slot: PaneSlot, item: &FileItem) {
+        if self.should_queue_actions() {
+            self.queue_plan(FileOpPlan::for_reset_mark(
+                std::slice::from_ref(&item.path),
+                false,
+            ));
+            return;
+        }
         let prev = self.read_explicit_mark(&item.path);
         let _ = self.metadata.borrow_mut().clear_file_mark(&item.path);
         self.current_drag_painted
@@ -7523,15 +7591,13 @@ impl BrowserController {
         self.update_item_mark_in_grid(slot, &item.path, default_tint_id, default_shape);
         let entry = PaintHistoryEntry {
             path: item.path.clone(),
-            prev,
-            next: None, // erased
+            op: PaintOp::Mark { prev, next: None },
         };
         if !self.append_or_commit_history(entry) {
             self.commit_paint_history(PaintHistoryStep {
                 entries: vec![PaintHistoryEntry {
                     path: item.path.clone(),
-                    prev,
-                    next: None,
+                    op: PaintOp::Mark { prev, next: None },
                 }],
             });
         }
@@ -7565,6 +7631,17 @@ impl BrowserController {
         }
         let tint_id = self.active_paint_tint_id.get();
         let shape = self.active_paint_shape.get();
+        let tint_name = self.active_paint_tint_name.borrow().clone();
+        if self.should_queue_actions() {
+            let paths = items
+                .iter()
+                .map(|item| item.path.clone())
+                .collect::<Vec<_>>();
+            self.queue_plan(FileOpPlan::for_paint_mark(
+                &paths, tint_id, &tint_name, shape, false,
+            ));
+            return;
+        }
         let mut history_entries = Vec::new();
         let mut paths = Vec::new();
         {
@@ -7575,8 +7652,10 @@ impl BrowserController {
                     paths.push(item.path.clone());
                     history_entries.push(PaintHistoryEntry {
                         path: item.path.clone(),
-                        prev,
-                        next: Some((tint_id, shape)),
+                        op: PaintOp::Mark {
+                            prev,
+                            next: Some((tint_id, shape)),
+                        },
                     });
                 }
             }
@@ -7594,6 +7673,147 @@ impl BrowserController {
         if !paths.is_empty() {
             self.log_paint_mark(slot, &paths, tint_id, shape);
         }
+    }
+
+    fn paint_tag_brush_item(self: &Rc<Self>, slot: PaneSlot, item: &FileItem) {
+        let tag_id = self.active_paint_tag_id.get();
+        if tag_id == 0 {
+            self.status.set_message("No tag selected — choose a tag in the toolbar.");
+            return;
+        }
+        let tag_name = self.active_paint_tag_name.borrow().clone();
+        let already_has = item.tags.iter().any(|t| t.id == tag_id);
+        if already_has {
+            return;
+        }
+        let paths = std::slice::from_ref(&item.path);
+        if self.metadata.borrow_mut().add_tag_to_paths(tag_id, paths).is_ok() {
+            self.current_drag_painted.borrow_mut().insert(item.path.clone());
+            let tags = self
+                .metadata
+                .borrow()
+                .tags_for_paths(paths)
+                .unwrap_or_default()
+                .remove(&item.path)
+                .unwrap_or_default();
+            self.update_item_tags_in_grid(slot, &item.path, tags);
+            let entry = PaintHistoryEntry {
+                path: item.path.clone(),
+                op: PaintOp::Tag { tag_id, added: true },
+            };
+            if !self.append_or_commit_history(entry) {
+                self.commit_paint_history(PaintHistoryStep {
+                    entries: vec![PaintHistoryEntry {
+                        path: item.path.clone(),
+                        op: PaintOp::Tag { tag_id, added: true },
+                    }],
+                });
+            }
+            self.status.set_message(&format!("Tagged: {tag_name}"));
+        }
+    }
+
+    fn paint_tag_eraser_item(self: &Rc<Self>, slot: PaneSlot, item: &FileItem) {
+        let tag_id = self.active_paint_tag_id.get();
+        if tag_id == 0 {
+            return;
+        }
+        let tag_name = self.active_paint_tag_name.borrow().clone();
+        let had_tag = item.tags.iter().any(|t| t.id == tag_id);
+        if !had_tag {
+            return;
+        }
+        let paths = std::slice::from_ref(&item.path);
+        if self.metadata.borrow_mut().remove_tag_from_paths(tag_id, paths).is_ok() {
+            self.current_drag_painted.borrow_mut().insert(item.path.clone());
+            let tags = self
+                .metadata
+                .borrow()
+                .tags_for_paths(paths)
+                .unwrap_or_default()
+                .remove(&item.path)
+                .unwrap_or_default();
+            self.update_item_tags_in_grid(slot, &item.path, tags);
+            let entry = PaintHistoryEntry {
+                path: item.path.clone(),
+                op: PaintOp::Tag { tag_id, added: false },
+            };
+            if !self.append_or_commit_history(entry) {
+                self.commit_paint_history(PaintHistoryStep {
+                    entries: vec![PaintHistoryEntry {
+                        path: item.path.clone(),
+                        op: PaintOp::Tag { tag_id, added: false },
+                    }],
+                });
+            }
+            self.status.set_message(&format!("Removed tag: {tag_name}"));
+        }
+    }
+
+    fn paint_tag_eyedropper_item(self: &Rc<Self>, item: &FileItem) {
+        let Some(tag) = item.tags.first() else {
+            self.status.set_message("Eyedropper: no tag on this item.");
+            return;
+        };
+        let tag_id = tag.id;
+        let tag_name = tag.name.clone();
+        self.active_paint_tag_id.set(tag_id);
+        *self.active_paint_tag_name.borrow_mut() = tag_name.clone();
+        let tags = self.metadata.borrow().list_tags().unwrap_or_default();
+        self.painting_toolbar.set_tags(&tags, tag_id);
+        self.status.set_message(&format!("Eyedropper: picked tag '{tag_name}'"));
+    }
+
+    fn paint_tag_fill_selection(self: &Rc<Self>, slot: PaneSlot) {
+        let tag_id = self.active_paint_tag_id.get();
+        if tag_id == 0 {
+            self.status.set_message("No tag selected — choose a tag in the toolbar.");
+            return;
+        }
+        let tag_name = self.active_paint_tag_name.borrow().clone();
+        let items = self.selected_items_for(slot);
+        if items.is_empty() {
+            return;
+        }
+        let paths_to_tag: Vec<PathBuf> = items
+            .iter()
+            .filter(|i| !i.tags.iter().any(|t| t.id == tag_id))
+            .map(|i| i.path.clone())
+            .collect();
+        if paths_to_tag.is_empty() {
+            return;
+        }
+        let mut history_entries = Vec::new();
+        {
+            let mut meta = self.metadata.borrow_mut();
+            for path in &paths_to_tag {
+                if meta.add_tag_to_paths(tag_id, std::slice::from_ref(path)).is_ok() {
+                    history_entries.push(PaintHistoryEntry {
+                        path: path.clone(),
+                        op: PaintOp::Tag { tag_id, added: true },
+                    });
+                }
+            }
+        }
+        let all_paths: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
+        let mut tags_by_path = self
+            .metadata
+            .borrow()
+            .tags_for_paths(&all_paths)
+            .unwrap_or_default();
+        for path in &paths_to_tag {
+            let tags = tags_by_path.remove(path).unwrap_or_default();
+            self.update_item_tags_in_grid(slot, path, tags);
+        }
+        if !history_entries.is_empty() {
+            self.commit_paint_history(PaintHistoryStep { entries: history_entries });
+        }
+        let count = paths_to_tag.len();
+        self.status.set_message(&format!(
+            "Tagged {} item{} as '{tag_name}'",
+            count,
+            if count == 1 { "" } else { "s" }
+        ));
     }
 
     fn update_item_mark_in_grid(
@@ -7620,6 +7840,20 @@ impl BrowserController {
                 item.mark_tint_color = tint_color;
                 item.mark_shape = shape;
             }
+        }
+    }
+
+    fn update_item_tags_in_grid(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        path: &PathBuf,
+        tags: Vec<crate::metadata::TagRecord>,
+    ) {
+        let mut items = self.items_cell(slot).borrow_mut();
+        if let Some(idx) = items.iter().position(|i| &i.path == path) {
+            items[idx].tags = tags.clone();
+            drop(items);
+            self.pane_widgets(slot).file_grid.update_item_tags(idx, &tags);
         }
     }
 
@@ -7778,23 +8012,51 @@ impl BrowserController {
             .map(|t| t.id)
             .unwrap_or_else(|| self.active_paint_tint_id.get());
         for entry in &step.entries {
-            let target = if is_undo { entry.prev } else { entry.next };
-            match target {
-                Some((tint_id, shape)) => {
-                    self.metadata
-                        .borrow_mut()
-                        .set_file_mark(&entry.path, tint_id, shape)
-                        .ok();
-                    self.update_item_mark_in_grid(slot, &entry.path, tint_id, shape);
+            match &entry.op {
+                PaintOp::Mark { prev, next } => {
+                    let target = if is_undo { *prev } else { *next };
+                    match target {
+                        Some((tint_id, shape)) => {
+                            self.metadata
+                                .borrow_mut()
+                                .set_file_mark(&entry.path, tint_id, shape)
+                                .ok();
+                            self.update_item_mark_in_grid(slot, &entry.path, tint_id, shape);
+                        }
+                        None => {
+                            self.metadata.borrow_mut().clear_file_mark(&entry.path).ok();
+                            self.update_item_mark_in_grid(
+                                slot,
+                                &entry.path,
+                                system_default_tint_id,
+                                Shape::DEFAULT,
+                            );
+                        }
+                    }
                 }
-                None => {
-                    self.metadata.borrow_mut().clear_file_mark(&entry.path).ok();
-                    self.update_item_mark_in_grid(
-                        slot,
-                        &entry.path,
-                        system_default_tint_id,
-                        Shape::DEFAULT,
-                    );
+                PaintOp::Tag { tag_id, added } => {
+                    // undo of add → remove; undo of remove → add; redo is opposite
+                    let should_add = if is_undo { !added } else { *added };
+                    let paths = std::slice::from_ref(&entry.path);
+                    if should_add {
+                        self.metadata
+                            .borrow_mut()
+                            .add_tag_to_paths(*tag_id, paths)
+                            .ok();
+                    } else {
+                        self.metadata
+                            .borrow_mut()
+                            .remove_tag_from_paths(*tag_id, paths)
+                            .ok();
+                    }
+                    let tags = self
+                        .metadata
+                        .borrow()
+                        .tags_for_paths(paths)
+                        .unwrap_or_default()
+                        .remove(&entry.path)
+                        .unwrap_or_default();
+                    self.update_item_tags_in_grid(slot, &entry.path, tags);
                 }
             }
         }
@@ -7826,6 +8088,16 @@ impl BrowserController {
         let controller = Rc::clone(self);
         self.modal_host
             .show_confirm(&title, &prompt, "Paint", false, true, move || {
+                if controller.should_queue_actions() {
+                    controller.queue_plan(FileOpPlan::for_paint_mark(
+                        std::slice::from_ref(&folder_path),
+                        tint_id,
+                        &tint_name,
+                        shape,
+                        true,
+                    ));
+                    return;
+                }
                 controller.do_paint_folder_recursive(
                     slot,
                     folder_path.clone(),
@@ -7888,13 +8160,7 @@ impl BrowserController {
     }
 
     fn queue_plan(self: &Rc<Self>, mut plan: crate::action_plan::ActionPlan) {
-        // Annotate the plan with a cloud note when sources or destination touch a cloud location
-        let check_path = plan
-            .sources
-            .first()
-            .map(|p| p.as_path())
-            .or_else(|| plan.destination.as_deref());
-        if let Some(path) = check_path {
+        if let Some(path) = plan.cloud_probe_path() {
             if let Some((name, kind)) = self.cloud_name_for_path(path) {
                 plan = plan.with_cloud_note(format!(
                     "☁ Cloud drive: {name} ({kind}) — may be slower or sync remotely"
@@ -7908,6 +8174,10 @@ impl BrowserController {
             "{n} action{} queued — execute or clear in the plan queue panel.",
             if n == 1 { "" } else { "s" }
         ));
+    }
+
+    fn should_queue_actions(&self) -> bool {
+        should_queue_actions_state(self.plan_mode_active.get(), self.executing_plan_queue.get())
     }
 
     fn refresh_plan_queue_panel(self: &Rc<Self>) {
@@ -7961,82 +8231,98 @@ impl BrowserController {
         }
         self.status
             .set_message(&format!("Executing {} queued action(s)…", queue.len()));
+        self.executing_plan_queue.set(true);
         for plan in queue {
+            let tray_completion = plan
+                .tray_completion
+                .clone()
+                .map(|completion| TrayCompletion {
+                    action: completion.action,
+                    clear_successful_paths: completion.clear_successful_paths,
+                });
             match plan.kind {
-                crate::action_plan::OpKind::Trash => {
-                    self.move_paths_to_trash(plan.sources);
-                }
-                crate::action_plan::OpKind::Move => {
-                    if let Some(dest) = plan.destination {
-                        self.start_copy_move_with_conflict_check(
-                            plan.sources,
-                            dest,
-                            false,
-                            plan.summary,
-                            None,
-                        );
+                FileOpKind::Trash { paths } => {
+                    if let Some(completion) = tray_completion {
+                        self.move_paths_to_trash_with_completion(paths, Some(completion));
+                    } else {
+                        self.move_paths_to_trash(paths);
                     }
                 }
-                crate::action_plan::OpKind::Copy => {
-                    if let Some(dest) = plan.destination {
-                        self.start_copy_move_with_conflict_check(
-                            plan.sources,
-                            dest,
-                            true,
-                            plan.summary,
-                            None,
-                        );
-                    }
+                FileOpKind::CopyMove {
+                    sources,
+                    destination,
+                    is_copy,
+                } => {
+                    self.start_copy_move_with_conflict_check(
+                        sources,
+                        destination,
+                        is_copy,
+                        plan.summary,
+                        None,
+                    );
                 }
-                crate::action_plan::OpKind::Rename => {
-                    if let (Some(src), Some(new_name)) =
-                        (plan.sources.first(), plan.file_list.first())
-                    {
-                        self.rename_path(src.clone(), new_name.clone());
-                    }
+                FileOpKind::Rename(spec) => {
+                    self.rename_path(spec.path, spec.new_name);
                 }
-                crate::action_plan::OpKind::BulkRename => {
-                    let renames: Vec<(PathBuf, String)> = plan
-                        .sources
+                FileOpKind::BulkRename { renames } => {
+                    let renames: Vec<(PathBuf, String)> = renames
                         .into_iter()
-                        .zip(plan.file_list.into_iter())
+                        .map(|spec| (spec.path, spec.new_name))
                         .collect();
                     if !renames.is_empty() {
                         self.apply_bulk_rename(renames);
                     }
                 }
-                crate::action_plan::OpKind::Duplicate => {
-                    self.do_duplicate_files(plan.sources);
+                FileOpKind::Duplicate { paths } => {
+                    self.do_duplicate_files(paths);
                 }
-                crate::action_plan::OpKind::PermanentDelete => {
-                    self.delete_items_permanently(plan.sources);
+                FileOpKind::PermanentDelete { paths } => {
+                    self.delete_items_permanently(paths);
                 }
-                crate::action_plan::OpKind::NewFolder => {
-                    if let (Some(parent), Some(name)) = (plan.destination, plan.file_list.first()) {
-                        self.exec_create_folder(parent, name.clone());
-                    }
+                FileOpKind::NewFolder { parent, name } => {
+                    self.exec_create_folder(parent, name);
                 }
-                crate::action_plan::OpKind::NewFile => {
-                    if let (Some(parent), Some(name)) = (plan.destination, plan.file_list.first()) {
-                        self.exec_create_text_document(self.active_slot(), parent, name.clone());
-                    }
+                FileOpKind::NewFile { parent, name } => {
+                    self.exec_create_text_document(self.active_slot(), parent, name);
                 }
-                crate::action_plan::OpKind::SendToProject { is_copy } => {
-                    if let Some(dest) = plan.destination {
-                        let items = plan_copy_move_items(&plan.sources, &dest);
+                FileOpKind::SendToProject {
+                    sources,
+                    destination,
+                    is_copy,
+                } => {
+                    if let Some(completion) = tray_completion {
+                        let kind = if is_copy {
+                            ProjectTransferKind::Copy
+                        } else {
+                            ProjectTransferKind::Move
+                        };
+                        let op_id = self.ops_panel.add_op(&plan.summary, None);
+                        self.run_project_transfer(
+                            sources,
+                            0,
+                            destination,
+                            kind,
+                            op_id,
+                            Rc::new(RefCell::new(BatchResult::default())),
+                            Some(completion),
+                        );
+                    } else {
+                        let items = plan_copy_move_items(&sources, &destination);
                         if !items.is_empty() {
                             self.start_copy_move_op(items, is_copy, &plan.summary, None, None);
                         }
                     }
                 }
-                crate::action_plan::OpKind::PaintMark {
+                FileOpKind::PaintMark {
+                    paths,
                     tint_id,
                     tint_name,
                     shape,
                     recursive,
                 } => {
                     if recursive {
-                        for src in plan.sources {
+                        let count = paths.len();
+                        for src in paths {
                             self.do_paint_folder_recursive(
                                 self.active_slot(),
                                 src,
@@ -8045,19 +8331,73 @@ impl BrowserController {
                                 tint_name.clone(),
                             );
                         }
+                        if let Some(completion) = tray_completion {
+                            self.record_tray_receipt(&completion.action, count, 0);
+                        }
                     } else {
-                        self.apply_mark_to_paths_direct(plan.sources, tint_id, shape, &tint_name);
+                        let count = paths.len();
+                        self.apply_mark_to_paths_direct(paths, tint_id, shape, &tint_name);
+                        if let Some(completion) = tray_completion {
+                            self.record_tray_receipt(&completion.action, count, 0);
+                        }
                     }
                 }
-                crate::action_plan::OpKind::ResetMark { recursive } => {
+                FileOpKind::ResetMark { paths, recursive } => {
                     if recursive {
-                        self.reset_mark_recursive(plan.sources);
+                        let count = paths.len();
+                        self.reset_mark_recursive(paths);
+                        if let Some(completion) = tray_completion {
+                            self.record_tray_receipt(&completion.action, count, 0);
+                        }
                     } else {
-                        self.reset_mark_for_paths_direct(plan.sources);
+                        let count = paths.len();
+                        self.reset_mark_for_paths_direct(paths);
+                        if let Some(completion) = tray_completion {
+                            self.record_tray_receipt(&completion.action, count, 0);
+                        }
                     }
                 }
+                FileOpKind::ApplyTag { paths, tag_name } => {
+                    let count = paths.len();
+                    self.apply_tag_to_paths(paths, tag_name);
+                    if let Some(completion) = tray_completion {
+                        self.record_tray_receipt(&completion.action, count, 0);
+                    }
+                }
+                FileOpKind::RemoveTags { paths, tag_ids, .. } => {
+                    self.remove_tags_from_paths(paths, tag_ids);
+                }
+                FileOpKind::CopyPaths { paths } => {
+                    self.copy_paths_to_clipboard(paths.clone());
+                    if let Some(completion) = tray_completion {
+                        self.record_tray_receipt(&completion.action, paths.len(), 0);
+                    }
+                }
+                FileOpKind::RestoreTrash { items } => {
+                    let items = items
+                        .into_iter()
+                        .map(|item| FileItem {
+                            name: item.display_name,
+                            path: item.trash_path,
+                            kind: FileKind::Unknown,
+                            is_dir: false,
+                            is_openable: true,
+                            detail: None,
+                            size_bytes: None,
+                            modified_unix: None,
+                            tags: Vec::new(),
+                            original_path: item.original_path,
+                            mark_tint_id: 0,
+                            mark_tint_color: None,
+                            mark_shape: Shape::DEFAULT,
+                        })
+                        .collect();
+                    self.restore_items_from_trash(items);
+                }
+                FileOpKind::EmptyTrash => self.do_empty_trash(),
             }
         }
+        self.executing_plan_queue.set(false);
     }
 
     fn apply_mark_to_paths_direct(
@@ -8994,6 +9334,18 @@ impl BrowserController {
         if items.is_empty() {
             return;
         }
+        if self.should_queue_actions() {
+            let specs = items
+                .into_iter()
+                .map(|item| RestoreSpec {
+                    trash_path: item.path,
+                    original_path: item.original_path,
+                    display_name: item.name,
+                })
+                .collect();
+            self.queue_plan(FileOpPlan::for_restore_trash(specs));
+            return;
+        }
         let label = if items.len() == 1 {
             format!("Restore: {}", items[0].name)
         } else {
@@ -9134,7 +9486,13 @@ impl BrowserController {
             "Empty Trash",
             true,
             false,
-            move || controller.do_empty_trash(),
+            move || {
+                if controller.should_queue_actions() {
+                    controller.queue_plan(FileOpPlan::for_empty_trash(item_count));
+                } else {
+                    controller.do_empty_trash();
+                }
+            },
         );
     }
 
@@ -11178,9 +11536,42 @@ impl BrowserController {
                 .find(|(_, _, button)| button.is_active())
             {
                 let project_id = *project_id;
-                let controller_for_plan = Rc::clone(&controller);
                 let paths_for_plan = paths.clone();
                 let project_name = project_name.clone();
+                if controller.should_queue_actions() {
+                    let destination_root = controller
+                        .metadata
+                        .borrow()
+                        .list_project_destinations(project_id)
+                        .ok()
+                        .and_then(|mut dests| {
+                            dests.retain(|d| !d.path.is_empty());
+                            dests.into_iter().next()
+                        })
+                        .map(|pin| PathBuf::from(pin.path));
+                    if let Some(destination_root) = destination_root {
+                        let is_copy = action == TrayProjectAction::Copy;
+                        controller.queue_plan(
+                            FileOpPlan::for_send_to_project(
+                                &paths_for_plan,
+                                &project_name,
+                                &destination_root,
+                                is_copy,
+                            )
+                            .with_tray_completion(
+                                action.title(),
+                                action == TrayProjectAction::Move,
+                            ),
+                        );
+                    } else {
+                        controller.modal_host.show_error(
+                            "No Pinned Folders",
+                            "Pin a folder to this palette before sending files to it.",
+                        );
+                    }
+                    host.hide();
+                    return;
+                }
                 controller.send_paths_to_project(
                     paths_for_plan.clone(),
                     project_id,
@@ -11190,7 +11581,6 @@ impl BrowserController {
                         clear_successful_paths: action == TrayProjectAction::Move,
                     }),
                 );
-                let _ = (project_name, controller_for_plan);
             }
             host.hide();
         });
@@ -11219,6 +11609,13 @@ impl BrowserController {
                     controller.status.set_message("Tag name cannot be empty.");
                     return;
                 }
+                if controller.should_queue_actions() {
+                    controller.queue_plan(
+                        FileOpPlan::for_apply_tag(&paths, &tag_name)
+                            .with_tray_completion("Tag Holding Tray", false),
+                    );
+                    return;
+                }
                 let plan = tag_action_plan(&paths, &tag_name);
                 let controller_for_plan = Rc::clone(&controller);
                 let paths_for_plan = paths.clone();
@@ -11236,6 +11633,12 @@ impl BrowserController {
             self.status.set_message("The Holding Tray is empty.");
             return;
         }
+        if self.should_queue_actions() {
+            self.queue_plan(
+                FileOpPlan::for_trash(&paths).with_tray_completion("Move Tray to Trash", true),
+            );
+            return;
+        }
         let plan = trash_action_plan(&paths);
         let controller = Rc::clone(self);
         self.show_action_plan(plan, move || {
@@ -11247,6 +11650,12 @@ impl BrowserController {
         let paths = self.selected_holding_tray_paths();
         if paths.is_empty() {
             self.status.set_message("The Holding Tray is empty.");
+            return;
+        }
+        if self.should_queue_actions() {
+            self.queue_plan(
+                FileOpPlan::for_copy_paths(&paths).with_tray_completion("Copy Tray Paths", false),
+            );
             return;
         }
         let plan = copy_path_action_plan(&paths);
@@ -11266,6 +11675,13 @@ impl BrowserController {
         let tint_id = self.active_paint_tint_id.get();
         let tint_name = self.active_paint_tint_name.borrow().clone();
         let shape = self.active_paint_shape.get();
+        if self.should_queue_actions() {
+            self.queue_plan(
+                FileOpPlan::for_paint_mark(&paths, tint_id, &tint_name, shape, false)
+                    .with_tray_completion("Apply Mark to Tray", false),
+            );
+            return;
+        }
         let plan = apply_mark_action_plan(&paths, &tint_name, shape);
         let controller = Rc::clone(self);
         self.show_action_plan(plan, move || {
@@ -11277,6 +11693,12 @@ impl BrowserController {
         let paths = self.selected_holding_tray_paths();
         if paths.is_empty() {
             self.status.set_message("The Holding Tray is empty.");
+            return;
+        }
+        if self.should_queue_actions() {
+            self.queue_plan(
+                FileOpPlan::for_reset_mark(&paths, false).with_tray_completion("Reset Mark", false),
+            );
             return;
         }
         let plan = reset_mark_action_plan(&paths);
@@ -11376,7 +11798,7 @@ impl BrowserController {
         popover.popup();
     }
 
-    fn show_action_plan<F>(self: &Rc<Self>, plan: ActionPlan, on_accept: F)
+    fn show_action_plan<F>(self: &Rc<Self>, plan: ConfirmationPreview, on_accept: F)
     where
         F: Fn() + 'static,
     {
@@ -12105,7 +12527,7 @@ impl BrowserController {
         if renames.is_empty() {
             return;
         }
-        if self.plan_mode_active.get() {
+        if self.should_queue_actions() {
             self.queue_plan(FileOpPlan::for_bulk_rename(&renames));
             return;
         }
@@ -12245,7 +12667,7 @@ impl BrowserController {
             return;
         }
 
-        if self.plan_mode_active.get() {
+        if self.should_queue_actions() {
             let plan = FileOpPlan::for_rename(&path, &new_name);
             self.queue_plan(plan);
             return;
@@ -12310,7 +12732,7 @@ impl BrowserController {
             self.status.set_message("Select files to duplicate.");
             return;
         }
-        if self.plan_mode_active.get() {
+        if self.should_queue_actions() {
             self.queue_plan(FileOpPlan::for_duplicate(&paths));
             return;
         }
@@ -12403,7 +12825,7 @@ impl BrowserController {
             return;
         }
         let current_dir = self.current_dir_for(self.active_slot());
-        if self.plan_mode_active.get() {
+        if self.should_queue_actions() {
             self.queue_plan(FileOpPlan::for_new_folder(&current_dir, &folder_name));
             return;
         }
@@ -12452,7 +12874,7 @@ impl BrowserController {
         }
         let slot = self.active_slot();
         let current_dir = self.current_dir_for(slot);
-        if self.plan_mode_active.get() {
+        if self.should_queue_actions() {
             self.queue_plan(FileOpPlan::for_new_file(&current_dir, &document_name));
             return;
         }
@@ -12634,6 +13056,10 @@ impl BrowserController {
             self.show_error_dialog("Invalid Tag", "Tag names cannot be empty.");
             return;
         }
+        if self.should_queue_actions() {
+            self.queue_plan(FileOpPlan::for_apply_tag(&paths, tag_name.trim()));
+            return;
+        }
 
         let result = (|| {
             let mut metadata = self.metadata.borrow_mut();
@@ -12685,7 +13111,7 @@ impl BrowserController {
                 check.set_active(true);
                 check.set_halign(Align::Start);
                 content.append(&check);
-                (tag.id, check)
+                (tag.id, tag.name, check)
             })
             .collect::<Vec<_>>();
 
@@ -12699,10 +13125,23 @@ impl BrowserController {
         let remove_btn = build_modal_button("Remove", ButtonKind::Primary, move || {
             let selected = checks
                 .iter()
-                .filter(|(_, check)| check.is_active())
-                .map(|(tag_id, _)| *tag_id)
+                .filter(|(_, _, check)| check.is_active())
+                .map(|(tag_id, _, _)| *tag_id)
                 .collect::<Vec<_>>();
-            controller.remove_tags_from_paths(paths.clone(), selected);
+            let selected_names = checks
+                .iter()
+                .filter(|(_, _, check)| check.is_active())
+                .map(|(_, name, _)| name.clone())
+                .collect::<Vec<_>>();
+            if controller.should_queue_actions() {
+                controller.queue_plan(FileOpPlan::for_remove_tags(
+                    &paths,
+                    &selected,
+                    &selected_names,
+                ));
+            } else {
+                controller.remove_tags_from_paths(paths.clone(), selected);
+            }
             host.hide();
         });
         actions.append(&remove_btn);
@@ -12858,7 +13297,7 @@ impl BrowserController {
         };
         let destination_root = PathBuf::from(&pin.path);
 
-        if self.plan_mode_active.get() && completion.is_none() {
+        if self.should_queue_actions() && completion.is_none() {
             let is_copy = matches!(kind, ProjectTransferKind::Copy);
             self.queue_plan(FileOpPlan::for_send_to_project(
                 &paths,
@@ -13288,7 +13727,7 @@ impl BrowserController {
         };
 
         let is_copy = clipboard.is_copy();
-        if self.plan_mode_active.get() {
+        if self.should_queue_actions() {
             let plan = FileOpPlan::for_paste(&clipboard.paths, &destination, is_copy);
             self.queue_plan(plan);
             return;
@@ -13358,7 +13797,7 @@ impl BrowserController {
             return;
         }
 
-        if self.plan_mode_active.get() {
+        if self.should_queue_actions() {
             let plan = FileOpPlan::for_trash(&paths);
             self.queue_plan(plan);
             return;
@@ -13570,7 +14009,7 @@ impl BrowserController {
             true,
             true,
             move || {
-                if controller.plan_mode_active.get() {
+                if controller.should_queue_actions() {
                     controller.queue_plan(FileOpPlan::for_permanent_delete(&paths));
                 } else {
                     controller.delete_items_permanently(paths.clone());
@@ -13701,6 +14140,10 @@ impl BrowserController {
 
     fn copy_paths_to_clipboard(self: &Rc<Self>, paths: Vec<PathBuf>) {
         if paths.is_empty() {
+            return;
+        }
+        if self.should_queue_actions() {
+            self.queue_plan(FileOpPlan::for_copy_paths(&paths));
             return;
         }
 
@@ -14557,6 +15000,11 @@ impl BrowserController {
             return;
         }
 
+        if self.should_queue_actions() {
+            self.queue_plan(FileOpPlan::for_paste(&src_paths, &dest_dir, is_copy));
+            return;
+        }
+
         self.start_copy_move_with_conflict_check(
             src_paths,
             dest_dir,
@@ -14902,13 +15350,17 @@ fn add_unique_tray_items(existing: &mut Vec<FileItem>, incoming: Vec<FileItem>) 
     added
 }
 
+fn should_queue_actions_state(plan_mode_active: bool, executing_plan_queue: bool) -> bool {
+    plan_mode_active && !executing_plan_queue
+}
+
 #[allow(dead_code)]
 fn project_action_plan(
     action: TrayProjectAction,
     paths: &[PathBuf],
     project_name: &str,
     project_root: &Path,
-) -> ActionPlan {
+) -> ConfirmationPreview {
     let verb = match action {
         TrayProjectAction::Copy => "Copy",
         TrayProjectAction::Move => "Move",
@@ -14921,7 +15373,7 @@ fn project_action_plan(
         format!("Destination: {}", project_root.display()),
     ];
     lines.extend(plan_path_lines(paths));
-    ActionPlan::new(
+    ConfirmationPreview::new(
         action.title(),
         verb,
         action == TrayProjectAction::Move,
@@ -14929,31 +15381,31 @@ fn project_action_plan(
     )
 }
 
-fn tag_action_plan(paths: &[PathBuf], tag_name: &str) -> ActionPlan {
+fn tag_action_plan(paths: &[PathBuf], tag_name: &str) -> ConfirmationPreview {
     let mut lines = vec![format!(
         "Apply tag #{tag_name} to {} staged item(s).",
         paths.len()
     )];
     lines.extend(plan_path_lines(paths));
-    ActionPlan::new("Tag Holding Tray", "Apply Tag", false, lines)
+    ConfirmationPreview::new("Tag Holding Tray", "Apply Tag", false, lines)
 }
 
-fn trash_action_plan(paths: &[PathBuf]) -> ActionPlan {
+fn trash_action_plan(paths: &[PathBuf]) -> ConfirmationPreview {
     let mut lines = vec![format!("Move {} staged item(s) to Trash.", paths.len())];
     lines.extend(plan_path_lines(paths));
-    ActionPlan::new("Move Tray to Trash", "Move to Trash", true, lines)
+    ConfirmationPreview::new("Move Tray to Trash", "Move to Trash", true, lines)
 }
 
-fn copy_path_action_plan(paths: &[PathBuf]) -> ActionPlan {
+fn copy_path_action_plan(paths: &[PathBuf]) -> ConfirmationPreview {
     let mut lines = vec![format!(
         "Copy {} staged path(s) to the clipboard.",
         paths.len()
     )];
     lines.extend(plan_path_lines(paths));
-    ActionPlan::new("Copy Tray Paths", "Copy Paths", false, lines)
+    ConfirmationPreview::new("Copy Tray Paths", "Copy Paths", false, lines)
 }
 
-fn apply_mark_action_plan(paths: &[PathBuf], tint_name: &str, shape: Shape) -> ActionPlan {
+fn apply_mark_action_plan(paths: &[PathBuf], tint_name: &str, shape: Shape) -> ConfirmationPreview {
     let mut lines = vec![format!(
         "Mark {} staged item(s) as {} {}.",
         paths.len(),
@@ -14961,16 +15413,16 @@ fn apply_mark_action_plan(paths: &[PathBuf], tint_name: &str, shape: Shape) -> A
         shape.display_name(),
     )];
     lines.extend(plan_path_lines(paths));
-    ActionPlan::new("Apply Mark to Tray", "Apply Mark", false, lines)
+    ConfirmationPreview::new("Apply Mark to Tray", "Apply Mark", false, lines)
 }
 
-fn reset_mark_action_plan(paths: &[PathBuf]) -> ActionPlan {
+fn reset_mark_action_plan(paths: &[PathBuf]) -> ConfirmationPreview {
     let mut lines = vec![format!(
         "Reset {} staged item(s) to Beige Square.",
         paths.len(),
     )];
     lines.extend(plan_path_lines(paths));
-    ActionPlan::new("Reset Mark", "Reset Mark", false, lines)
+    ConfirmationPreview::new("Reset Mark", "Reset Mark", false, lines)
 }
 
 fn plan_path_lines(paths: &[PathBuf]) -> Vec<String> {
@@ -17120,6 +17572,13 @@ mod tests {
             mark_shape: Shape::DEFAULT,
             original_path: None,
         }
+    }
+
+    #[test]
+    fn queue_guard_disables_queueing_while_executing_plan_queue() {
+        assert!(!should_queue_actions_state(false, false));
+        assert!(should_queue_actions_state(true, false));
+        assert!(!should_queue_actions_state(true, true));
     }
 
     #[test]

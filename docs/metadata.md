@@ -143,6 +143,8 @@ Marks (Tint + Shape) are now readable by all major workflow tools:
 - Mark filter is applied after tag and filesystem filters
 
 **Action Plans (plan queue)**
+- Plan Mode queues file-affecting operations as explicit action payloads instead of executing them immediately.
+- Covered actions include copy/move, drag/drop, rename, bulk rename, duplicate, new file/folder, trash/permanent delete, empty trash, trash restore, tag apply/remove, Mark apply/reset, copy paths, and send to Palette.
 - `PaintMark` variant: apply Tint + Shape to queued paths; summary "Mark N items TintName Shape"
 - `ResetMark` variant: reset queued paths to Beige Square; summary "Reset N items to Beige Square"
 - Recursive variants route through `do_paint_folder_recursive` / `reset_mark_recursive`
