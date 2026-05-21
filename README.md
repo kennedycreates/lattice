@@ -321,27 +321,39 @@ The desktop entry ID is `com.lattice.filemanager.desktop`. The application icon 
 
 ### Experimental: File Picker Portal Backend
 
-Lattice includes an experimental [xdg-desktop-portal](https://flatpak.github.io/xdg-desktop-portal/) FileChooser backend. When installed and activated, apps that request a file dialog through the portal — including Flatpak apps, GNOME apps, and any GTK4 app running with `GTK_USE_PORTAL=1` — will use the Lattice picker instead of the system default.
+Lattice includes an experimental [xdg-desktop-portal](https://flatpak.github.io/xdg-desktop-portal/) FileChooser backend. When installed and activated, apps that request a file dialog through the portal — including Flatpak apps, Chrome, and GTK apps with `GTK_USE_PORTAL=1` — will use the Lattice picker instead of the system default.
 
-**This is opt-in and does not activate automatically.** Installing the portal files has no effect on your desktop until you explicitly configure `portals.conf`.
+**This is opt-in and does not activate automatically.** Installing the files alone has no effect on your desktop.
 
 ```bash
 # 1. Build
 cargo build --release
 
-# 2. Install system files (needs sudo)
+# 2. Install system files + enable service (needs sudo)
 sudo ./scripts/install-portal.sh
 
-# 3. Opt in — run WITHOUT sudo, as your normal user
+# 3. If the service did not enable automatically, do it manually (no sudo):
+systemctl --user daemon-reload
+systemctl --user enable --now lattice-filechooser-portal.service
+
+# 4. Opt in to using Lattice as the portal file picker (no sudo):
 ./scripts/install-portal.sh --portal-config
 
-# 4. Restart the portal daemon
+# 5. Restart the portal daemon
 systemctl --user restart xdg-desktop-portal
+
+# 6. Verify
+systemctl --user status lattice-filechooser-portal.service
+./scripts/test-portal.sh
 ```
 
-To roll back: `sudo ./scripts/install-portal.sh --uninstall` and `./scripts/install-portal.sh --remove-portal-config`.
+Important notes:
+- Step 3 generates a complete `portals.conf` that preserves all your existing desktop portal backends (dark mode, screen sharing, etc.) while only overriding the file chooser. **Do not write a portals.conf by hand** — a partial file silently breaks other portal interfaces.
+- For GTK apps (GIMP, Inkscape), you also need `GTK_USE_PORTAL=1`. Chrome and Electron apps use the portal natively without it.
 
-See [docs/file_picker_portal.md](docs/file_picker_portal.md) for the full install guide, rollback steps, and troubleshooting.
+To roll back: `sudo ./scripts/install-portal.sh --uninstall` removes everything; `./scripts/install-portal.sh --remove-portal-config` reverts the portals.conf.
+
+See [docs/file_picker_portal.md](docs/file_picker_portal.md) for the full guide, troubleshooting, and per-app notes.
 
 ---
 

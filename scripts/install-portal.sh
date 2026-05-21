@@ -55,6 +55,7 @@ DEST_LATTICE=/usr/local/bin/lattice
 DEST_PORTAL=/usr/local/lib/lattice/lattice-filechooser-portal
 DEST_PORTAL_FILE=/usr/share/xdg-desktop-portal/portals/lattice.portal
 DEST_DBUS_SERVICE=/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.lattice.service
+DEST_SYSTEMD_SERVICE=/usr/lib/systemd/user/lattice-filechooser-portal.service
 
 # ── Mode: system install ──────────────────────────────────────────────────────
 
@@ -126,6 +127,25 @@ do_install() {
         "$SOURCE_ROOT/data/dbus/org.freedesktop.impl.portal.desktop.lattice.service" \
         "$DEST_DBUS_SERVICE"
     info "✓ $DEST_DBUS_SERVICE"
+
+    install -Dm 644 \
+        "$SOURCE_ROOT/data/systemd/lattice-filechooser-portal.service" \
+        "$DEST_SYSTEMD_SERVICE"
+    info "✓ $DEST_SYSTEMD_SERVICE"
+
+    # Enable and start the systemd user service for the invoking user.
+    # The service runs in the graphical session so WAYLAND_DISPLAY/DISPLAY are set,
+    # which D-Bus auto-activation does not guarantee.
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        if runuser -l "$SUDO_USER" -c 'systemctl --user daemon-reload' 2>/dev/null; then
+            runuser -l "$SUDO_USER" -c \
+                'systemctl --user enable --now lattice-filechooser-portal.service' 2>/dev/null \
+                && info "✓ systemd user service enabled and started" \
+                || info "  (service enable failed — run manually: systemctl --user enable --now lattice-filechooser-portal.service)"
+        else
+            info "  (systemd reload skipped — run manually: systemctl --user daemon-reload && systemctl --user enable --now lattice-filechooser-portal.service)"
+        fi
+    fi
 
     # Reload the D-Bus session daemon so it picks up the new service file.
     # Must run as the invoking user, not root, because we need their session bus.
@@ -339,8 +359,15 @@ do_uninstall() {
     echo "Removing Lattice portal backend system files..."
     echo ""
 
+    # Disable the systemd user service before removing files
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        runuser -l "$SUDO_USER" -c \
+            'systemctl --user disable --now lattice-filechooser-portal.service 2>/dev/null || true'
+        info "✓ systemd user service disabled"
+    fi
+
     removed=0
-    for f in "$DEST_PORTAL" "$DEST_PORTAL_FILE" "$DEST_DBUS_SERVICE"; do
+    for f in "$DEST_PORTAL" "$DEST_PORTAL_FILE" "$DEST_DBUS_SERVICE" "$DEST_SYSTEMD_SERVICE"; do
         if [[ -f "$f" ]]; then
             rm -f "$f"
             info "✓ removed $f"
@@ -349,6 +376,10 @@ do_uninstall() {
             info "  (not found) $f"
         fi
     done
+
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        runuser -l "$SUDO_USER" -c 'systemctl --user daemon-reload 2>/dev/null || true'
+    fi
 
     # Remove the lib directory if it's empty
     PORTAL_DIR="$(dirname "$DEST_PORTAL")"

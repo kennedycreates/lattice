@@ -1,0 +1,16 @@
+[Unit]
+Description=Lattice FileChooser portal backend (EXPERIMENTAL)
+# Start after the graphical session is up so WAYLAND_DISPLAY/DISPLAY are set.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+# systemd considers the service ready once this D-Bus name is acquired.
+BusName=org.freedesktop.impl.portal.desktop.lattice
+ExecStart=/usr/local/lib/lattice/lattice-filechooser-portal
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
