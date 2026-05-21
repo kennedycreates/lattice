@@ -6905,10 +6905,16 @@ impl BrowserController {
         self.sync_pane_layout_visibility();
         self.update_active_pane_visuals();
         self.update_view_strip(PaneSlot::Primary);
+        if let PaneView::Directory(ref path) = self.current_view_for(PaneSlot::Primary).clone() {
+            self.apply_folder_view_state(PaneSlot::Primary, path);
+        }
         self.load_current_view(PaneSlot::Primary);
         for slot in [PaneSlot::Secondary, PaneSlot::Tertiary] {
             if self.pane_layout.get().includes(slot) {
                 self.update_view_strip(slot);
+                if let PaneView::Directory(ref path) = self.current_view_for(slot).clone() {
+                    self.apply_folder_view_state(slot, path);
+                }
                 self.load_current_view(slot);
             } else {
                 self.pane_widgets(slot).file_grid.clear_selection();
@@ -7078,6 +7084,7 @@ impl BrowserController {
         if slot == PaneSlot::Primary {
             self.rebuild_tab_strip();
         }
+        self.apply_folder_view_state(slot, &path);
         self.load_directory(slot, path);
     }
 
@@ -7103,6 +7110,7 @@ impl BrowserController {
             if slot == PaneSlot::Primary {
                 self.rebuild_tab_strip();
             }
+            self.apply_folder_view_state(slot, &path);
             self.load_directory(slot, path);
             self.update_navigation_state();
         }
@@ -7127,6 +7135,7 @@ impl BrowserController {
             if slot == PaneSlot::Primary {
                 self.rebuild_tab_strip();
             }
+            self.apply_folder_view_state(slot, &path);
             self.load_directory(slot, path);
             self.update_navigation_state();
         }
@@ -8218,7 +8227,6 @@ impl BrowserController {
     }
 
     fn load_directory(self: &Rc<Self>, slot: PaneSlot, path: PathBuf) {
-        self.apply_folder_view_state(slot, &path);
         self.cancel_active_load(slot);
         if slot == self.active_slot() {
             self.cancel_active_preview();
