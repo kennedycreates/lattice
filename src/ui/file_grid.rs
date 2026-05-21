@@ -232,6 +232,8 @@ impl FileItem {
 #[derive(Clone)]
 pub struct FileGrid {
     pub root: Overlay,
+    pub icon_scroll: ScrolledWindow,
+    pub list_scroll: ScrolledWindow,
     pub flow: FlowBox,
     pub list_box: ListBox,
     content_stack: Stack,
@@ -297,6 +299,8 @@ impl FileGrid {
 
         Self {
             root,
+            icon_scroll,
+            list_scroll,
             flow,
             list_box,
             content_stack,

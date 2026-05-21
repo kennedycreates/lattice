@@ -5568,10 +5568,32 @@ impl BrowserController {
                 let anchor: gtk::Widget = flow.clone().upcast();
                 controller.show_context_menu(slot, child.index(), anchor, x, y);
             } else {
-                controller.show_current_folder_menu(slot, x, y);
+                let anchor: gtk::Widget = flow.clone().upcast();
+                controller.show_current_folder_menu(slot, anchor, x, y);
             }
         });
         pane.file_grid.flow.add_controller(gesture);
+
+        let controller = Rc::clone(self);
+        let icon_scroll = pane.file_grid.icon_scroll.clone();
+        let icon_scroll_rclick = gtk::GestureClick::new();
+        icon_scroll_rclick.set_button(3);
+        icon_scroll_rclick.set_propagation_phase(gtk::PropagationPhase::Capture);
+        icon_scroll_rclick.connect_pressed(move |gesture, _, x, y| {
+            controller.set_active_pane(slot);
+            if controller
+                .icon_item_at_scroll_point(slot, &icon_scroll, x, y)
+                .is_some()
+            {
+                return;
+            }
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let anchor: gtk::Widget = icon_scroll.clone().upcast();
+            controller.show_current_folder_menu(slot, anchor, x, y);
+        });
+        pane.file_grid
+            .icon_scroll
+            .add_controller(icon_scroll_rclick);
 
         let controller = Rc::clone(self);
         let flow_click = gtk::GestureClick::new();
@@ -5670,10 +5692,32 @@ impl BrowserController {
                 let anchor: gtk::Widget = list_box.clone().upcast();
                 controller.show_context_menu(slot, row.index(), anchor, x, y);
             } else {
-                controller.show_current_folder_menu(slot, x, y);
+                let anchor: gtk::Widget = list_box.clone().upcast();
+                controller.show_current_folder_menu(slot, anchor, x, y);
             }
         });
         pane.file_grid.list_box.add_controller(list_rclick);
+
+        let controller = Rc::clone(self);
+        let list_scroll = pane.file_grid.list_scroll.clone();
+        let list_scroll_rclick = gtk::GestureClick::new();
+        list_scroll_rclick.set_button(3);
+        list_scroll_rclick.set_propagation_phase(gtk::PropagationPhase::Capture);
+        list_scroll_rclick.connect_pressed(move |gesture, _, x, y| {
+            controller.set_active_pane(slot);
+            if controller
+                .list_item_at_scroll_point(slot, &list_scroll, x, y)
+                .is_some()
+            {
+                return;
+            }
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let anchor: gtk::Widget = list_scroll.clone().upcast();
+            controller.show_current_folder_menu(slot, anchor, x, y);
+        });
+        pane.file_grid
+            .list_scroll
+            .add_controller(list_scroll_rclick);
 
         let controller = Rc::clone(self);
         let list_click = gtk::GestureClick::new();
@@ -10684,7 +10728,43 @@ impl BrowserController {
         self.set_keyboard_focus(slot, index, true);
     }
 
-    fn show_current_folder_menu(self: &Rc<Self>, slot: PaneSlot, x: f64, y: f64) {
+    fn icon_item_at_scroll_point(
+        &self,
+        slot: PaneSlot,
+        scroll: &gtk::ScrolledWindow,
+        x: f64,
+        y: f64,
+    ) -> Option<i32> {
+        let grid = &self.pane_widgets(slot).file_grid;
+        let scroll_point = gtk::graphene::Point::new(x as f32, y as f32);
+        let point = scroll.compute_point(&grid.flow, &scroll_point)?;
+        grid.flow
+            .child_at_pos(point.x() as i32, point.y() as i32)
+            .map(|child| child.index())
+    }
+
+    fn list_item_at_scroll_point(
+        &self,
+        slot: PaneSlot,
+        scroll: &gtk::ScrolledWindow,
+        x: f64,
+        y: f64,
+    ) -> Option<i32> {
+        let grid = &self.pane_widgets(slot).file_grid;
+        let scroll_point = gtk::graphene::Point::new(x as f32, y as f32);
+        let point = scroll.compute_point(&grid.list_box, &scroll_point)?;
+        grid.list_box
+            .row_at_y(point.y() as i32)
+            .map(|row| row.index())
+    }
+
+    fn show_current_folder_menu(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        anchor: gtk::Widget,
+        x: f64,
+        y: f64,
+    ) {
         if !matches!(
             self.current_view_for(slot),
             PaneView::Directory(_) | PaneView::Triage { .. }
@@ -10703,7 +10783,7 @@ impl BrowserController {
         popover.set_autohide(true);
         popover.set_position(gtk::PositionType::Bottom);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.set_parent(&self.pane_widgets(slot).file_grid.flow);
+        popover.set_parent(&anchor);
 
         let menu_box = GtkBox::new(Orientation::Vertical, 2);
         menu_box.set_margin_top(6);
