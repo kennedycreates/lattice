@@ -127,6 +127,24 @@ do_install() {
         "$DEST_DBUS_SERVICE"
     info "✓ $DEST_DBUS_SERVICE"
 
+    # Reload the D-Bus session daemon so it picks up the new service file.
+    # Must run as the invoking user, not root, because we need their session bus.
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        _dbus_addr=$(runuser -l "$SUDO_USER" -c 'echo "$DBUS_SESSION_BUS_ADDRESS"' 2>/dev/null || true)
+        if [[ -n "$_dbus_addr" ]]; then
+            DBUS_SESSION_BUS_ADDRESS="$_dbus_addr" \
+                dbus-send --session --type=method_call \
+                --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig \
+                2>/dev/null \
+                && info "✓ D-Bus session config reloaded" \
+                || info "  (D-Bus reload failed — run manually: dbus-send --session --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig)"
+        else
+            info "  (D-Bus session address not found — reload manually after login)"
+            echo "  Run as your normal user:"
+            echo "    dbus-send --session --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig"
+        fi
+    fi
+
     echo ""
     echo "System files installed."
     echo ""
@@ -191,10 +209,24 @@ EOF
     echo ""
     echo "  systemctl --user restart xdg-desktop-portal"
     echo ""
-    echo "To verify the backend is registered:"
-    echo "  busctl --user list | grep lattice"
+    echo "────────────────────────────────────────────────────────────────"
+    echo "  GTK apps (GIMP, Inkscape, etc.) require GTK_USE_PORTAL=1"
+    echo "  to route their file dialogs through the portal."
     echo ""
-    echo "To test the portal manually:"
+    echo "  Test immediately (open the app and trigger a file dialog):"
+    echo "    GTK_USE_PORTAL=1 inkscape"
+    echo "    GTK_USE_PORTAL=1 gimp"
+    echo ""
+    echo "  To set permanently for your user session:"
+    echo "    mkdir -p ~/.config/environment.d"
+    echo "    echo 'GTK_USE_PORTAL=1' > ~/.config/environment.d/lattice-portal.conf"
+    echo "    # Then log out and back in."
+    echo ""
+    echo "  Chrome and Electron apps (Vesktop) use the portal natively —"
+    echo "  GTK_USE_PORTAL is not needed for them."
+    echo "────────────────────────────────────────────────────────────────"
+    echo ""
+    echo "To verify the backend responds end-to-end:"
     echo "  ./scripts/test-portal.sh"
     echo ""
     echo "To roll back: ./scripts/install-portal.sh --remove-portal-config"

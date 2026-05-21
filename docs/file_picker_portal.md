@@ -143,17 +143,45 @@ Example: `/home/user/my documents/file#1.txt` → `file:///home/user/my%20docume
 
 ## What apps this can and cannot affect
 
-### Will use the Lattice portal (when configured as the active backend)
+### Will use the Lattice portal
 
-- GTK4 apps calling `gtk::FileDialog` or `FileChooserNative` with `GTK_USE_PORTAL=1` or inside a Flatpak/Snap sandbox
-- Any app calling `org.freedesktop.portal.FileChooser` directly (KDE apps, Electron apps with portal support, etc.)
-- Flatpak-packaged apps (always route file dialogs through the portal)
+| App type | Condition |
+|----------|-----------|
+| **Flatpak apps** | Always — sandboxed apps always go through the portal |
+| **GTK3/GTK4 apps using `GtkFileChooserNative`** (Inkscape 1.x, most GTK4 apps) | Requires `GTK_USE_PORTAL=1` in the environment |
+| **Chrome / Chromium 104+** | Automatic on Wayland/X11 desktop sessions; no extra env var needed |
+| **Electron apps** (Vesktop, etc.) | When the app enables portal file selection; varies by build |
 
 ### Will NOT use the Lattice portal
 
-- Apps embedding `gtk::FileChooserWidget` directly (portal bypassed entirely)
-- Terminal apps using readline/path completion
-- GTK3 apps not built against `GtkFileChooserNative`
+| App type | Reason |
+|----------|--------|
+| **GTK apps using `GtkFileChooserDialog` directly** (older GIMP, many GTK3 apps) | Portal is bypassed entirely — even `GTK_USE_PORTAL=1` has no effect |
+| **Terminal apps** | No dialog involved |
+| **Qt apps without libportal** | Use Qt's own file dialog |
+
+### Setting `GTK_USE_PORTAL=1`
+
+For immediate testing — launch the app from a terminal with the variable set:
+
+```bash
+GTK_USE_PORTAL=1 inkscape
+GTK_USE_PORTAL=1 gimp
+```
+
+To set permanently for your user session (takes effect on next login):
+
+```bash
+mkdir -p ~/.config/environment.d
+echo 'GTK_USE_PORTAL=1' > ~/.config/environment.d/lattice-portal.conf
+```
+
+To set it only for the current session without logging out:
+
+```bash
+export GTK_USE_PORTAL=1
+inkscape  # inherits the var from this shell
+```
 
 ---
 
@@ -302,6 +330,43 @@ When testing manually:
 1. Check that `lattice` is in `$PATH` or in the same directory as `lattice-filechooser-portal`.
 2. Check portal logs for "failed to spawn picker" or "no valid file:// URIs" messages.
 3. Try calling `lattice --picker open` manually — it should open a picker window and print a path to stdout on confirm.
+
+### App file picker is not Lattice even after setup
+
+**First:** confirm the portal backend itself responds correctly:
+
+```bash
+./scripts/test-portal.sh
+```
+
+If this opens the Lattice picker and returns a URI, the backend is working. The problem is the app is not routing through the portal.
+
+**For GTK apps (GIMP, Inkscape, etc.)** — set `GTK_USE_PORTAL=1`:
+
+```bash
+GTK_USE_PORTAL=1 inkscape   # test immediately
+GTK_USE_PORTAL=1 gimp
+```
+
+Note: apps that use `GtkFileChooserDialog` directly (common in older GTK3 apps) ignore `GTK_USE_PORTAL=1` entirely — the portal is bypassed in their code. If the test script works but the app still doesn't use the portal, the app is in this category.
+
+**For Chrome / Electron apps** — the portal is used natively without `GTK_USE_PORTAL=1`. If Chrome's file picker is still not Lattice, check portal logs while opening a Chrome file dialog:
+
+```bash
+journalctl --user -u xdg-desktop-portal -f &
+# then open a file dialog in Chrome
+```
+
+### D-Bus service file not picked up
+
+After installing the `.service` file, the session D-Bus daemon may not see it until it reloads:
+
+```bash
+dbus-send --session --type=method_call \
+  --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig
+```
+
+If this isn't enough, a session logout/login will always pick it up.
 
 ### portals.conf change has no effect
 
