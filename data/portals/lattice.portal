@@ -1,0 +1,4 @@
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.lattice
+Interfaces=org.freedesktop.impl.portal.FileChooser;
+UseIn=lattice;

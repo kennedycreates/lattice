@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.lattice
+Exec=/usr/local/lib/lattice/lattice-filechooser-portal

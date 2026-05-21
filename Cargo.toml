@@ -4,10 +4,15 @@ version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
 description = "A mouse-first GTK4 file manager for custom Linux desktops."
+default-run = "lattice"
 
 [[bin]]
 name = "lattice"
 path = "src/main.rs"
+
+[[bin]]
+name = "lattice-filechooser-portal"
+path = "src/bin/portal_main.rs"
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
@@ -16,6 +21,9 @@ gio = { version = "0.20", features = ["v2_72"] }
 gdk-pixbuf = "0.20"
 rusqlite = { version = "0.31", features = ["bundled"] }
 cairo-rs = { package = "cairo-rs", version = "0.20" }
+# portal binary only — not used by the main lattice binary
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }
 
 [dev-dependencies]
 tempfile = "3"

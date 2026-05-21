@@ -623,7 +623,10 @@ impl FileGrid {
     }
 }
 
-fn build_card(file: &FileItem, show_shape_badge: bool) -> (Box, Overlay, Box, Option<ThumbnailTarget>) {
+fn build_card(
+    file: &FileItem,
+    show_shape_badge: bool,
+) -> (Box, Overlay, Box, Option<ThumbnailTarget>) {
     let shell = Box::new(Orientation::Vertical, 0);
     shell.add_css_class("file-card-shell");
     shell.set_size_request(FILE_CARD_WIDTH, FILE_CARD_HEIGHT);

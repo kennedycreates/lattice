@@ -319,6 +319,32 @@ See [docs/desktop-setup.md](docs/desktop-setup.md) for labwc keybindings, Waybar
 
 The desktop entry ID is `com.lattice.filemanager.desktop`. The application icon name is `lattice`.
 
+### Experimental: File Picker Portal Backend
+
+Lattice includes an experimental [xdg-desktop-portal](https://flatpak.github.io/xdg-desktop-portal/) FileChooser backend. When installed and activated, apps that request a file dialog through the portal — including Flatpak apps, GNOME apps, and any GTK4 app running with `GTK_USE_PORTAL=1` — will use the Lattice picker instead of the system default.
+
+**This is opt-in and does not activate automatically.** Installing the portal files has no effect on your desktop until you explicitly configure `portals.conf`.
+
+```bash
+# 1. Build
+cargo build --release
+
+# 2. Install system files (needs sudo)
+sudo ./scripts/install-portal.sh
+
+# 3. Opt in — run WITHOUT sudo, as your normal user
+./scripts/install-portal.sh --portal-config
+
+# 4. Restart the portal daemon
+systemctl --user restart xdg-desktop-portal
+```
+
+To roll back: `sudo ./scripts/install-portal.sh --uninstall` and `./scripts/install-portal.sh --remove-portal-config`.
+
+See [docs/file_picker_portal.md](docs/file_picker_portal.md) for the full install guide, rollback steps, and troubleshooting.
+
+---
+
 ## Update an Existing Install
 
 From your Lattice source repository:

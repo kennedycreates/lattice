@@ -7678,7 +7678,8 @@ impl BrowserController {
     fn paint_tag_brush_item(self: &Rc<Self>, slot: PaneSlot, item: &FileItem) {
         let tag_id = self.active_paint_tag_id.get();
         if tag_id == 0 {
-            self.status.set_message("No tag selected — choose a tag in the toolbar.");
+            self.status
+                .set_message("No tag selected — choose a tag in the toolbar.");
             return;
         }
         let tag_name = self.active_paint_tag_name.borrow().clone();
@@ -7687,8 +7688,15 @@ impl BrowserController {
             return;
         }
         let paths = std::slice::from_ref(&item.path);
-        if self.metadata.borrow_mut().add_tag_to_paths(tag_id, paths).is_ok() {
-            self.current_drag_painted.borrow_mut().insert(item.path.clone());
+        if self
+            .metadata
+            .borrow_mut()
+            .add_tag_to_paths(tag_id, paths)
+            .is_ok()
+        {
+            self.current_drag_painted
+                .borrow_mut()
+                .insert(item.path.clone());
             let tags = self
                 .metadata
                 .borrow()
@@ -7699,13 +7707,19 @@ impl BrowserController {
             self.update_item_tags_in_grid(slot, &item.path, tags);
             let entry = PaintHistoryEntry {
                 path: item.path.clone(),
-                op: PaintOp::Tag { tag_id, added: true },
+                op: PaintOp::Tag {
+                    tag_id,
+                    added: true,
+                },
             };
             if !self.append_or_commit_history(entry) {
                 self.commit_paint_history(PaintHistoryStep {
                     entries: vec![PaintHistoryEntry {
                         path: item.path.clone(),
-                        op: PaintOp::Tag { tag_id, added: true },
+                        op: PaintOp::Tag {
+                            tag_id,
+                            added: true,
+                        },
                     }],
                 });
             }
@@ -7724,8 +7738,15 @@ impl BrowserController {
             return;
         }
         let paths = std::slice::from_ref(&item.path);
-        if self.metadata.borrow_mut().remove_tag_from_paths(tag_id, paths).is_ok() {
-            self.current_drag_painted.borrow_mut().insert(item.path.clone());
+        if self
+            .metadata
+            .borrow_mut()
+            .remove_tag_from_paths(tag_id, paths)
+            .is_ok()
+        {
+            self.current_drag_painted
+                .borrow_mut()
+                .insert(item.path.clone());
             let tags = self
                 .metadata
                 .borrow()
@@ -7736,13 +7757,19 @@ impl BrowserController {
             self.update_item_tags_in_grid(slot, &item.path, tags);
             let entry = PaintHistoryEntry {
                 path: item.path.clone(),
-                op: PaintOp::Tag { tag_id, added: false },
+                op: PaintOp::Tag {
+                    tag_id,
+                    added: false,
+                },
             };
             if !self.append_or_commit_history(entry) {
                 self.commit_paint_history(PaintHistoryStep {
                     entries: vec![PaintHistoryEntry {
                         path: item.path.clone(),
-                        op: PaintOp::Tag { tag_id, added: false },
+                        op: PaintOp::Tag {
+                            tag_id,
+                            added: false,
+                        },
                     }],
                 });
             }
@@ -7761,13 +7788,15 @@ impl BrowserController {
         *self.active_paint_tag_name.borrow_mut() = tag_name.clone();
         let tags = self.metadata.borrow().list_tags().unwrap_or_default();
         self.painting_toolbar.set_tags(&tags, tag_id);
-        self.status.set_message(&format!("Eyedropper: picked tag '{tag_name}'"));
+        self.status
+            .set_message(&format!("Eyedropper: picked tag '{tag_name}'"));
     }
 
     fn paint_tag_fill_selection(self: &Rc<Self>, slot: PaneSlot) {
         let tag_id = self.active_paint_tag_id.get();
         if tag_id == 0 {
-            self.status.set_message("No tag selected — choose a tag in the toolbar.");
+            self.status
+                .set_message("No tag selected — choose a tag in the toolbar.");
             return;
         }
         let tag_name = self.active_paint_tag_name.borrow().clone();
@@ -7787,10 +7816,16 @@ impl BrowserController {
         {
             let mut meta = self.metadata.borrow_mut();
             for path in &paths_to_tag {
-                if meta.add_tag_to_paths(tag_id, std::slice::from_ref(path)).is_ok() {
+                if meta
+                    .add_tag_to_paths(tag_id, std::slice::from_ref(path))
+                    .is_ok()
+                {
                     history_entries.push(PaintHistoryEntry {
                         path: path.clone(),
-                        op: PaintOp::Tag { tag_id, added: true },
+                        op: PaintOp::Tag {
+                            tag_id,
+                            added: true,
+                        },
                     });
                 }
             }
@@ -7806,7 +7841,9 @@ impl BrowserController {
             self.update_item_tags_in_grid(slot, path, tags);
         }
         if !history_entries.is_empty() {
-            self.commit_paint_history(PaintHistoryStep { entries: history_entries });
+            self.commit_paint_history(PaintHistoryStep {
+                entries: history_entries,
+            });
         }
         let count = paths_to_tag.len();
         self.status.set_message(&format!(
@@ -7853,7 +7890,9 @@ impl BrowserController {
         if let Some(idx) = items.iter().position(|i| &i.path == path) {
             items[idx].tags = tags.clone();
             drop(items);
-            self.pane_widgets(slot).file_grid.update_item_tags(idx, &tags);
+            self.pane_widgets(slot)
+                .file_grid
+                .update_item_tags(idx, &tags);
         }
     }
 
