@@ -13,13 +13,25 @@
 
 set -euo pipefail
 
-PORTAL="${1:-./target/debug/lattice-filechooser-portal}"
+if [[ -n "${1:-}" ]]; then
+    PORTAL="$1"
+else
+    PORTAL=""
+    for _c in \
+        ./target/release/lattice-filechooser-portal \
+        ./target/debug/lattice-filechooser-portal \
+        /usr/local/lib/lattice/lattice-filechooser-portal; do
+        [[ -f "$_c" ]] && { PORTAL="$_c"; break; }
+    done
+fi
 
-if [[ ! -f "$PORTAL" ]]; then
-    echo "Error: portal binary not found at $PORTAL"
-    echo "Build with: cargo build --bin lattice-filechooser-portal"
+if [[ -z "$PORTAL" || ! -f "$PORTAL" ]]; then
+    echo "Error: lattice-filechooser-portal binary not found."
+    echo "Searched: ./target/release/, ./target/debug/, /usr/local/lib/lattice/"
+    echo "Build with: cargo build --release"
     exit 1
 fi
+echo "Using portal binary: $PORTAL"
 
 echo "=== Starting lattice-filechooser-portal ==="
 "$PORTAL" &

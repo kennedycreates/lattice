@@ -85,13 +85,29 @@ do_install() {
     [[ -f "$REL/lattice-filechooser-portal" ]] \
         || die "Release binary not found: $REL/lattice-filechooser-portal\nBuild with: cargo build --release"
 
-    # Warn if xdg-desktop-portal is not installed
-    if ! command -v xdg-desktop-portal &>/dev/null \
-        && ! systemctl --user cat xdg-desktop-portal &>/dev/null 2>&1; then
-        warn "xdg-desktop-portal not found. The portal backend will not be callable"
-        warn "until xdg-desktop-portal is installed."
-        warn "  Ubuntu: sudo apt install xdg-desktop-portal"
-        warn "  Arch:   sudo pacman -S xdg-desktop-portal"
+    # Warn if xdg-desktop-portal is not installed.
+    # The binary is not in PATH on most systems (/usr/libexec/), and
+    # `systemctl --user` is unreliable under sudo, so check known paths +
+    # package databases instead.
+    _xdp_found=false
+    for _c in \
+        /usr/libexec/xdg-desktop-portal \
+        /usr/lib/xdg-desktop-portal/xdg-desktop-portal \
+        /usr/bin/xdg-desktop-portal \
+        /usr/local/bin/xdg-desktop-portal; do
+        [[ -x "$_c" ]] && { _xdp_found=true; break; }
+    done
+    if ! $_xdp_found; then
+        dpkg-query -W -f='${Status}' xdg-desktop-portal 2>/dev/null \
+            | grep -q "install ok installed" && _xdp_found=true
+        pacman -Qq xdg-desktop-portal &>/dev/null 2>&1 && _xdp_found=true
+        rpm -q xdg-desktop-portal &>/dev/null 2>&1 && _xdp_found=true
+    fi
+    if ! $_xdp_found; then
+        warn "xdg-desktop-portal does not appear to be installed."
+        warn "The portal backend will not be callable until it is installed."
+        warn "  Ubuntu/Pop!_OS: sudo apt install xdg-desktop-portal xdg-desktop-portal-gtk"
+        warn "  Arch:           sudo pacman -S xdg-desktop-portal xdg-desktop-portal-gtk"
         echo ""
     fi
 

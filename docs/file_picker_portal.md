@@ -33,6 +33,8 @@ App receives selected URIs
 
 The backend is responsible for showing the actual UI and returning results. The frontend portal acts only as a broker.
 
+Implementation note: `lattice-filechooser-portal` uses the same GTK/GIO stack as the main app. It registers the backend through GIO's GDBus APIs and launches the picker with `gio::Subprocess`, avoiding a separate async D-Bus runtime dependency.
+
 ---
 
 ## Method reference
@@ -55,7 +57,7 @@ OpenFile(
 | `directory` | b | ✅ | Routes to `lattice --picker folder` |
 | `current_folder` | ay | ✅ | Passed as `--path` |
 | `accept_label` | s | logged | Not forwarded to picker UI |
-| `filters` | a(sa(us)) | logged | Filter names decoded and printed; not applied |
+| `filters` | a(sa(us)) | logged | Presence logged; not applied |
 | `choices` | a(ssa(ss)s) | logged | Ignored |
 | `writable` | b | logged | Ignored |
 
@@ -83,7 +85,7 @@ SaveFile(
 | `current_folder` | ay | ✅ | Initial directory (takes priority) |
 | `current_file` | ay | ✅ | Fallback: parent dir → `--path`; filename → `--name` |
 | `current_name` | s | ✅ | Suggested filename (overrides current_file name) |
-| `filters` | a(sa(us)) | logged | Filter names decoded and printed; not applied |
+| `filters` | a(sa(us)) | logged | Presence logged; not applied |
 | `choices` | a(ssa(ss)s) | logged | Ignored |
 
 Initial dir resolution: `current_folder` → parent of `current_file` → picker default (home).  
@@ -434,4 +436,3 @@ Log lines are prefixed `[lattice-portal]`.
 - [ ] `handle_token` — per-request subprocess tracking for `Close` cancellation
 - [ ] Meson/Makefile install targets
 - [ ] Systemd user service unit file
-- [ ] Workspace refactor to scope `zbus`/`tokio` deps to portal binary only

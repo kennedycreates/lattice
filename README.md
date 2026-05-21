@@ -35,7 +35,7 @@ Lattice is a powerful graphical GTK4 file manager for Linux, built with Rust. De
 **Media Conversion**
 - **Convert…** action in the file right-click menu: opens a full-pane conversion panel for any selection containing image, audio, or video files
 - Preset dropdown covering JPEG, PNG, WebP, AVIF, web-sized JPEG/WebP, MP3, FLAC, Opus, Compatible MP4, Smaller MP4, WebM, and audio extraction — auto-selected based on dominant media kind
-- Output location: Next to originals, Converted subfolder, or a folder chosen via the native file picker
+- Output location: Next to originals, Converted subfolder, or a folder chosen via the built-in Lattice picker
 - Conflict policy: Auto-rename (default), Skip existing, or Overwrite
 - Preview table shows source → destination name for every file; incompatible-kind files are marked skipped before conversion starts
 - Tool dependency warning adapts to the selected preset (ffmpeg, ImageMagick, or Vips)
