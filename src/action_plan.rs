@@ -406,7 +406,7 @@ impl ActionPlan {
                 is_copy,
             },
             summary: format!(
-                "{verb} {} item{} -> {project_name}",
+                "{verb} {} item{} -> palette {project_name}",
                 n,
                 if n == 1 { "" } else { "s" }
             ),

@@ -142,7 +142,7 @@ Do not rely on special icon fonts for interface controls. Prefer GTK symbolic ic
 | `.sidebar-section-heading` | Uppercase section label |
 | `.sidebar-sep` | Horizontal separator |
 | `.sidebar-note` | Muted explanatory text |
-| `.sidebar-dynamic-list` | Container for dynamic project/tag lists |
+| `.sidebar-dynamic-list` | Container for dynamic Palette/tag lists |
 
 ### File grid
 

@@ -90,7 +90,7 @@ impl ProjectManagerPanel {
         create_revealer.set_child(Some(&create_row));
         root.append(&create_revealer);
 
-        // ── Project list ─────────────────────────────────────────────────────────
+        // ── Palette list ─────────────────────────────────────────────────────────
         let scrolled = ScrolledWindow::new();
         scrolled.set_vexpand(true);
         scrolled.set_hscrollbar_policy(gtk::PolicyType::Never);
@@ -118,7 +118,7 @@ impl ProjectManagerPanel {
             cbs: Callbacks::new(),
         });
 
-        // ── Wire new-project button ──────────────────────────────────────────────
+        // ── Wire new-palette button ──────────────────────────────────────────────
         {
             let inner = Rc::clone(&inner);
             new_btn.connect_clicked(move |_| {
@@ -236,7 +236,7 @@ fn build_project_row(project: &ProjectRecord, inner: &Rc<Inner>) -> GtkBox {
     name_stack.set_visible_child_name("label");
     row.append(&name_stack);
 
-    // Click or double-click name label to open project
+    // Click or double-click name label to open palette
     {
         let project_id = project.id;
         let inner = Rc::clone(inner);

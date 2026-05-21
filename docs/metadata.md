@@ -22,7 +22,7 @@ Tints, Shapes, Marks, Tags, and Palettes are separate concepts.
 - Shape: fixed literal category: `circle`, `square`, `triangle`, `pentagon`, `hexagon`, `octagon`, or `trapezoid`.
 - Mark: exactly one Tint plus one Shape applied to a file/folder.
 - Tags: secondary text labels. Tags do not own strong visual color.
-- Palette: flexible workspace/board, not only a work project.
+- Palette: flexible workspace/board, not a rigid project-management object.
 
 Every file/folder resolves to exactly one Mark. If `file_marks` has no row for a path, the resolved Mark is the default Tint `Beige` plus Shape `square`. Lattice does not create a `file_marks` row for every browsed file.
 
@@ -107,13 +107,13 @@ Board cards carry spatial state (x, y, width, height) and optional Tint + Shape 
 `activity_log` and `activity_log_items`
 - operation receipt history for Lattice file actions
 
-Legacy `projects` and `project_destinations` tables may remain in existing databases. They are preserved and migrated into `palettes` and `palette_places` where practical.
+Legacy `projects` and `project_destinations` tables may remain in existing databases. This is compatibility vocabulary for older Lattice data; the current user-facing concept is Palette. Legacy rows are preserved and migrated into `palettes` and `palette_places` where practical.
 
 ## Migration Rules
 
 - Migrations are additive and non-destructive.
-- Existing projects are copied to palettes with matching ids when possible.
-- Existing project destinations are copied to palette places with matching ids when possible.
+- Existing legacy projects are copied to palettes with matching ids when possible.
+- Existing legacy project destinations are copied to palette places with matching ids when possible.
 - Existing tags remain tags; tag color is kept only as deprecated stored data.
 - Existing `file_tags` relationships are preserved.
 - Before migrating an on-disk metadata database from an older schema, Lattice creates a timestamped backup next to the database.

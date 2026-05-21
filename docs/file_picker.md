@@ -98,7 +98,7 @@ These Lattice features now use `show_picker_modal` instead of text entry or GTK 
 |---------|------|----------|
 | Palette Board → Add File Card | `OpenFile` | `show_add_file_card_dialog` |
 | Palette Board → Add Folder Card | `OpenFolder` | `show_add_folder_card_dialog` |
-| Project Landing → Pin Folder | `OpenFolder` | `show_pin_folder_dialog` (Browse button) |
+| Palette Landing → Pin Folder | `OpenFolder` | `show_pin_folder_dialog` (Browse button) |
 | Cloud → Add Cloud Drive | `OpenFolder` | `show_add_cloud_dialog` (Browse button) |
 | Cloud → Edit Cloud Drive | `OpenFolder` | `show_edit_cloud_dialog` (Browse button) |
 | Media Convert → Choose Output Folder | `OpenFolder` | `connect_folder_pick` callback |

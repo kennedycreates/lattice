@@ -7,7 +7,7 @@ pub struct LaunchConfig {
     pub path: Option<PathBuf>,
     /// Open the Downloads Triage view on startup.
     pub downloads: bool,
-    /// Open a pinned project by name on startup.
+    /// Legacy --project compatibility: open a Palette by name on startup.
     pub project: Option<String>,
     /// Open in split view with explicit pane paths.
     pub split: Option<Vec<PathBuf>>,
@@ -37,7 +37,7 @@ impl LaunchConfig {
                         config.project = Some(args[i + 1].clone());
                         i += 2;
                     } else {
-                        eprintln!("lattice: --project requires a project name");
+                        eprintln!("lattice: --project requires a palette name");
                         i += 1;
                     }
                 }

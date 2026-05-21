@@ -31,10 +31,10 @@ ApplicationWindow
 
 | Method | Use case |
 |---|---|
-| `show_input(title, prompt, initial, confirm, on_accept)` | Rename, New Folder, Pin Project, Add Tag |
+| `show_input(title, prompt, initial, confirm, on_accept)` | Rename, New Folder, Pin Palette, Add Tag |
 | `show_confirm(title, prompt, confirm, dangerous, scrim_dismisses, on_accept)` | Destructive confirmations |
 | `show_error(title, detail)` | Error notifications |
-| `show_with_custom_ui(title, content, actions, scrim_dismisses, dismiss_cb)` | Complex dialogs (tag list, project chooser, conflict) |
+| `show_with_custom_ui(title, content, actions, scrim_dismisses, dismiss_cb)` | Complex dialogs (tag list, Palette chooser, conflict) |
 | `hide()` | Close the current modal from within a callback |
 
 Helper functions also exported:
@@ -126,11 +126,11 @@ to `ModalHost` in the M0 → M1 refactor:
 
 - Single-file Rename
 - New Folder
-- Pin as Project
+- Pin as Palette
 - Add Tag
 - Remove Tag
-- Send to Project
-- File Conflict (project transfer)
+- Send to Palette
+- File Conflict (Palette transfer)
 - All `show_error_dialog` call sites (~25 error notifications)
 
 ---

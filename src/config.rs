@@ -456,6 +456,7 @@ theme = "default"
 # tray_add_selection = "Ctrl+Alt+A"
 # tray_add_by_tint = "Ctrl+Alt+1"
 # tray_add_by_shape = "Ctrl+Alt+2"
+# Legacy project-named action ids remain stable for config compatibility; UI labels say Palette.
 # tray_move_to_project = "Ctrl+Alt+M"
 # tray_copy_to_project = "Ctrl+Alt+C"
 # tray_tag = "Ctrl+Alt+T"
@@ -482,14 +483,16 @@ theme = "default"
 #
 # Shared item entries:
 #   separator, open, rename, bulk_rename, duplicate, copy_path,
-#   add_to_holding_tray, terminal_here, send_to_project, add_tag, remove_tag,
-#   move_to_trash, delete_permanently, custom.<id>
+#   add_to_holding_tray, compress, terminal_here, send_to_project, add_tag,
+#   remove_tag, move_to_trash, delete_permanently, custom.<id>
+#   send_to_project is a legacy entry id; the visible action is Send to Palette.
 #
 # File-only entries:
-#   open_with, convert
+#   open_with, convert, extract
 #
 # Folder-only entries:
 #   open_new_tab, open_in_pane, triage_folder, pin_place, pin_project
+#   pin_project is a legacy entry id; the visible action is Pin as Palette.
 #
 # Background entries:
 #   new_folder, new_text_document, pin_place, pin_project, terminal_here,
@@ -499,8 +502,8 @@ theme = "default"
 # bulk_rename appears only with two or more selected items and opens Bulk Naming;
 # open_in_pane adapts to the current pane layout; custom actions appear only in their contexts.
 [context_menu]
-# file = ["open", "open_with", "convert", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
-# folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# file = ["open", "open_with", "convert", "extract", "compress", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "compress", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
 # background = ["new_folder", "new_text_document", "separator", "pin_place", "pin_project", "terminal_here", "copy_path"]
 #
 # Example with custom actions inserted:
@@ -606,6 +609,8 @@ contexts = ["file"]
             "open",
             "open_with",
             "convert",
+            "extract",
+            "compress",
             "open_new_tab",
             "open_in_pane",
             "triage_folder",

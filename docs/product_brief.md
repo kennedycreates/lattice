@@ -27,13 +27,13 @@ It is **not** a keyboard-driven power tool. It is a slick, dark, visually intent
 | App shell layout (toolbar, sidebar, grid, preview, status) | ✅ M0 |
 | Real file grid | ✅ M1 |
 | Real GIO directory browsing | ✅ M1 |
-| Sidebar navigation (click to browse) | ✅ Home fixed, user-pinned Places removable, Projects separate |
+| Sidebar navigation (click to browse) | ✅ Home fixed, user-pinned Places removable, Palettes separate |
 | Right-click context menus | ✅ M2 |
 | Core file actions (rename, new folder, trash, copy path, terminal) | ✅ M2 |
 | Tabbed browsing | ✅ M4 |
 | Split-pane view | ✅ M4, now supports two or three panels |
 | File preview (images, text, metadata) | ✅ M3 |
-| Projects, tags, and Downloads Triage | ✅ M5 |
+| Palettes, tags, and Downloads Triage | ✅ M5 |
 | TOML config and launch modes | ✅ M6 |
 | Folder search | ✅ Current-folder or recursive scope with name, kind, date, size, and tag filters |
 | Drag and drop | ✅ Within/between panes and key sidebar destinations, with polished visual feedback |

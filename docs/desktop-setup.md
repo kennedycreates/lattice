@@ -64,12 +64,13 @@ xdg-mime query default inode/directory
 | `lattice --path /some/folder` | The specified folder |
 | `lattice /some/folder` | The specified folder (positional shorthand) |
 | `lattice --downloads` | Downloads Triage view |
-| `lattice --project "My Project"` | Root of a pinned project |
+| `lattice --project "My Palette"` | Palette by name; legacy flag retained for compatibility |
 | `lattice --split /left /right` | Split view with two explicit paths |
 | `lattice --split /left /middle /right` | Split view with three explicit paths |
 
-If `--path` or `--project` resolves to a path that doesn't exist or cannot be read,
-Lattice opens to the home directory instead.
+If `--path` resolves to a path that doesn't exist or cannot be read, Lattice opens
+to the home directory instead. If legacy `--project` names a missing Palette,
+Lattice opens Home with a status message.
 
 ---
 

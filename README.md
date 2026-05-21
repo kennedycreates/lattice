@@ -11,7 +11,7 @@ Lattice is a powerful graphical GTK4 file manager for Linux, built with Rust. De
 - Sidebar: Home, user-pinned Places, System Drives, Recent, Trash, Cloud Drives, Palettes, Tints & Tags, Search, Space Viewer, Triage, Bulk Naming, and Activity Log
 
 **File Operations**
-- Copy, move, rename, visual bulk naming, new folder, new text document, add folders to Places from the right-click menu, and move to trash
+- Copy, move, rename, visual bulk naming, new folder, new text document, add folders to Places from the right-click menu, compress to ZIP, extract common archive formats, and move to trash
 - Batched conflict resolver before copy/move operations begin, with Keep Both, Replace, and Skip choices
 - Drag and drop within and between panes, and onto sidebar targets
 - Plan Mode queues file-affecting actions for review before execution: copy/move, drag/drop, rename, duplicate, bulk rename, new file/folder, trash, permanent delete, empty trash, trash restore, tag apply/remove, Mark apply/reset, path-copy receipts, and Palette send actions
@@ -77,6 +77,11 @@ Other Linux distributions may work if they provide equivalent GTK4, GIO/GVfs, UD
 - `ffmpeg` — required for image, audio, and video conversion (most presets)
 - `imagemagick` — required for AVIF output only
 
+**Optional — archive actions** (right-click menu):
+- `zip` and `unzip` — create ZIP archives and extract ZIP/JAR/EPUB archives
+- `tar` — extract TAR, TAR.GZ, TGZ, TAR.XZ, and TAR.BZ2 archives
+- `7z` — extract 7-Zip and RAR archives
+
 **Optional — cloud drive mounting** (rclone Cloud entries):
 - `rclone` — install from https://rclone.org/install/ or your distro package
 - `fuse3` (Ubuntu) / `fuse2` (Arch) — provides `fusermount3`/`fusermount` for unmounting
@@ -113,6 +118,12 @@ Optional — media conversion:
 
 ```sh
 sudo apt install ffmpeg imagemagick
+```
+
+Optional — archive actions:
+
+```sh
+sudo apt install zip unzip p7zip-full
 ```
 
 Optional — rclone cloud drive mounting:
@@ -157,6 +168,12 @@ Optional — media conversion:
 
 ```sh
 sudo pacman -S ffmpeg imagemagick
+```
+
+Optional — archive actions:
+
+```sh
+sudo pacman -S zip unzip p7zip
 ```
 
 Optional — rclone cloud drive mounting:
@@ -268,7 +285,7 @@ Launch options:
 | `lattice <folder>` | Open a folder using positional shorthand. |
 | `lattice --path <folder>` | Open a specific folder. |
 | `lattice --downloads` | Open Downloads Triage. |
-| `lattice --project "<name>"` | Open a palette landing page by name, case-insensitive. Legacy flag name retained for compatibility. |
+| `lattice --project "<name>"` | Open a Palette by name, case-insensitive. Legacy flag name retained for compatibility. |
 | `lattice --split <left> <right>` | Open a two-pane layout. |
 | `lattice --split <left> <middle> <right>` | Open a three-pane layout. |
 

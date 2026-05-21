@@ -1,6 +1,6 @@
 /// In-window modal system for Lattice.
 ///
-/// All internal Lattice dialogs (rename, new folder, tag, project, errors,
+/// All internal Lattice dialogs (rename, new folder, tag, palette, errors,
 /// conflict prompts) are hosted here as in-window overlays instead of separate
 /// GtkWindow / GtkDialog toplevels.  This eliminates the first-frame squash
 /// bug that plagued separate popup windows.
@@ -247,7 +247,7 @@ impl ModalHost {
         self.inner.modal_outer.set_visible(true);
     }
 
-    /// Show a text-input modal (e.g. Rename, New Folder, Pin Project, Add Tag).
+    /// Show a text-input modal (e.g. Rename, New Folder, Pin Palette, Add Tag).
     /// `on_accept` receives the trimmed entry text. The modal auto-closes on
     /// accept or cancel, and the scrim also dismisses it.
     pub fn show_input(

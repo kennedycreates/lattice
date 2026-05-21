@@ -50,6 +50,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -130,8 +131,8 @@ impl TrayProjectAction {
 
     fn title(self) -> &'static str {
         match self {
-            Self::Copy => "Copy Tray to Project",
-            Self::Move => "Move Tray to Project",
+            Self::Copy => "Copy Tray to Palette",
+            Self::Move => "Move Tray to Palette",
         }
     }
 }
@@ -3237,7 +3238,7 @@ impl BrowserController {
 
         append_menu_button(
             &menu_box,
-            "Open Project",
+            "Open Palette",
             Some("document-open-symbolic"),
             false,
             {
@@ -3249,7 +3250,7 @@ impl BrowserController {
         append_menu_sep(&menu_box);
         append_menu_button(
             &menu_box,
-            "Delete Project",
+            "Delete Palette",
             Some("list-remove-symbolic"),
             true,
             {
@@ -3294,9 +3295,9 @@ impl BrowserController {
 
         let controller = Rc::clone(self);
         self.modal_host.show_confirm(
-            "Remove Project",
+            "Remove Palette",
             &format!(
-                "Remove \u{201c}{}\u{201d} from Projects? The folder itself will not be deleted.",
+                "Remove \u{201c}{}\u{201d} from Palettes? Pinned folders and files will not be deleted.",
                 project.name
             ),
             "Remove",
@@ -3304,7 +3305,7 @@ impl BrowserController {
             false,
             move || {
                 let _ = controller.metadata.borrow_mut().delete_project(project_id);
-                // Navigate away if currently viewing this project's landing page
+                // Navigate away if currently viewing this palette's landing page
                 for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
                     if matches!(controller.current_view_for(slot), PaneView::ProjectLanding(id) if id == project_id)
                     {
@@ -10498,7 +10499,7 @@ impl BrowserController {
             }
             PaneView::ProjectLanding(_) => {
                 self.preview
-                    .show_folder("Project", display_label, None, None, "Project");
+                    .show_folder("Palette", display_label, None, None, "Palette");
                 self.preview.set_action_state(false, false, false);
             }
             PaneView::CloudLanding(_) => {
@@ -10508,7 +10509,7 @@ impl BrowserController {
             }
             PaneView::ProjectManager => {
                 self.preview
-                    .show_folder("Projects", display_label, None, None, "Project Manager");
+                    .show_folder("Palettes", display_label, None, None, "Palette Manager");
                 self.preview.set_action_state(false, false, false);
             }
             PaneView::TagManager => {
@@ -10648,11 +10649,11 @@ impl BrowserController {
                         },
                     );
                 }
-                // File / project group
+                // File / palette group
                 append_menu_sep(&menu_box);
                 append_menu_button(
                     &menu_box,
-                    "Pin as Project",
+                    "Pin as Palette",
                     Some("starred-symbolic"),
                     false,
                     {
@@ -10840,6 +10841,7 @@ impl BrowserController {
                     "open",
                     "open_new_tab",
                     "open_in_pane",
+                    "compress",
                     "separator",
                     "rename",
                     "duplicate",
@@ -10856,6 +10858,8 @@ impl BrowserController {
                     "open",
                     "open_with",
                     "convert",
+                    "extract",
+                    "compress",
                     "separator",
                     "rename",
                     "duplicate",
@@ -10941,6 +10945,30 @@ impl BrowserController {
                         );
                     }
                 }
+                "extract" if !item.is_dir && is_supported_archive_path(&item.path) => {
+                    append_menu_button(
+                        menu_box,
+                        "Extract Archive",
+                        Some("archive-extract-symbolic"),
+                        false,
+                        {
+                            let controller = Rc::clone(self);
+                            let item = item.clone();
+                            move || controller.extract_archive_from_menu(slot, item.path.clone())
+                        },
+                    );
+                }
+                "compress" => append_menu_button(
+                    menu_box,
+                    "Compress to ZIP",
+                    Some("package-x-generic-symbolic"),
+                    false,
+                    {
+                        let controller = Rc::clone(self);
+                        let item = item.clone();
+                        move || controller.compress_selection_from_menu(slot, item.path.clone())
+                    },
+                ),
                 "open_new_tab" if item.is_dir => append_menu_button(
                     menu_box,
                     "Open in New Tab",
@@ -11055,7 +11083,7 @@ impl BrowserController {
                 }
                 "pin_project" if item.is_dir => append_menu_button(
                     menu_box,
-                    "Pin as Project",
+                    "Pin as Palette",
                     Some("starred-symbolic"),
                     false,
                     {
@@ -11077,7 +11105,7 @@ impl BrowserController {
                 ),
                 "send_to_project" => append_menu_button(
                     menu_box,
-                    "Send to Project",
+                    "Send to Palette",
                     Some("go-next-symbolic"),
                     false,
                     {
@@ -11287,7 +11315,7 @@ impl BrowserController {
                 ),
                 "pin_project" => append_menu_button(
                     menu_box,
-                    "Pin as Project",
+                    "Pin as Palette",
                     Some("starred-symbolic"),
                     false,
                     {
@@ -12880,6 +12908,135 @@ impl BrowserController {
         self.start_copy_move_op(items, true, &summary, None, Some("duplicate"));
     }
 
+    fn compress_selection_from_menu(self: &Rc<Self>, slot: PaneSlot, fallback_path: PathBuf) {
+        if is_gio_uri(&fallback_path.to_string_lossy()) {
+            self.show_error_dialog(
+                "Compress Unavailable",
+                "Archive creation is only available for local filesystem paths.",
+            );
+            return;
+        }
+
+        let mut paths = self.selected_paths_for(slot);
+        if paths.is_empty() {
+            paths.push(fallback_path);
+        }
+        paths.retain(|path| !is_gio_uri(&path.to_string_lossy()));
+        if paths.is_empty() {
+            self.status
+                .set_message("Select one or more local items to compress.");
+            return;
+        }
+
+        let Some(parent) =
+            common_parent(&paths).or_else(|| paths[0].parent().map(Path::to_path_buf))
+        else {
+            self.show_error_dialog(
+                "Compress Failed",
+                "Could not resolve an archive destination.",
+            );
+            return;
+        };
+        let dest = next_available_path(&parent.join(suggested_archive_name(&paths)));
+        let label = format!(
+            "Compress: {} item{}",
+            paths.len(),
+            if paths.len() == 1 { "" } else { "s" }
+        );
+        let op_id = self.ops_panel.add_op(&label, None);
+        self.ops_panel
+            .update_progress(op_id, 0.2, "Creating ZIP archive…");
+        self.status.set_message("Creating ZIP archive…");
+
+        let controller = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let result = gio::spawn_blocking(move || compress_paths_to_zip(paths, parent, dest))
+                .await
+                .unwrap_or_else(|_| ArchiveOpResult::failure("Archive worker stopped."));
+            controller.finish_archive_op(op_id, result, "archive_compress");
+        });
+    }
+
+    fn extract_archive_from_menu(self: &Rc<Self>, _slot: PaneSlot, archive: PathBuf) {
+        if is_gio_uri(&archive.to_string_lossy()) {
+            self.show_error_dialog(
+                "Extract Unavailable",
+                "Archive extraction is only available for local filesystem paths.",
+            );
+            return;
+        }
+        if !is_supported_archive_path(&archive) {
+            self.show_error_dialog(
+                "Extract Unavailable",
+                "Lattice can extract ZIP, TAR, compressed TAR, 7-Zip, and RAR archives when the matching command-line tool is installed.",
+            );
+            return;
+        }
+
+        let Some(parent) = archive.parent().map(Path::to_path_buf) else {
+            self.show_error_dialog("Extract Failed", "Could not resolve an extraction folder.");
+            return;
+        };
+        let dest = next_available_path(&parent.join(archive_output_folder_name(&archive)));
+        let label = archive
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| format!("Extract: {name}"))
+            .unwrap_or_else(|| "Extract archive".to_string());
+        let op_id = self.ops_panel.add_op(&label, None);
+        self.ops_panel
+            .update_progress(op_id, 0.2, "Extracting archive…");
+        self.status.set_message("Extracting archive…");
+
+        let controller = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let result = gio::spawn_blocking(move || extract_archive_to_folder(archive, dest))
+                .await
+                .unwrap_or_else(|_| ArchiveOpResult::failure("Archive worker stopped."));
+            controller.finish_archive_op(op_id, result, "archive_extract");
+        });
+    }
+
+    fn finish_archive_op(self: &Rc<Self>, op_id: OpId, result: ArchiveOpResult, op_kind: &str) {
+        let errors = result.error.clone().into_iter().collect::<Vec<_>>();
+        self.ops_panel.finish_op(op_id, &errors);
+        if errors.is_empty() {
+            if let Some(output) = result.output_path.clone() {
+                self.pending_reveal_cell(self.active_slot())
+                    .replace(Some(output.clone()));
+                let summary = if op_kind == "archive_extract" {
+                    "Extracted archive"
+                } else {
+                    "Created ZIP archive"
+                };
+                self.pending_status_message
+                    .replace(Some(format!("{summary}: {}.", output.display())));
+                let source = result
+                    .source_paths
+                    .first()
+                    .and_then(|path| path.parent())
+                    .and_then(|path| path.to_str())
+                    .unwrap_or("");
+                let _ = self.metadata.borrow().log_activity_with_items(
+                    op_kind,
+                    result.source_paths.len() as i32,
+                    summary,
+                    source,
+                    output.parent().and_then(|parent| parent.to_str()),
+                    &[],
+                    &result
+                        .source_paths
+                        .iter()
+                        .map(|path| (path.clone(), Some(output.clone())))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            self.refresh();
+        } else {
+            self.show_error_dialog("Archive Operation Failed", &errors.join("\n"));
+        }
+    }
+
     fn create_new_folder(self: &Rc<Self>) {
         let slot = self.active_slot();
         if !action_availability(
@@ -13565,7 +13722,7 @@ impl BrowserController {
         completion: Option<TrayCompletion>,
     ) {
         let prompt_text = format!(
-            "A project item already exists named:\n{}\n\nChoose how to continue.",
+            "A palette destination already contains:\n{}\n\nChoose how to continue.",
             destination_path.display()
         );
         let content = GtkBox::new(Orientation::Vertical, 0);
@@ -15488,7 +15645,7 @@ fn project_action_plan(
     };
     let mut lines = vec![
         format!(
-            "{verb} {} staged item(s) to project \"{project_name}\".",
+            "{verb} {} staged item(s) to palette \"{project_name}\".",
             paths.len()
         ),
         format!("Destination: {}", project_root.display()),
@@ -17226,7 +17383,7 @@ fn resolve_launch(
                 tertiary_dir: places.home.clone(),
                 pane_layout: PaneLayout::Single,
                 notice: Some(format!(
-                    "Project '{}' was not found. Opened Home instead.",
+                    "Palette '{}' was not found. Opened Home instead.",
                     project_name
                 )),
             },
@@ -17296,6 +17453,263 @@ fn resolve_tool_scope_dir(view: &PaneView, current_dir: &Path, home: &Path) -> P
     pane_view_scope_dir(view)
         .or_else(|| is_launchable_directory(current_dir).then(|| current_dir.to_path_buf()))
         .unwrap_or_else(|| home.to_path_buf())
+}
+
+#[derive(Debug)]
+struct ArchiveOpResult {
+    source_paths: Vec<PathBuf>,
+    output_path: Option<PathBuf>,
+    error: Option<String>,
+}
+
+impl ArchiveOpResult {
+    fn success(source_paths: Vec<PathBuf>, output_path: PathBuf) -> Self {
+        Self {
+            source_paths,
+            output_path: Some(output_path),
+            error: None,
+        }
+    }
+
+    fn failure(error: impl Into<String>) -> Self {
+        Self {
+            source_paths: Vec::new(),
+            output_path: None,
+            error: Some(error.into()),
+        }
+    }
+}
+
+fn compress_paths_to_zip(paths: Vec<PathBuf>, parent: PathBuf, dest: PathBuf) -> ArchiveOpResult {
+    if paths.is_empty() {
+        return ArchiveOpResult::failure("No files were selected.");
+    }
+
+    let mut args = vec![OsString::from("-r"), dest.as_os_str().to_os_string()];
+    args.push(OsString::from("--"));
+    for path in &paths {
+        match path.strip_prefix(&parent) {
+            Ok(relative) if !relative.as_os_str().is_empty() => {
+                args.push(relative.as_os_str().to_os_string());
+            }
+            _ => args.push(path.as_os_str().to_os_string()),
+        }
+    }
+
+    match run_archive_command("zip", &args, Some(&parent)) {
+        Ok(()) => ArchiveOpResult::success(paths, dest),
+        Err(error) => ArchiveOpResult::failure(error),
+    }
+}
+
+fn extract_archive_to_folder(archive: PathBuf, dest: PathBuf) -> ArchiveOpResult {
+    if let Err(error) = std::fs::create_dir_all(&dest) {
+        return ArchiveOpResult::failure(format!(
+            "Could not create extraction folder '{}': {error}",
+            dest.display()
+        ));
+    }
+
+    let Some(kind) = archive_kind(&archive) else {
+        return ArchiveOpResult::failure("Unsupported archive type.");
+    };
+
+    let result = match kind {
+        ArchiveKind::Zip => run_archive_command(
+            "unzip",
+            &[
+                OsString::from("-n"),
+                archive.as_os_str().to_os_string(),
+                OsString::from("-d"),
+                dest.as_os_str().to_os_string(),
+            ],
+            None,
+        ),
+        ArchiveKind::Tar => run_archive_command(
+            "tar",
+            &[
+                OsString::from("-xf"),
+                archive.as_os_str().to_os_string(),
+                OsString::from("-C"),
+                dest.as_os_str().to_os_string(),
+            ],
+            None,
+        ),
+        ArchiveKind::SevenZip => run_archive_command(
+            "7z",
+            &[
+                OsString::from("x"),
+                archive.as_os_str().to_os_string(),
+                OsString::from(format!("-o{}", dest.display())),
+                OsString::from("-aos"),
+            ],
+            None,
+        ),
+    };
+
+    match result {
+        Ok(()) => ArchiveOpResult::success(vec![archive], dest),
+        Err(error) => {
+            let _ = std::fs::remove_dir(&dest);
+            ArchiveOpResult::failure(error)
+        }
+    }
+}
+
+fn run_archive_command(
+    program: &str,
+    args: &[OsString],
+    current_dir: Option<&Path>,
+) -> Result<(), String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(dir) = current_dir {
+        command.current_dir(dir);
+    }
+
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "Required archive tool '{program}' is not installed or is not on PATH."
+            ));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim()
+    } else {
+        "Archive command failed."
+    };
+    Err(format!(
+        "{program} exited with status {}: {}",
+        output
+            .status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        truncate_archive_detail(detail, 600)
+    ))
+}
+
+fn truncate_archive_detail(value: &str, max_chars: usize) -> String {
+    let mut out = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArchiveKind {
+    Zip,
+    Tar,
+    SevenZip,
+}
+
+fn archive_kind(path: &Path) -> Option<ArchiveKind> {
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".epub") {
+        Some(ArchiveKind::Zip)
+    } else if name.ends_with(".tar")
+        || name.ends_with(".tar.gz")
+        || name.ends_with(".tgz")
+        || name.ends_with(".tar.xz")
+        || name.ends_with(".txz")
+        || name.ends_with(".tar.bz2")
+        || name.ends_with(".tbz")
+        || name.ends_with(".tbz2")
+    {
+        Some(ArchiveKind::Tar)
+    } else if name.ends_with(".7z") || name.ends_with(".rar") {
+        Some(ArchiveKind::SevenZip)
+    } else {
+        None
+    }
+}
+
+fn is_supported_archive_path(path: &Path) -> bool {
+    archive_kind(path).is_some()
+}
+
+fn archive_output_folder_name(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Archive");
+    for suffix in [
+        ".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".txz", ".tbz2", ".tbz", ".zip", ".7z", ".rar",
+        ".jar", ".epub", ".tar",
+    ] {
+        if name.to_ascii_lowercase().ends_with(suffix) && name.len() > suffix.len() {
+            return name[..name.len() - suffix.len()].to_string();
+        }
+    }
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Archive")
+        .to_string()
+}
+
+fn suggested_archive_name(paths: &[PathBuf]) -> String {
+    let base = if paths.len() == 1 {
+        paths[0]
+            .file_stem()
+            .or_else(|| paths[0].file_name())
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Archive")
+            .to_string()
+    } else {
+        "Archive".to_string()
+    };
+    format!("{base}.zip")
+}
+
+fn common_parent(paths: &[PathBuf]) -> Option<PathBuf> {
+    let first = paths.first()?.parent()?.to_path_buf();
+    paths
+        .iter()
+        .all(|path| path.parent() == Some(first.as_path()))
+        .then_some(first)
+}
+
+fn next_available_path(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Archive");
+    let extension = path.extension().and_then(|value| value.to_str());
+
+    for attempt in 2.. {
+        let name = match extension {
+            Some(ext) if !ext.is_empty() => format!("{stem} ({attempt}).{ext}"),
+            _ => format!("{stem} ({attempt})"),
+        };
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
 }
 
 fn next_copy_path(destination: &Path) -> PathBuf {
@@ -17798,6 +18212,52 @@ mod tests {
                 &home
             ),
             Some("/var/log".to_string())
+        );
+    }
+
+    #[test]
+    fn archive_helpers_detect_supported_formats_and_output_names() {
+        assert_eq!(
+            archive_kind(Path::new("photos.zip")),
+            Some(ArchiveKind::Zip)
+        );
+        assert_eq!(
+            archive_kind(Path::new("backup.tar.gz")),
+            Some(ArchiveKind::Tar)
+        );
+        assert_eq!(
+            archive_kind(Path::new("bundle.7z")),
+            Some(ArchiveKind::SevenZip)
+        );
+        assert_eq!(archive_kind(Path::new("plain.gz")), None);
+
+        assert_eq!(
+            archive_output_folder_name(Path::new("backup.tar.gz")),
+            "backup"
+        );
+        assert_eq!(
+            archive_output_folder_name(Path::new("photos.zip")),
+            "photos"
+        );
+    }
+
+    #[test]
+    fn archive_destination_names_are_safe_and_predictable() {
+        assert_eq!(
+            suggested_archive_name(&[PathBuf::from("/tmp/Project Folder")]),
+            "Project Folder.zip"
+        );
+        assert_eq!(
+            suggested_archive_name(&[PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")]),
+            "Archive.zip"
+        );
+        assert_eq!(
+            common_parent(&[PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")]),
+            Some(PathBuf::from("/tmp"))
+        );
+        assert_eq!(
+            common_parent(&[PathBuf::from("/tmp/a.txt"), PathBuf::from("/var/b.txt")]),
+            None
         );
     }
 
