@@ -5631,13 +5631,14 @@ impl BrowserController {
                     gesture.set_state(gtk::EventSequenceState::Denied);
                     return;
                 }
+                // Claim immediately — prevents FlowBox rubber-band selection and click-selection
+                gesture.set_state(gtk::EventSequenceState::Claimed);
                 controller.current_drag_painted.borrow_mut().clear();
                 // Open a drag history accumulator — all strokes become one undo step
                 *controller.drag_history_accumulator.borrow_mut() = Some(Vec::new());
                 if let Some(child) = flow.child_at_pos(x as i32, y as i32) {
                     controller.set_active_pane(slot);
                     controller.dispatch_paint_tool(slot, child.index());
-                    gesture.set_state(gtk::EventSequenceState::Claimed);
                 }
             });
         }
@@ -5752,10 +5753,11 @@ impl BrowserController {
             {
                 return;
             }
+            // Claim immediately — prevents ListBox row selection
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             if let Some(row) = list_box.row_at_y(y as i32) {
                 controller.set_active_pane(slot);
                 controller.dispatch_paint_tool(slot, row.index());
-                gesture.set_state(gtk::EventSequenceState::Claimed);
             }
         });
         pane.file_grid.list_box.add_controller(paint_list_click);
@@ -7492,13 +7494,15 @@ impl BrowserController {
                     self.sync_show_shape_badges_button_state(slot);
                 }
             }
+            // Always start in cursor/select mode so paint mode is opt-in for each stroke
+            self.active_paint_tool.set(PaintTool::Cursor);
             let tints = self.metadata.borrow().list_tints().unwrap_or_default();
             self.painting_toolbar
                 .set_tints(&tints, self.active_paint_tint_id.get());
             self.painting_toolbar
                 .set_active_shape(self.active_paint_shape.get());
             self.painting_toolbar
-                .set_active_tool(self.active_paint_tool.get());
+                .set_active_tool(PaintTool::Cursor);
             self.painting_toolbar
                 .set_paint_contents(self.paint_contents.get());
             self.painting_toolbar
@@ -7521,8 +7525,18 @@ impl BrowserController {
             }
             {
                 let ctrl = Rc::clone(self);
-                self.painting_toolbar
-                    .connect_tool_changed(move |t| ctrl.active_paint_tool.set(t));
+                self.painting_toolbar.connect_tool_changed(move |t| {
+                    ctrl.active_paint_tool.set(t);
+                    // Cursor and FillSelection keep normal selection; stroke tools disable it
+                    // so dragging paints rather than rubber-band selects
+                    let sel_enabled =
+                        matches!(t, PaintTool::Cursor | PaintTool::FillSelection);
+                    for slot in ctrl.visible_slots() {
+                        ctrl.pane_widgets(slot)
+                            .file_grid
+                            .set_selection_enabled(sel_enabled);
+                    }
+                });
             }
             {
                 let ctrl = Rc::clone(self);
@@ -7553,8 +7567,9 @@ impl BrowserController {
             self.status
                 .set_message("🎨 Painting Mode — click files to apply marks or tags.");
         } else {
-            // Restore badge visibility for panes where paint mode auto-showed them
+            // Restore selection and badge state for all visible panes
             for slot in self.visible_slots() {
+                self.pane_widgets(slot).file_grid.set_selection_enabled(true);
                 if self.badges_hidden_by_paint_cell(slot).get() {
                     self.badges_hidden_by_paint_cell(slot).set(false);
                     self.show_shape_badges_cell(slot).set(false);

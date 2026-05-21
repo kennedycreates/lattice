@@ -321,6 +321,16 @@ impl FileGrid {
         });
     }
 
+    pub fn set_selection_enabled(&self, enabled: bool) {
+        let mode = if enabled {
+            gtk::SelectionMode::Multiple
+        } else {
+            gtk::SelectionMode::None
+        };
+        self.flow.set_selection_mode(mode);
+        self.list_box.set_selection_mode(mode);
+    }
+
     pub fn set_shape_badges_visible(&self, visible: bool) {
         if self.show_shape_badges.get() == visible {
             return;
