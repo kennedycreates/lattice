@@ -112,6 +112,7 @@ pub const BUILTIN_SHORTCUT_ACTIONS: &[(&str, Option<&str>)] = &[
     ("open_bulk_naming", None),
     ("open_convert", None),
     ("open_activity_log", None),
+    ("paint_cursor", Some("s")),
     ("paint_brush", Some("b")),
     ("paint_eraser", Some("e")),
     ("paint_eyedropper", Some("i")),
@@ -446,6 +447,7 @@ theme = "default"
 # open_bulk_naming = "Ctrl+Alt+N"
 # open_convert = "Ctrl+Alt+F"
 # open_activity_log = "Ctrl+Alt+J"
+# paint_cursor = "s"
 # paint_brush = "b"
 # paint_eraser = "e"
 # paint_eyedropper = "i"

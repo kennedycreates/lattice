@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PaintTool {
+    Cursor,
     #[default]
     Brush,
     Eraser,
@@ -63,6 +64,7 @@ struct Inner {
     tag_popover: Popover,
     mark_mode_btn: ToggleButton,
     tag_mode_btn: ToggleButton,
+    cursor_btn: ToggleButton,
     brush_btn: ToggleButton,
     eraser_btn: ToggleButton,
     eyedropper_btn: ToggleButton,
@@ -245,6 +247,10 @@ impl PaintingToolbar {
         bar.append(&sep1);
 
         // ── Tool buttons ───────────────────────────────────────────────
+        let cursor_btn = build_tool_toggle(
+            "↖",
+            &shortcut_tooltip(config, "Select (cursor)", "paint_cursor"),
+        );
         let brush_btn = build_tool_toggle("🖌", &shortcut_tooltip(config, "Brush", "paint_brush"));
         let eraser_btn =
             build_tool_toggle("◻", &shortcut_tooltip(config, "Eraser", "paint_eraser"));
@@ -257,11 +263,13 @@ impl PaintingToolbar {
             &shortcut_tooltip(config, "Fill Selection", "paint_fill"),
         );
 
+        cursor_btn.set_group(Some(&brush_btn));
         eraser_btn.set_group(Some(&brush_btn));
         eyedropper_btn.set_group(Some(&brush_btn));
         fill_btn.set_group(Some(&brush_btn));
         brush_btn.set_active(true);
 
+        bar.append(&cursor_btn);
         bar.append(&brush_btn);
         bar.append(&eraser_btn);
         bar.append(&eyedropper_btn);
@@ -322,6 +330,7 @@ impl PaintingToolbar {
             tag_popover: tag_popover.clone(),
             mark_mode_btn: mark_mode_btn.clone(),
             tag_mode_btn: tag_mode_btn.clone(),
+            cursor_btn: cursor_btn.clone(),
             brush_btn: brush_btn.clone(),
             eraser_btn: eraser_btn.clone(),
             eyedropper_btn: eyedropper_btn.clone(),
@@ -349,6 +358,7 @@ impl PaintingToolbar {
         }
 
         // Wire tool buttons
+        wire_tool_btn(&cursor_btn, PaintTool::Cursor, Rc::clone(&inner));
         wire_tool_btn(&brush_btn, PaintTool::Brush, Rc::clone(&inner));
         wire_tool_btn(&eraser_btn, PaintTool::Eraser, Rc::clone(&inner));
         wire_tool_btn(&eyedropper_btn, PaintTool::Eyedropper, Rc::clone(&inner));
@@ -570,6 +580,7 @@ impl PaintingToolbar {
     pub fn set_active_tool(&self, tool: PaintTool) {
         let inner = self.inner.borrow();
         let btn = match tool {
+            PaintTool::Cursor => &inner.cursor_btn,
             PaintTool::Brush => &inner.brush_btn,
             PaintTool::Eraser => &inner.eraser_btn,
             PaintTool::Eyedropper => &inner.eyedropper_btn,

@@ -302,6 +302,7 @@ enum WindowCommand {
     SetViewList,
     TogglePlanMode,
     TogglePaintMode,
+    PaintCursor,
     PaintBrush,
     PaintEraser,
     PaintEyedropper,
@@ -1120,6 +1121,10 @@ struct BrowserController {
     primary_duplicate_scan_pending: Cell<bool>,
     secondary_duplicate_scan_pending: Cell<bool>,
     tertiary_duplicate_scan_pending: Cell<bool>,
+    // Tracks whether paint mode auto-showed badges for a pane (so we can hide them on exit)
+    primary_badges_hidden_by_paint: Cell<bool>,
+    secondary_badges_hidden_by_paint: Cell<bool>,
+    tertiary_badges_hidden_by_paint: Cell<bool>,
     tint_css_provider: CssProvider,
 }
 
@@ -1308,6 +1313,9 @@ impl BrowserController {
             primary_duplicate_scan_pending: Cell::new(false),
             secondary_duplicate_scan_pending: Cell::new(false),
             tertiary_duplicate_scan_pending: Cell::new(false),
+            primary_badges_hidden_by_paint: Cell::new(false),
+            secondary_badges_hidden_by_paint: Cell::new(false),
+            tertiary_badges_hidden_by_paint: Cell::new(false),
             tint_css_provider: CssProvider::new(),
         })
     }
@@ -3755,9 +3763,13 @@ impl BrowserController {
         self.refresh_search_tag_buttons(PaneSlot::Primary);
         self.refresh_search_tag_buttons(PaneSlot::Secondary);
         self.refresh_search_tag_buttons(PaneSlot::Tertiary);
+        let tints = self.metadata.borrow().list_tints().unwrap_or_default();
         self.primary_pane.tag_filter.set_tags(&tags);
         self.secondary_pane.tag_filter.set_tags(&tags);
         self.tertiary_pane.tag_filter.set_tags(&tags);
+        self.primary_pane.tag_filter.set_tints(&tints);
+        self.secondary_pane.tag_filter.set_tints(&tints);
+        self.tertiary_pane.tag_filter.set_tints(&tints);
         self.update_sidebar_state();
     }
 
@@ -5613,7 +5625,9 @@ impl BrowserController {
             let controller = Rc::clone(&controller);
             let flow = flow.clone();
             paint_drag.connect_drag_begin(move |gesture, x, y| {
-                if !controller.paint_mode_active.get() {
+                if !controller.paint_mode_active.get()
+                    || controller.active_paint_tool.get() == PaintTool::Cursor
+                {
                     gesture.set_state(gtk::EventSequenceState::Denied);
                     return;
                 }
@@ -5733,7 +5747,9 @@ impl BrowserController {
         paint_list_click.set_button(1);
         paint_list_click.set_propagation_phase(gtk::PropagationPhase::Capture);
         paint_list_click.connect_pressed(move |gesture, _, _x, y| {
-            if !controller.paint_mode_active.get() {
+            if !controller.paint_mode_active.get()
+                || controller.active_paint_tool.get() == PaintTool::Cursor
+            {
                 return;
             }
             if let Some(row) = list_box.row_at_y(y as i32) {
@@ -6014,6 +6030,13 @@ impl BrowserController {
             WindowCommand::TogglePaintMode => {
                 self.set_paint_mode(!self.paint_mode_active.get());
                 true
+            }
+            WindowCommand::PaintCursor => {
+                if self.paint_mode_active.get() {
+                    self.active_paint_tool.set(PaintTool::Cursor);
+                    self.painting_toolbar.set_active_tool(PaintTool::Cursor);
+                }
+                self.paint_mode_active.get()
             }
             WindowCommand::PaintBrush => {
                 if self.paint_mode_active.get() {
@@ -6658,6 +6681,14 @@ impl BrowserController {
         }
     }
 
+    fn badges_hidden_by_paint_cell(&self, slot: PaneSlot) -> &Cell<bool> {
+        match slot {
+            PaneSlot::Primary => &self.primary_badges_hidden_by_paint,
+            PaneSlot::Secondary => &self.secondary_badges_hidden_by_paint,
+            PaneSlot::Tertiary => &self.tertiary_badges_hidden_by_paint,
+        }
+    }
+
     fn sort_field_cell(&self, slot: PaneSlot) -> &Cell<SortField> {
         match slot {
             PaneSlot::Primary => &self.primary_sort_field,
@@ -6723,6 +6754,8 @@ impl BrowserController {
     }
 
     fn set_show_shape_badges_for_slot(self: &Rc<Self>, slot: PaneSlot, show_badges: bool) {
+        // User explicitly changed state; cancel any paint-mode auto-show tracking
+        self.badges_hidden_by_paint_cell(slot).set(false);
         if self.show_shape_badges_cell(slot).get() == show_badges {
             self.sync_show_shape_badges_button_state(slot);
             return;
@@ -7450,6 +7483,15 @@ impl BrowserController {
         }
         self.painting_toolbar.set_reveal(active);
         if active {
+            // Auto-show mark badges in all visible panes so painted files are immediately visible
+            for slot in self.visible_slots() {
+                if !self.show_shape_badges_cell(slot).get() {
+                    self.badges_hidden_by_paint_cell(slot).set(true);
+                    self.show_shape_badges_cell(slot).set(true);
+                    self.pane_widgets(slot).file_grid.set_shape_badges_visible(true);
+                    self.sync_show_shape_badges_button_state(slot);
+                }
+            }
             let tints = self.metadata.borrow().list_tints().unwrap_or_default();
             self.painting_toolbar
                 .set_tints(&tints, self.active_paint_tint_id.get());
@@ -7511,6 +7553,15 @@ impl BrowserController {
             self.status
                 .set_message("🎨 Painting Mode — click files to apply marks or tags.");
         } else {
+            // Restore badge visibility for panes where paint mode auto-showed them
+            for slot in self.visible_slots() {
+                if self.badges_hidden_by_paint_cell(slot).get() {
+                    self.badges_hidden_by_paint_cell(slot).set(false);
+                    self.show_shape_badges_cell(slot).set(false);
+                    self.pane_widgets(slot).file_grid.set_shape_badges_visible(false);
+                    self.sync_show_shape_badges_button_state(slot);
+                }
+            }
             self.status.set_message("Painting Mode OFF.");
         }
     }
@@ -7545,12 +7596,14 @@ impl BrowserController {
         };
         match self.active_paint_type.get() {
             PaintType::Mark => match self.active_paint_tool.get() {
+                PaintTool::Cursor => {}
                 PaintTool::Brush => self.paint_brush_item(slot, &item),
                 PaintTool::Eraser => self.paint_eraser_item(slot, &item),
                 PaintTool::Eyedropper => self.paint_eyedropper_item(&item),
                 PaintTool::FillSelection => self.paint_fill_selection(slot),
             },
             PaintType::Tag => match self.active_paint_tool.get() {
+                PaintTool::Cursor => {}
                 PaintTool::Brush => self.paint_tag_brush_item(slot, &item),
                 PaintTool::Eraser => self.paint_tag_eraser_item(slot, &item),
                 PaintTool::Eyedropper => self.paint_tag_eyedropper_item(&item),
@@ -8612,6 +8665,19 @@ impl BrowserController {
         pane.view_mode_icon.set_icon_name(Some(vm_icon));
         self.sync_show_hidden_button_state(slot);
         self.sync_show_shape_badges_button_state(slot);
+
+        // When navigating while paint mode is active, keep badges in sync with paint-mode tracking
+        if self.paint_mode_active.get() {
+            if fvs.show_shape_badges {
+                // New folder already has badges on; clear auto-show tracking
+                self.badges_hidden_by_paint_cell(slot).set(false);
+            } else {
+                // New folder has badges off; auto-show for paint mode
+                self.badges_hidden_by_paint_cell(slot).set(true);
+                self.show_shape_badges_cell(slot).set(true);
+                self.sync_show_shape_badges_button_state(slot);
+            }
+        }
         let sort_icon = match sd {
             SortDirection::Descending => "view-sort-descending-symbolic",
             _ => "view-sort-ascending-symbolic",
@@ -15834,6 +15900,7 @@ fn builtin_command(action_id: &str) -> Option<WindowCommand> {
         "view_list" => Some(WindowCommand::SetViewList),
         "toggle_plan_mode" => Some(WindowCommand::TogglePlanMode),
         "toggle_paint_mode" => Some(WindowCommand::TogglePaintMode),
+        "paint_cursor" => Some(WindowCommand::PaintCursor),
         "paint_brush" => Some(WindowCommand::PaintBrush),
         "paint_eraser" => Some(WindowCommand::PaintEraser),
         "paint_eyedropper" => Some(WindowCommand::PaintEyedropper),
