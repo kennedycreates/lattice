@@ -1014,13 +1014,19 @@ struct TrayCompletion {
     clear_successful_paths: bool,
 }
 
+struct DriveState {
+    entry: DriveEntry,
+    mount: Option<gio::Mount>,
+    volume: Option<gio::Volume>,
+}
+
 struct BrowserController {
     window: ApplicationWindow,
     places: Places,
     metadata: RefCell<MetadataStore>,
     user_places: RefCell<Vec<PlaceRecord>>,
     cloud_locations: RefCell<Vec<CloudRecord>>,
-    removable_drives: RefCell<Vec<DriveEntry>>,
+    removable_drives: RefCell<Vec<DriveState>>,
     projects: RefCell<Vec<ProjectRecord>>,
     tags: RefCell<Vec<TagRecord>>,
     terminal_command: Option<Vec<OsString>>,
@@ -1695,13 +1701,11 @@ impl BrowserController {
             }
 
             let c = Rc::clone(&controller);
-            let id = glib::timeout_add_local_once(
-                std::time::Duration::from_millis(280),
-                move || {
+            let id =
+                glib::timeout_add_local_once(std::time::Duration::from_millis(280), move || {
                     c.path_box_debounce.borrow_mut().take();
                     c.run_path_box_search();
-                },
-            );
+                });
             *controller.path_box_debounce.borrow_mut() = Some(id);
         });
     }
@@ -1938,6 +1942,10 @@ impl BrowserController {
         volume_monitor.connect_mount_added(move |_, _| ctrl.refresh_drive_sidebar());
         let ctrl = Rc::clone(self);
         volume_monitor.connect_mount_removed(move |_, _| ctrl.refresh_drive_sidebar());
+        let ctrl = Rc::clone(self);
+        volume_monitor.connect_volume_added(move |_, _| ctrl.refresh_drive_sidebar());
+        let ctrl = Rc::clone(self);
+        volume_monitor.connect_volume_removed(move |_, _| ctrl.refresh_drive_sidebar());
     }
 
     fn open_convert_from_sidebar(self: &Rc<Self>) {
@@ -3937,14 +3945,171 @@ impl BrowserController {
     }
 
     fn refresh_drive_sidebar(self: &Rc<Self>) {
-        let drives = collect_removable_drives();
-        self.removable_drives.replace(drives.clone());
-        self.sidebar.set_removable_drives(&drives);
+        let states = collect_removable_drives();
+        let entries: Vec<DriveEntry> = states.iter().map(|s| s.entry.clone()).collect();
+        self.removable_drives.replace(states);
+        self.sidebar.set_removable_drives(&entries);
+
         for (entry, button) in self.sidebar.drive_buttons.borrow().clone() {
             let controller = Rc::clone(self);
-            let path = entry.path.clone();
-            button.connect_clicked(move |_| controller.navigate_to_active(path.clone()));
+            if entry.is_mounted {
+                let path = entry.path.clone().unwrap();
+                button.connect_clicked(move |_| controller.navigate_to_active(path.clone()));
+            } else {
+                let name = entry.name.clone();
+                button.connect_clicked(move |_| controller.mount_removable_by_name(name.clone()));
+            }
+
+            let controller = Rc::clone(self);
+            let entry_for_menu = entry.clone();
+            let gesture = gtk::GestureClick::new();
+            gesture.set_button(3);
+            gesture.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(widget) = gesture.widget() else {
+                    return;
+                };
+                controller.show_drive_context_menu(entry_for_menu.clone(), widget, x, y);
+            });
+            button.add_controller(gesture);
         }
+    }
+
+    fn mount_removable_by_name(self: &Rc<Self>, name: String) {
+        let volume = self
+            .removable_drives
+            .borrow()
+            .iter()
+            .find(|s| s.entry.name == name && !s.entry.is_mounted)
+            .and_then(|s| s.volume.clone());
+        let Some(volume) = volume else { return };
+        let mount_op = gio::MountOperation::new();
+        let controller = Rc::clone(self);
+        volume.mount(
+            gio::MountMountFlags::NONE,
+            Some(&mount_op),
+            None::<&gio::Cancellable>,
+            move |result| match result {
+                Ok(()) => {
+                    controller.refresh_drive_sidebar();
+                    controller.status.set_message("Drive mounted.");
+                }
+                Err(e) => controller.status.set_message(&format!("Mount failed: {e}")),
+            },
+        );
+    }
+
+    fn show_drive_context_menu(
+        self: &Rc<Self>,
+        entry: DriveEntry,
+        widget: impl IsA<gtk::Widget>,
+        x: f64,
+        y: f64,
+    ) {
+        let menu = GtkBox::new(Orientation::Vertical, 0);
+        menu.add_css_class("context-menu");
+
+        let make_item = |label: &str| -> Button {
+            let btn = Button::with_label(label);
+            btn.add_css_class("context-menu-item");
+            btn.set_halign(gtk::Align::Fill);
+            btn
+        };
+
+        let popover = Popover::new();
+        popover.add_css_class("context-popover");
+        popover.set_has_arrow(false);
+        popover.set_parent(widget.upcast_ref::<gtk::Widget>());
+        let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+        popover.set_pointing_to(Some(&rect));
+
+        if entry.is_mounted {
+            let mount = self
+                .removable_drives
+                .borrow()
+                .iter()
+                .find(|s| s.entry.name == entry.name && s.entry.is_mounted)
+                .and_then(|s| s.mount.clone());
+
+            if let Some(mount) = mount {
+                let unmount_btn = make_item("Unmount");
+                let eject_btn = if mount.can_eject() {
+                    Some(make_item("Eject"))
+                } else {
+                    None
+                };
+                menu.append(&unmount_btn);
+                if let Some(ref b) = eject_btn {
+                    menu.append(b);
+                }
+
+                let controller = Rc::clone(self);
+                let m = mount.clone();
+                let popover_c = popover.clone();
+                unmount_btn.connect_clicked(move |_| {
+                    popover_c.popdown();
+                    let controller = Rc::clone(&controller);
+                    let m = m.clone();
+                    m.unmount_with_operation(
+                        gio::MountUnmountFlags::NONE,
+                        None::<&gio::MountOperation>,
+                        None::<&gio::Cancellable>,
+                        move |result| match result {
+                            Ok(()) => {
+                                controller.refresh_drive_sidebar();
+                                controller.status.set_message("Drive unmounted.");
+                            }
+                            Err(e) => controller
+                                .status
+                                .set_message(&format!("Unmount failed: {e}")),
+                        },
+                    );
+                });
+
+                if let Some(eject_btn) = eject_btn {
+                    let controller = Rc::clone(self);
+                    let m = mount.clone();
+                    let popover_c = popover.clone();
+                    eject_btn.connect_clicked(move |_| {
+                        popover_c.popdown();
+                        let controller = Rc::clone(&controller);
+                        let m = m.clone();
+                        m.eject_with_operation(
+                            gio::MountUnmountFlags::NONE,
+                            None::<&gio::MountOperation>,
+                            None::<&gio::Cancellable>,
+                            move |result| match result {
+                                Ok(()) => {
+                                    controller.refresh_drive_sidebar();
+                                    controller.status.set_message("Drive ejected.");
+                                }
+                                Err(e) => {
+                                    controller.status.set_message(&format!("Eject failed: {e}"))
+                                }
+                            },
+                        );
+                    });
+                }
+            }
+        } else {
+            let mount_btn = make_item("Mount");
+            menu.append(&mount_btn);
+            let controller = Rc::clone(self);
+            let name = entry.name.clone();
+            let popover_c = popover.clone();
+            mount_btn.connect_clicked(move |_| {
+                popover_c.popdown();
+                controller.mount_removable_by_name(name.clone());
+            });
+        }
+
+        if menu.first_child().is_none() {
+            return;
+        }
+
+        popover.set_child(Some(&menu));
+        *self.context_popover.borrow_mut() = Some(popover.clone());
+        popover.popup();
     }
 
     fn open_cloud(self: &Rc<Self>, cloud_id: i64) {
@@ -15036,8 +15201,14 @@ impl BrowserController {
                         self.removable_drives
                             .borrow()
                             .iter()
-                            .find(|d| current.starts_with(&d.path))
-                            .map(|d| SidebarTarget::Drive(d.path.clone()))
+                            .find(|s| {
+                                s.entry
+                                    .path
+                                    .as_ref()
+                                    .map_or(false, |p| current.starts_with(p))
+                            })
+                            .and_then(|s| s.entry.path.clone())
+                            .map(SidebarTarget::Drive)
                     })
                     .or_else(|| {
                         current
@@ -17153,28 +17324,64 @@ struct RecentFolderListing {
     skipped_missing: usize,
 }
 
-fn collect_removable_drives() -> Vec<DriveEntry> {
+fn collect_removable_drives() -> Vec<DriveState> {
     let monitor = gio::VolumeMonitor::get();
-    let mut drives = Vec::new();
-    let mut seen_paths = std::collections::HashSet::new();
+    let mut states: Vec<DriveState> = Vec::new();
+    let mut seen_names = std::collections::HashSet::new();
+
+    // Pass 1: mounted removable mounts
     for mount in monitor.mounts() {
         let root = mount.root();
         let Some(path) = root.path() else { continue };
-        if !seen_paths.insert(path.clone()) {
+        let volume = mount.volume();
+        let is_removable = volume
+            .as_ref()
+            .and_then(|v| v.drive())
+            .map_or(false, |d| d.is_removable());
+        if !is_removable {
             continue;
         }
         let name = mount.name().to_string();
-        let is_removable = mount
-            .volume()
-            .and_then(|v| v.drive())
-            .map_or(false, |d| d.is_removable());
-        drives.push(DriveEntry {
-            name,
-            path,
-            is_removable,
+        seen_names.insert(name.clone());
+        states.push(DriveState {
+            entry: DriveEntry {
+                name,
+                path: Some(path),
+                is_removable: true,
+                is_mounted: true,
+            },
+            mount: Some(mount),
+            volume,
         });
     }
-    drives
+
+    // Pass 2: unmounted removable volumes (plugged in but not yet mounted)
+    for volume in monitor.volumes() {
+        if volume.get_mount().is_some() {
+            continue; // already handled in pass 1
+        }
+        let is_removable = volume.drive().map_or(false, |d| d.is_removable());
+        if !is_removable {
+            continue;
+        }
+        let name = volume.name().to_string();
+        if seen_names.contains(&name) {
+            continue;
+        }
+        seen_names.insert(name.clone());
+        states.push(DriveState {
+            entry: DriveEntry {
+                name,
+                path: None,
+                is_removable: true,
+                is_mounted: false,
+            },
+            mount: None,
+            volume: Some(volume),
+        });
+    }
+
+    states
 }
 
 fn collect_mounted_volume_items() -> MountedVolumeListing {

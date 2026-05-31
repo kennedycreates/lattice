@@ -355,6 +355,11 @@ headerbar windowcontrols button {
     padding-left: 12px;
 }
 
+.sidebar-button.drive-unmounted {
+    color: #6a5840;
+    font-style: italic;
+}
+
 .sidebar-note {
     color: #806040;
     font-size: 11px;

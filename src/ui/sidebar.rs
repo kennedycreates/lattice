@@ -31,8 +31,9 @@ pub enum SidebarTarget {
 #[derive(Clone, Debug)]
 pub struct DriveEntry {
     pub name: String,
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
     pub is_removable: bool,
+    pub is_mounted: bool,
 }
 
 #[derive(Clone)]
@@ -274,6 +275,9 @@ impl Sidebar {
         for drive in drives {
             let icon = if drive.is_removable { "🔌" } else { "💾" };
             let button = dynamic_button(icon, &drive.name);
+            if !drive.is_mounted {
+                button.add_css_class("drive-unmounted");
+            }
             self.drive_list.append(&button);
             buttons.push((drive.clone(), button));
         }
@@ -347,7 +351,11 @@ impl Sidebar {
         }
 
         for (drive, button) in self.drive_buttons.borrow().iter() {
-            if active == Some(&SidebarTarget::Drive(drive.path.clone())) {
+            let is_active = drive
+                .path
+                .as_ref()
+                .map_or(false, |p| active == Some(&SidebarTarget::Drive(p.clone())));
+            if is_active {
                 button.add_css_class("active");
             } else {
                 button.remove_css_class("active");
