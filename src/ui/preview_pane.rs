@@ -1,4 +1,5 @@
 use crate::metadata::{Shape, TagRecord};
+use crate::terroir_client::TerroirContext;
 use crate::ui::file_grid::FileKind;
 use crate::ui::mark_badge::make_shape_badge;
 use gtk::prelude::*;
@@ -76,6 +77,10 @@ pub struct PreviewPane {
     modified_row: MetaRow,
     dimensions_row: MetaRow,
     duration_row: MetaRow,
+    watercolor_workspace_row: MetaRow,
+    watercolor_palette_row: MetaRow,
+    watercolor_object_row: MetaRow,
+    watercolor_health_row: MetaRow,
     note_row: MetaRow,
 }
 
@@ -192,6 +197,10 @@ impl PreviewPane {
         let modified_row = MetaRow::build(&content);
         let dimensions_row = MetaRow::build(&content);
         let duration_row = MetaRow::build(&content);
+        let watercolor_workspace_row = MetaRow::build(&content);
+        let watercolor_palette_row = MetaRow::build(&content);
+        let watercolor_object_row = MetaRow::build(&content);
+        let watercolor_health_row = MetaRow::build(&content);
         let note_row = MetaRow::build(&content);
 
         let text_buffer = TextBuffer::new(None);
@@ -233,6 +242,10 @@ impl PreviewPane {
             modified_row,
             dimensions_row,
             duration_row,
+            watercolor_workspace_row,
+            watercolor_palette_row,
+            watercolor_object_row,
+            watercolor_health_row,
             note_row,
         };
         pane.show_current_folder("~", 0);
@@ -272,6 +285,87 @@ impl PreviewPane {
         }
     }
 
+    pub fn set_watercolor_context(&self, context: &TerroirContext) {
+        if context.workspaces.is_empty()
+            && context.palettes.is_empty()
+            && context.objects.is_empty()
+            && context.refs.is_empty()
+        {
+            self.clear_watercolor_context();
+            return;
+        }
+
+        if !context.workspaces.is_empty() {
+            self.watercolor_workspace_row.set(
+                "Watercolor Workspaces",
+                &join_limited(
+                    context
+                        .workspaces
+                        .iter()
+                        .map(|workspace| workspace.workspace_name.as_str()),
+                    3,
+                ),
+            );
+        } else {
+            self.watercolor_workspace_row.clear();
+        }
+
+        if !context.palettes.is_empty() {
+            self.watercolor_palette_row.set(
+                "Watercolor Palettes",
+                &join_limited(
+                    context
+                        .palettes
+                        .iter()
+                        .map(|palette| palette.palette_name.as_str()),
+                    4,
+                ),
+            );
+        } else {
+            self.watercolor_palette_row.clear();
+        }
+
+        if !context.objects.is_empty() {
+            let labels = context.objects.iter().map(|object| {
+                format!(
+                    "{} ({})",
+                    object.title,
+                    if object.object_type.is_empty() {
+                        "object"
+                    } else {
+                        object.object_type.as_str()
+                    }
+                )
+            });
+            self.watercolor_object_row
+                .set("Referenced By", &join_limited(labels, 4));
+        } else {
+            self.watercolor_object_row.clear();
+        }
+
+        if context.broken || context.health.as_deref() == Some("broken") {
+            self.watercolor_health_row.set(
+                "Watercolor Reference",
+                "Broken reference: .water mentions this path, but Terroir reports a missing target.",
+            );
+        } else {
+            self.watercolor_health_row.clear();
+        }
+    }
+
+    pub fn set_watercolor_unavailable(&self) {
+        self.clear_watercolor_context();
+        self.watercolor_health_row
+            .set("Watercolor Context", "Watercolor context unavailable.");
+    }
+
+    pub fn clear_watercolor_context(&self) {
+        self.watercolor_workspace_row.clear();
+        self.watercolor_palette_row.clear();
+        self.watercolor_object_row.clear();
+        self.watercolor_health_row.clear();
+    }
+
     pub fn set_identity(
         &self,
         tint_name: &str,
@@ -305,15 +399,6 @@ impl PreviewPane {
 
         self.tag_box.set_visible(!tags.is_empty());
         self.identity.set_visible(true);
-    }
-
-    #[allow(dead_code)]
-    pub fn set_duration(&self, duration: Option<&str>) {
-        if let Some(d) = duration {
-            self.duration_row.set("Duration", d);
-        } else {
-            self.duration_row.clear();
-        }
     }
 
     pub fn show_loading(&self, title: &str, kind: &FileKind, note: &str) {
@@ -459,6 +544,7 @@ impl PreviewPane {
         self.modified_row.clear();
         self.dimensions_row.clear();
         self.duration_row.clear();
+        self.clear_watercolor_context();
         self.note_row.clear();
     }
 
@@ -467,6 +553,30 @@ impl PreviewPane {
         clear_children(&self.tag_box);
         self.mark_label.set_label("");
         self.identity.set_visible(false);
+    }
+}
+
+fn join_limited<I, S>(values: I, limit: usize) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let values: Vec<String> = values
+        .into_iter()
+        .map(|value| value.as_ref().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    let shown = values
+        .iter()
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if values.len() > limit {
+        format!("{shown}, +{}", values.len() - limit)
+    } else {
+        shown
     }
 }
 

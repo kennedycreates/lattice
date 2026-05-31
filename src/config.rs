@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub struct AppConfig {
     pub theme: String,
+    pub enable_terroir_context: bool,
     pub shortcuts: HashMap<String, String>,
     pub context_menu: ContextMenuConfig,
     pub custom_actions: Vec<CustomActionConfig>,
@@ -30,6 +31,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: "default".to_string(),
+            enable_terroir_context: true,
             shortcuts: default_shortcuts(),
             context_menu: ContextMenuConfig::default(),
             custom_actions: Vec::new(),
@@ -207,6 +209,10 @@ fn parse_config(content: &str) -> AppConfig {
                         if !theme.is_empty() {
                             config.theme = theme;
                         }
+                    }
+                } else if key == "enable_terroir_context" {
+                    if let Some(value) = parse_bool(value) {
+                        config.enable_terroir_context = value;
                     }
                 }
             }
@@ -397,6 +403,10 @@ const EXAMPLE_CONFIG: &str = r#"# Lattice config
 # ~/.config/lattice/themes/<name>.css when present.
 theme = "default"
 
+# Show read-only Watercolor context from Terroir when the user daemon is available.
+# Lattice still launches normally when Terroir is missing or disabled.
+enable_terroir_context = true
+
 # Built-in keyboard shortcuts. Uncomment a line to override or add a binding.
 # Set a shortcut to "" to disable a default binding.
 # Supported key names include letters/digits, Delete, Backspace, Enter, Escape,
@@ -570,6 +580,7 @@ mod tests {
         let config = parse_config(
             r#"
 theme = "high-contrast"
+enable_terroir_context = false
 [shortcuts]
 custom.open_in_gimp = "Ctrl+Alt+G"
 [context_menu]
@@ -583,6 +594,7 @@ contexts = ["file"]
         );
 
         assert_eq!(config.theme, "high-contrast");
+        assert!(!config.enable_terroir_context);
         assert_eq!(
             config
                 .shortcuts

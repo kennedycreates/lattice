@@ -3,12 +3,14 @@ use crate::metadata::{CloudRecord, PlaceRecord};
 use gtk::prelude::*;
 use gtk::{Box, Button, Label, Orientation, Revealer, ScrolledWindow};
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarTarget {
     Home,
     Place(i64),
     Cloud(i64),
+    Drive(PathBuf),
     Search,
     BulkNaming,
     SpaceViewer,
@@ -20,6 +22,17 @@ pub enum SidebarTarget {
     Recent,
     Trash,
     Convert,
+    WatercolorStatus,
+    WatercolorWorkspaces,
+    WatercolorPalettes,
+    WatercolorBrokenRefs,
+}
+
+#[derive(Clone, Debug)]
+pub struct DriveEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_removable: bool,
 }
 
 #[derive(Clone)]
@@ -37,8 +50,15 @@ pub struct Sidebar {
     pub recent_button: Button,
     pub trash_button: Button,
     pub convert_button: Button,
+    watercolor_section: Box,
+    pub watercolor_status_button: Button,
+    pub watercolor_workspaces_button: Button,
+    pub watercolor_palettes_button: Button,
+    pub watercolor_broken_refs_button: Button,
     place_list: Box,
     place_buttons: RefCell<Vec<(PlaceRecord, Button)>>,
+    drive_list: Box,
+    pub drive_buttons: RefCell<Vec<(DriveEntry, Button)>>,
     cloud_list: Box,
     pub cloud_add_button: Button,
     pub rclone_setup_button: Button,
@@ -91,11 +111,20 @@ impl Sidebar {
             &trash_button,
             shortcut_tooltip(config, "Open Trash", "open_trash"),
         );
-        append_section(
-            &vbox,
-            "SYSTEM",
-            [&drives_button, &recent_button, &trash_button].as_slice(),
-        );
+
+        let system_section = Box::new(Orientation::Vertical, 0);
+        system_section.add_css_class("sidebar-section");
+        let (system_hdr, system_content_box, system_revealer) =
+            collapsible_section_header("SYSTEM");
+        system_content_box.append(&drives_button);
+        let drive_list = Box::new(Orientation::Vertical, 0);
+        drive_list.add_css_class("sidebar-dynamic-list");
+        system_content_box.append(&drive_list);
+        system_content_box.append(&recent_button);
+        system_content_box.append(&trash_button);
+        system_section.append(&system_hdr);
+        system_section.append(&system_revealer);
+        vbox.append(&system_section);
 
         // CLOUD section (dynamic, between SYSTEM and TOOLS)
         let cloud_section = Box::new(Orientation::Vertical, 0);
@@ -113,6 +142,23 @@ impl Sidebar {
         cloud_section.append(&cloud_hdr);
         cloud_section.append(&cloud_revealer);
         vbox.append(&cloud_section);
+
+        let watercolor_section = Box::new(Orientation::Vertical, 0);
+        watercolor_section.add_css_class("sidebar-section");
+        watercolor_section.set_visible(config.enable_terroir_context);
+        let (watercolor_hdr, watercolor_content_box, watercolor_revealer) =
+            collapsible_section_header("WATERCOLOR");
+        let watercolor_status_button = section_button("◌  Terroir Status", true);
+        let watercolor_workspaces_button = section_button("◌  Active/Known Workspaces", true);
+        let watercolor_palettes_button = section_button("◌  Watercolor Palettes", true);
+        let watercolor_broken_refs_button = section_button("◌  Broken References", true);
+        watercolor_content_box.append(&watercolor_status_button);
+        watercolor_content_box.append(&watercolor_workspaces_button);
+        watercolor_content_box.append(&watercolor_palettes_button);
+        watercolor_content_box.append(&watercolor_broken_refs_button);
+        watercolor_section.append(&watercolor_hdr);
+        watercolor_section.append(&watercolor_revealer);
+        vbox.append(&watercolor_section);
 
         let search_button = section_button("🔍  Search", true);
         crate::ui::attach_tooltip(
@@ -186,8 +232,15 @@ impl Sidebar {
             recent_button,
             trash_button,
             convert_button,
+            watercolor_section,
+            watercolor_status_button,
+            watercolor_workspaces_button,
+            watercolor_palettes_button,
+            watercolor_broken_refs_button,
             place_list,
             place_buttons: RefCell::new(Vec::new()),
+            drive_list,
+            drive_buttons: RefCell::new(Vec::new()),
             cloud_list,
             cloud_add_button,
             rclone_setup_button,
@@ -213,6 +266,18 @@ impl Sidebar {
 
     pub fn place_buttons(&self) -> Vec<(PlaceRecord, Button)> {
         self.place_buttons.borrow().clone()
+    }
+
+    pub fn set_removable_drives(&self, drives: &[DriveEntry]) {
+        clear_box(&self.drive_list);
+        let mut buttons = Vec::with_capacity(drives.len());
+        for drive in drives {
+            let icon = if drive.is_removable { "🔌" } else { "💾" };
+            let button = dynamic_button(icon, &drive.name);
+            self.drive_list.append(&button);
+            buttons.push((drive.clone(), button));
+        }
+        self.drive_buttons.replace(buttons);
     }
 
     pub fn set_cloud_locations(&self, locations: &[CloudRecord]) {
@@ -249,6 +314,22 @@ impl Sidebar {
             (&self.recent_button, SidebarTarget::Recent),
             (&self.trash_button, SidebarTarget::Trash),
             (&self.convert_button, SidebarTarget::Convert),
+            (
+                &self.watercolor_status_button,
+                SidebarTarget::WatercolorStatus,
+            ),
+            (
+                &self.watercolor_workspaces_button,
+                SidebarTarget::WatercolorWorkspaces,
+            ),
+            (
+                &self.watercolor_palettes_button,
+                SidebarTarget::WatercolorPalettes,
+            ),
+            (
+                &self.watercolor_broken_refs_button,
+                SidebarTarget::WatercolorBrokenRefs,
+            ),
         ] {
             if active == Some(&location) {
                 button.add_css_class("active");
@@ -265,6 +346,14 @@ impl Sidebar {
             }
         }
 
+        for (drive, button) in self.drive_buttons.borrow().iter() {
+            if active == Some(&SidebarTarget::Drive(drive.path.clone())) {
+                button.add_css_class("active");
+            } else {
+                button.remove_css_class("active");
+            }
+        }
+
         for (loc, button) in self.cloud_buttons.borrow().iter() {
             if active == Some(&SidebarTarget::Cloud(loc.id)) {
                 button.add_css_class("active");
@@ -272,6 +361,10 @@ impl Sidebar {
                 button.remove_css_class("active");
             }
         }
+    }
+
+    pub fn set_watercolor_visible(&self, visible: bool) {
+        self.watercolor_section.set_visible(visible);
     }
 }
 

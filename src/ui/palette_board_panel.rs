@@ -1,5 +1,5 @@
 use crate::metadata::{PaletteItemRecord, PaletteLinkRecord, Shape, TintRecord};
-use crate::ui::tints_tags_panel::{draw_polygon, draw_shape, parse_hex_color};
+use crate::ui::tints_tags_panel::{draw_shape, parse_hex_color};
 use gtk::cairo;
 use gtk::prelude::*;
 use gtk::{
@@ -9,7 +9,6 @@ use gtk::{
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::f64::consts::FRAC_PI_2;
 use std::rc::Rc;
 
 const CANVAS_W: i32 = 2400;
@@ -1050,13 +1049,4 @@ fn card_display_name(item: &PaletteItemRecord) -> String {
         "folder" => "Folder".to_string(),
         _ => "File".to_string(),
     }
-}
-
-// Silence unused import for FRAC_PI_2 brought in via draw_polygon
-#[allow(dead_code)]
-const _FRAC_PI_2: f64 = FRAC_PI_2;
-// Similarly silence draw_polygon if used only transitively
-#[allow(dead_code)]
-fn _use_helpers() {
-    let _ = draw_polygon;
 }

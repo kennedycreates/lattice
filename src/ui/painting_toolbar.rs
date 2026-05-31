@@ -8,6 +8,8 @@ use gtk::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+const DEFAULT_BEIGE_COLOR: &str = "#806040";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PaintTool {
     Cursor,
@@ -117,7 +119,8 @@ impl PaintingToolbar {
         bar.append(&sep0);
 
         // Shared color Rc — both the swatch draw func and Inner hold a clone.
-        let active_tint_color: Rc<RefCell<String>> = Rc::new(RefCell::new("#806040".to_string()));
+        let active_tint_color: Rc<RefCell<String>> =
+            Rc::new(RefCell::new(DEFAULT_BEIGE_COLOR.to_string()));
 
         // ── Mark section (tint + shape) ────────────────────────────────
         let mark_section = GtkBox::new(Orientation::Horizontal, 4);
@@ -462,7 +465,11 @@ impl PaintingToolbar {
             inner.tint_list.remove(&child);
         }
         for tint in tints {
-            let color = tint.color.as_deref().unwrap_or("#806040").to_string();
+            let color = tint
+                .color
+                .as_deref()
+                .unwrap_or(DEFAULT_BEIGE_COLOR)
+                .to_string();
             let row = GtkBox::new(Orientation::Horizontal, 6);
             row.set_margin_start(2);
             row.set_margin_end(2);
@@ -496,7 +503,7 @@ impl PaintingToolbar {
         }
 
         if let Some(t) = tints.iter().find(|t| t.id == active_id) {
-            let color = t.color.as_deref().unwrap_or("#806040");
+            let color = t.color.as_deref().unwrap_or(DEFAULT_BEIGE_COLOR);
             drop(inner);
             self.set_active_tint_display(color, &t.name);
         }

@@ -670,18 +670,6 @@ impl MediaConvertPanel {
         // Note: preset is applied via set_items which auto-selects based on file kinds.
         // The last_preset_image/audio/video are used there via best_preset_for_kind.
     }
-
-    #[allow(dead_code)]
-    pub fn reset_convert_button(&self) {
-        let items = self.state.items.borrow();
-        let presets = all_presets();
-        let preset = presets.get(self.state.selected_preset_idx.get());
-        let tools = self.state.tools.borrow();
-        let has_compatible = preset.map_or(false, |p| {
-            p.tool_available(&tools) && items.iter().any(|item| item.kind == p.kind)
-        });
-        self.state.convert_button.set_sensitive(has_compatible);
-    }
 }
 
 impl State {

@@ -2,8 +2,7 @@ use crate::metadata::{Shape, TagRecord, TintRecord};
 use crate::ui::file_grid::FileItem;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, DrawingArea, FlowBox, Label, Orientation, Separator,
-    ToggleButton,
+    Align, Box as GtkBox, Button, DrawingArea, FlowBox, Label, Orientation, Separator, ToggleButton,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -70,9 +69,7 @@ impl TagFilterSpec {
             }
         }
         // Tint filter (OR within selected tints)
-        if !self.active_tint_ids.is_empty()
-            && !self.active_tint_ids.contains(&item.mark_tint_id)
-        {
+        if !self.active_tint_ids.is_empty() && !self.active_tint_ids.contains(&item.mark_tint_id) {
             return false;
         }
         // Shape filter (OR within selected shapes)

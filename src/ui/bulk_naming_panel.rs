@@ -596,7 +596,7 @@ impl BulkNamingPanel {
         Self { root, state }
     }
 
-    pub fn set_scope(&self, _scope: &Path, recursive: bool, _home: &Path) {
+    pub fn set_scope(&self, recursive: bool) {
         self.state.recursive_toggle.set_active(recursive);
     }
 

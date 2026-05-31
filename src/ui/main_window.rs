@@ -7,6 +7,7 @@ use crate::metadata::{
     ActivityLogEntry, CloudRecord, FolderViewState, MetadataStore, PlaceRecord, ProjectRecord,
     Shape, TagRecord, TintRecord,
 };
+use crate::terroir_client;
 use crate::ui::{
     activity_log_panel::{ActivityLogAction, ActivityLogPanel},
     bulk_naming_panel::BulkNamingPanel,
@@ -28,13 +29,14 @@ use crate::ui::{
     project_landing_panel::ProjectLandingPanel,
     project_manager_panel::ProjectManagerPanel,
     search_panel::{SearchAgeFilter, SearchKindFilter, SearchPanel, SearchQuery, SearchSizeFilter},
-    sidebar::{Sidebar, SidebarTarget},
+    sidebar::{DriveEntry, Sidebar, SidebarTarget},
     space_viewer_panel::SpaceViewerPanel,
     status_bar::StatusBar,
     tab_strip::TabStrip,
     tag_filter::{TagFilterPanel, TagFilterSpec},
     tints_tags_panel::TintsTagsPanel,
     toolbar::Toolbar,
+    watercolor_panel::{WatercolorPanel, WatercolorPanelData, WatercolorPanelView},
 };
 use gdk_pixbuf::Pixbuf;
 use gio::prelude::*;
@@ -54,7 +56,7 @@ use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    mpsc, Arc,
 };
 
 const DIRECTORY_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::content-type,standard::is-hidden,standard::size,time::modified";
@@ -353,6 +355,15 @@ enum PaneView {
     CloudLanding(i64),
     ProjectManager,
     TagManager,
+    Watercolor(WatercolorView),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WatercolorView {
+    Status,
+    Workspaces,
+    Palettes,
+    BrokenRefs,
 }
 
 /// One file/folder change captured for undo/redo.
@@ -593,6 +604,7 @@ struct PaneWidgets {
     bulk_naming_panel: BulkNamingPanel,
     space_viewer_panel: SpaceViewerPanel,
     media_convert_panel: MediaConvertPanel,
+    watercolor_panel: WatercolorPanel,
 }
 
 impl PaneWidgets {
@@ -733,6 +745,7 @@ impl PaneWidgets {
         let bulk_naming_panel = BulkNamingPanel::build();
         let space_viewer_panel = SpaceViewerPanel::build();
         let media_convert_panel = MediaConvertPanel::build(config);
+        let watercolor_panel = WatercolorPanel::build();
 
         root.append(&header);
         root.append(&tag_filter_revealer);
@@ -748,6 +761,7 @@ impl PaneWidgets {
         root.append(&bulk_naming_panel.root);
         root.append(&space_viewer_panel.root);
         root.append(&media_convert_panel.root);
+        root.append(&watercolor_panel.root);
 
         Self {
             root,
@@ -778,6 +792,7 @@ impl PaneWidgets {
             bulk_naming_panel,
             space_viewer_panel,
             media_convert_panel,
+            watercolor_panel,
         }
     }
 }
@@ -1005,6 +1020,7 @@ struct BrowserController {
     metadata: RefCell<MetadataStore>,
     user_places: RefCell<Vec<PlaceRecord>>,
     cloud_locations: RefCell<Vec<CloudRecord>>,
+    removable_drives: RefCell<Vec<DriveEntry>>,
     projects: RefCell<Vec<ProjectRecord>>,
     tags: RefCell<Vec<TagRecord>>,
     terminal_command: Option<Vec<OsString>>,
@@ -1084,6 +1100,8 @@ struct BrowserController {
     tertiary_thumb_loader: crate::thumbnail::ThumbnailLoader,
     holding_tray_thumb_loader: crate::thumbnail::ThumbnailLoader,
     search_debounce: RefCell<Option<glib::SourceId>>,
+    path_box_debounce: RefCell<Option<glib::SourceId>>,
+    path_box_scope_dir: RefCell<Option<PathBuf>>,
     primary_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
     secondary_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
     tertiary_search_cancel: RefCell<Option<Arc<AtomicBool>>>,
@@ -1191,6 +1209,7 @@ impl BrowserController {
             metadata: RefCell::new(metadata),
             user_places: RefCell::new(Vec::new()),
             cloud_locations: RefCell::new(Vec::new()),
+            removable_drives: RefCell::new(Vec::new()),
             projects: RefCell::new(Vec::new()),
             tags: RefCell::new(Vec::new()),
             tabs: RefCell::new(vec![initial_tab]),
@@ -1271,6 +1290,8 @@ impl BrowserController {
             tertiary_thumb_loader: crate::thumbnail::ThumbnailLoader::new(),
             holding_tray_thumb_loader: crate::thumbnail::ThumbnailLoader::new(),
             search_debounce: RefCell::new(None),
+            path_box_debounce: RefCell::new(None),
+            path_box_scope_dir: RefCell::new(None),
             primary_search_cancel: RefCell::new(None),
             secondary_search_cancel: RefCell::new(None),
             tertiary_search_cancel: RefCell::new(None),
@@ -1344,6 +1365,7 @@ impl BrowserController {
         self.wire_tag_filters();
         self.connect_media_convert_actions();
         self.refresh_metadata_sidebar();
+        self.refresh_watercolor_sidebar_visibility();
         self.update_action_state();
         self.rebuild_tab_strip();
         self.sync_pane_layout_visibility();
@@ -1455,6 +1477,7 @@ impl BrowserController {
             .connect_activate(move |_| controller.navigate_from_path_entry());
 
         self.attach_path_completion();
+        self.attach_path_live_search();
 
         let controller = Rc::clone(self);
         let focus = gtk::EventControllerFocus::new();
@@ -1642,6 +1665,45 @@ impl BrowserController {
             glib::Propagation::Stop
         });
         self.toolbar.path_entry.add_controller(key_controller);
+    }
+
+    fn attach_path_live_search(self: &Rc<Self>) {
+        let controller = Rc::clone(self);
+        self.toolbar.path_entry.connect_changed(move |entry| {
+            let text = entry.text().to_string();
+
+            if let Some(id) = controller.path_box_debounce.borrow_mut().take() {
+                id.remove();
+            }
+
+            if text.is_empty() {
+                if let Some(dir) = controller.path_box_scope_dir.borrow_mut().take() {
+                    controller.navigate_to(controller.active_slot(), dir, false);
+                }
+                return;
+            }
+
+            if looks_like_explicit_path(&text) {
+                return;
+            }
+
+            let slot = controller.active_slot();
+            if let PaneView::Search(ref q) = controller.current_view_for(slot) {
+                if q.name == text && controller.path_box_scope_dir.borrow().is_some() {
+                    return;
+                }
+            }
+
+            let c = Rc::clone(&controller);
+            let id = glib::timeout_add_local_once(
+                std::time::Duration::from_millis(280),
+                move || {
+                    c.path_box_debounce.borrow_mut().take();
+                    c.run_path_box_search();
+                },
+            );
+            *controller.path_box_debounce.borrow_mut() = Some(id);
+        });
     }
 
     fn handle_window_key(
@@ -1845,6 +1907,22 @@ impl BrowserController {
         self.sidebar
             .convert_button
             .connect_clicked(move |_| controller.open_convert_from_sidebar());
+        let controller = Rc::clone(self);
+        self.sidebar
+            .watercolor_status_button
+            .connect_clicked(move |_| controller.open_watercolor(WatercolorView::Status));
+        let controller = Rc::clone(self);
+        self.sidebar
+            .watercolor_workspaces_button
+            .connect_clicked(move |_| controller.open_watercolor(WatercolorView::Workspaces));
+        let controller = Rc::clone(self);
+        self.sidebar
+            .watercolor_palettes_button
+            .connect_clicked(move |_| controller.open_watercolor(WatercolorView::Palettes));
+        let controller = Rc::clone(self);
+        self.sidebar
+            .watercolor_broken_refs_button
+            .connect_clicked(move |_| controller.open_watercolor(WatercolorView::BrokenRefs));
         // cloud_add_button and rclone_setup_button are persistent, so connect once here
         let controller = Rc::clone(self);
         self.sidebar
@@ -1854,6 +1932,12 @@ impl BrowserController {
         self.sidebar
             .rclone_setup_button
             .connect_clicked(move |_| controller.show_rclone_setup_dialog());
+
+        let volume_monitor = gio::VolumeMonitor::get();
+        let ctrl = Rc::clone(self);
+        volume_monitor.connect_mount_added(move |_, _| ctrl.refresh_drive_sidebar());
+        let ctrl = Rc::clone(self);
+        volume_monitor.connect_mount_removed(move |_, _| ctrl.refresh_drive_sidebar());
     }
 
     fn open_convert_from_sidebar(self: &Rc<Self>) {
@@ -2062,6 +2146,193 @@ impl BrowserController {
             self.rebuild_tab_strip();
         }
         self.load_activity_log_view(slot);
+    }
+
+    fn open_watercolor(self: &Rc<Self>, view: WatercolorView) {
+        let slot = self.active_slot();
+        if matches!(self.current_view_for(slot), PaneView::Watercolor(current) if current == view) {
+            return;
+        }
+        self.save_dir_to_history_if_in_directory(slot);
+        self.current_view_cell(slot)
+            .replace(PaneView::Watercolor(view.clone()));
+        self.sync_active_tab_state();
+        if slot == PaneSlot::Primary {
+            self.rebuild_tab_strip();
+        }
+        self.load_watercolor_view(slot, view);
+        self.update_navigation_state();
+    }
+
+    fn load_watercolor_view(self: &Rc<Self>, slot: PaneSlot, view: WatercolorView) {
+        self.cancel_active_load(slot);
+        if slot == self.active_slot() {
+            self.cancel_active_preview();
+        }
+        self.dismiss_context_menu();
+
+        let pane = self.pane_widgets(slot);
+        let display_label = watercolor_display_label(&view);
+        pane.path_label.set_label(display_label);
+        pane.file_grid.clear_selection();
+        self.reset_keyboard_state(slot);
+        self.items_cell(slot).borrow_mut().clear();
+        pane.watercolor_panel
+            .set_loading(&watercolor_panel_view(&view));
+        self.update_view_strip(slot);
+
+        if slot == self.active_slot() {
+            self.toolbar.set_breadcrumb_path(display_label);
+            self.toolbar.show_breadcrumb_mode();
+            self.status.set_path(display_label);
+            self.status
+                .set_message("Loading Watercolor context from Terroir.");
+            self.status.set_counts(0, 0);
+            self.update_sidebar_state();
+            self.update_navigation_state();
+            self.update_action_state();
+            self.preview.set_action_state(false, false, false);
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(fetch_watercolor_panel_data());
+        });
+
+        let controller = Rc::clone(self);
+        glib::timeout_add_local(std::time::Duration::from_millis(40), move || match receiver
+            .try_recv()
+        {
+            Ok(data) => {
+                if !matches!(controller.current_view_for(slot), PaneView::Watercolor(current) if current == view)
+                {
+                    return glib::ControlFlow::Break;
+                }
+
+                let open_controller = Rc::clone(&controller);
+                let on_open_path = move |path: PathBuf| {
+                    open_controller.open_watercolor_path(path);
+                };
+                let refresh_controller = Rc::clone(&controller);
+                let on_refresh = move || {
+                    refresh_controller.refresh_watercolor_context();
+                };
+
+                controller.pane_widgets(slot).watercolor_panel.populate(
+                    watercolor_panel_view(&view),
+                    &data,
+                    on_open_path,
+                    on_refresh,
+                );
+                if slot == controller.active_slot() {
+                    match &data.status {
+                        Ok(_) => controller.status.set_message("Watercolor context loaded."),
+                        Err(error) => controller
+                            .status
+                            .set_message(&format!("Watercolor context unavailable: {error}")),
+                    }
+                    controller.status.set_counts(data.workspaces.len(), 0);
+                    controller.update_action_state();
+                }
+                glib::ControlFlow::Break
+            }
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                controller
+                    .status
+                    .set_message("Watercolor context request failed.");
+                glib::ControlFlow::Break
+            }
+        });
+    }
+
+    fn open_watercolor_path(self: &Rc<Self>, path: PathBuf) {
+        if !path.exists() {
+            self.status.set_message(&format!(
+                "Watercolor reference is missing: {}",
+                path.display()
+            ));
+            return;
+        }
+
+        if path.is_dir() {
+            self.navigate_to(self.active_slot(), path, true);
+            return;
+        }
+
+        self.open_file(&path);
+    }
+
+    fn refresh_watercolor_context(self: &Rc<Self>) {
+        self.status
+            .set_message("Refreshing Watercolor context through Terroir.");
+        let current_view = match self.current_view_for(self.active_slot()) {
+            PaneView::Watercolor(view) => Some(view),
+            _ => None,
+        };
+        let slot = self.active_slot();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(terroir_client::reindex());
+        });
+
+        let controller = Rc::clone(self);
+        glib::timeout_add_local(std::time::Duration::from_millis(40), move || match receiver
+            .try_recv()
+        {
+            Ok(Ok(result)) => {
+                controller.status.set_message(&format!(
+                    "Watercolor context refreshed: indexed {} workspace(s), {} error(s).",
+                    result.indexed_workspaces, result.errors
+                ));
+                controller.refresh_watercolor_sidebar_visibility();
+                if let Some(view) = current_view.clone() {
+                    if matches!(controller.current_view_for(slot), PaneView::Watercolor(current) if current == view)
+                    {
+                        controller.load_watercolor_view(slot, view);
+                    }
+                }
+                glib::ControlFlow::Break
+            }
+            Ok(Err(error)) => {
+                controller.status.set_message(&format!(
+                    "Watercolor refresh unavailable: {}",
+                    terroir_error_message(&error)
+                ));
+                glib::ControlFlow::Break
+            }
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                controller.status.set_message("Watercolor refresh failed.");
+                glib::ControlFlow::Break
+            }
+        });
+    }
+
+    fn refresh_watercolor_sidebar_visibility(self: &Rc<Self>) {
+        let config_enabled = self.config.enable_terroir_context;
+        self.sidebar.set_watercolor_visible(config_enabled);
+
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let running = terroir_client::status().is_ok();
+            let has_workspaces = terroir_client::list_workspaces()
+                .map(|workspaces| !workspaces.is_empty())
+                .unwrap_or(false);
+            let _ = sender.send(running || has_workspaces);
+        });
+
+        let sidebar = self.sidebar.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(40), move || match receiver
+            .try_recv()
+        {
+            Ok(available) => {
+                sidebar.set_watercolor_visible(config_enabled || available);
+                glib::ControlFlow::Break
+            }
+            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+        });
     }
 
     fn open_project_manager(self: &Rc<Self>) {
@@ -3109,35 +3380,6 @@ impl BrowserController {
         self.load_project_landing_view(slot, project_id);
     }
 
-    #[allow(dead_code)]
-    fn send_holding_tray_to_project(self: &Rc<Self>, project_id: i64) {
-        let paths: Vec<PathBuf> = self
-            .holding_tray_items
-            .borrow()
-            .iter()
-            .map(|item| item.path.clone())
-            .collect();
-        if paths.is_empty() {
-            self.status
-                .set_message("No items in the holding tray to send.");
-            return;
-        }
-        self.send_paths_to_project(paths, project_id, ProjectTransferKind::Copy, None);
-    }
-
-    #[allow(dead_code)]
-    fn open_in_split(self: &Rc<Self>, requesting_slot: PaneSlot, path: PathBuf) {
-        let target_slot = if requesting_slot == PaneSlot::Primary {
-            PaneSlot::Secondary
-        } else {
-            PaneSlot::Primary
-        };
-        if !self.pane_layout.get().includes(target_slot) {
-            self.cycle_pane_layout();
-        }
-        self.navigate_to(target_slot, path, false);
-    }
-
     fn handle_activity_log_action(
         self: &Rc<Self>,
         action: ActivityLogAction,
@@ -3217,115 +3459,6 @@ impl BrowserController {
 
         self.context_popover.replace(Some(popover.clone()));
         popover.popup();
-    }
-
-    #[allow(dead_code)]
-    fn show_project_context_menu(
-        self: &Rc<Self>,
-        project: ProjectRecord,
-        anchor: gtk::Widget,
-        x: f64,
-        y: f64,
-    ) {
-        self.dismiss_context_menu();
-
-        let popover = Popover::new();
-        popover.add_css_class("context-menu");
-        popover.set_has_arrow(true);
-        popover.set_autohide(true);
-        popover.set_position(gtk::PositionType::Bottom);
-        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.set_parent(&anchor);
-
-        let menu_box = GtkBox::new(Orientation::Vertical, 2);
-        menu_box.set_margin_top(6);
-        menu_box.set_margin_bottom(6);
-        menu_box.set_margin_start(6);
-        menu_box.set_margin_end(6);
-        menu_box.set_size_request(190, -1);
-
-        append_menu_button(
-            &menu_box,
-            "Open Palette",
-            Some("document-open-symbolic"),
-            false,
-            {
-                let controller = Rc::clone(self);
-                let project_id = project.id;
-                move || controller.open_project(project_id)
-            },
-        );
-        append_menu_sep(&menu_box);
-        append_menu_button(
-            &menu_box,
-            "Delete Palette",
-            Some("list-remove-symbolic"),
-            true,
-            {
-                let controller = Rc::clone(self);
-                let project_id = project.id;
-                move || controller.handle_project_deleted(project_id)
-            },
-        );
-
-        popover.set_child(Some(&menu_box));
-
-        let controller = Rc::clone(self);
-        let popover_for_signal = popover.clone();
-        popover.connect_closed(move |_| {
-            let should_clear = controller
-                .context_popover
-                .borrow()
-                .as_ref()
-                .map(|current| current == &popover_for_signal)
-                .unwrap_or(false);
-            if should_clear {
-                controller.context_popover.borrow_mut().take();
-            }
-            popover_for_signal.unparent();
-        });
-
-        self.context_popover.replace(Some(popover.clone()));
-        popover.popup();
-    }
-
-    #[allow(dead_code)]
-    fn confirm_delete_project(self: &Rc<Self>, project_id: i64) {
-        let Some(project) = self
-            .projects
-            .borrow()
-            .iter()
-            .find(|p| p.id == project_id)
-            .cloned()
-        else {
-            return;
-        };
-
-        let controller = Rc::clone(self);
-        self.modal_host.show_confirm(
-            "Remove Palette",
-            &format!(
-                "Remove \u{201c}{}\u{201d} from Palettes? Pinned folders and files will not be deleted.",
-                project.name
-            ),
-            "Remove",
-            true,
-            false,
-            move || {
-                let _ = controller.metadata.borrow_mut().delete_project(project_id);
-                // Navigate away if currently viewing this palette's landing page
-                for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
-                    if matches!(controller.current_view_for(slot), PaneView::ProjectLanding(id) if id == project_id)
-                    {
-                        controller
-                            .current_view_cell(slot)
-                            .replace(PaneView::Directory(controller.places.home.clone()));
-                        controller.load_current_view(slot);
-                    }
-                }
-                controller.refresh_metadata_sidebar();
-            },
-        );
     }
 
     fn show_sort_popover(self: &Rc<Self>, slot: PaneSlot, anchor: gtk::Widget) {
@@ -3759,6 +3892,7 @@ impl BrowserController {
         }
 
         self.refresh_cloud_sidebar();
+        self.refresh_drive_sidebar();
 
         self.refresh_search_tag_buttons(PaneSlot::Primary);
         self.refresh_search_tag_buttons(PaneSlot::Secondary);
@@ -3799,6 +3933,17 @@ impl BrowserController {
                 controller.show_cloud_context_menu(loc_for_menu.clone(), widget, x, y);
             });
             button.add_controller(gesture);
+        }
+    }
+
+    fn refresh_drive_sidebar(self: &Rc<Self>) {
+        let drives = collect_removable_drives();
+        self.removable_drives.replace(drives.clone());
+        self.sidebar.set_removable_drives(&drives);
+        for (entry, button) in self.sidebar.drive_buttons.borrow().clone() {
+            let controller = Rc::clone(self);
+            let path = entry.path.clone();
+            button.connect_clicked(move |_| controller.navigate_to_active(path.clone()));
         }
     }
 
@@ -4908,7 +5053,7 @@ impl BrowserController {
         if slot == PaneSlot::Primary {
             self.rebuild_tab_strip();
         }
-        self.load_bulk_naming_items(slot, root, items, sibling_names, false);
+        self.load_bulk_naming_items(slot, items, sibling_names, false);
         self.update_navigation_state();
     }
 
@@ -5168,8 +5313,7 @@ impl BrowserController {
         let pane = self.pane_widgets(slot);
         pane.path_label.set_label(&display_label);
         pane.file_grid.clear_selection();
-        pane.bulk_naming_panel
-            .set_scope(&root, recursive, &self.places.home);
+        pane.bulk_naming_panel.set_scope(recursive);
         pane.bulk_naming_panel
             .set_loading("Loading files for Bulk Naming...");
         self.reset_keyboard_state(slot);
@@ -5216,7 +5360,7 @@ impl BrowserController {
                 return;
             }
             let items = controller.enrich_items(raw);
-            controller.finish_bulk_naming_load(slot, generation, root, items);
+            controller.finish_bulk_naming_load(slot, generation, items);
         });
     }
 
@@ -5224,7 +5368,6 @@ impl BrowserController {
         self: &Rc<Self>,
         slot: PaneSlot,
         generation: u64,
-        root: PathBuf,
         mut items: Vec<FileItem>,
     ) {
         if !self.is_current_load(slot, generation) {
@@ -5235,13 +5378,12 @@ impl BrowserController {
             self.sort_field_cell(slot).get(),
             self.sort_direction_cell(slot).get(),
         );
-        self.load_bulk_naming_items(slot, root, items, HashMap::new(), true);
+        self.load_bulk_naming_items(slot, items, HashMap::new(), true);
     }
 
     fn load_bulk_naming_items(
         self: &Rc<Self>,
         slot: PaneSlot,
-        root: PathBuf,
         items: Vec<FileItem>,
         sibling_names: HashMap<PathBuf, HashSet<String>>,
         recursive: bool,
@@ -5255,8 +5397,7 @@ impl BrowserController {
                 metadata.list_tags().unwrap_or_default(),
             )
         };
-        pane.bulk_naming_panel
-            .set_scope(&root, recursive, &self.places.home);
+        pane.bulk_naming_panel.set_scope(recursive);
         pane.bulk_naming_panel.set_reference_data(&tints, &tags);
         pane.bulk_naming_panel
             .set_items(items.clone(), sibling_names);
@@ -5368,6 +5509,7 @@ impl BrowserController {
         let is_bulk_naming = matches!(self.current_view_for(slot), PaneView::BulkNaming { .. });
         let is_space_viewer = matches!(self.current_view_for(slot), PaneView::SpaceViewer { .. });
         let is_media_convert = matches!(self.current_view_for(slot), PaneView::MediaConvert { .. });
+        let is_watercolor = matches!(self.current_view_for(slot), PaneView::Watercolor(_));
         pane.file_grid.root.set_visible(
             !is_activity_log
                 && !is_project_landing
@@ -5376,7 +5518,8 @@ impl BrowserController {
                 && !is_tag_manager
                 && !is_bulk_naming
                 && !is_space_viewer
-                && !is_media_convert,
+                && !is_media_convert
+                && !is_watercolor,
         );
         pane.activity_log_panel.root.set_visible(is_activity_log);
         pane.project_landing_panel
@@ -5393,6 +5536,7 @@ impl BrowserController {
         pane.bulk_naming_panel.root.set_visible(is_bulk_naming);
         pane.space_viewer_panel.root.set_visible(is_space_viewer);
         pane.media_convert_panel.root.set_visible(is_media_convert);
+        pane.watercolor_panel.root.set_visible(is_watercolor);
         if !is_space_viewer {
             pane.space_viewer_panel.cancel_scan();
         }
@@ -5497,6 +5641,12 @@ impl BrowserController {
                 pane.tag_filter_revealer.set_visible(false);
                 self.sync_filter_button_state(slot);
             }
+            PaneView::Watercolor(_) => {
+                pane.view_strip.set_visible(false);
+                pane.tag_filter_revealer.set_reveal_child(false);
+                pane.tag_filter_revealer.set_visible(false);
+                self.sync_filter_button_state(slot);
+            }
         }
     }
 
@@ -5521,6 +5671,7 @@ impl BrowserController {
             PaneView::MediaConvert { .. } => {
                 // Items are pre-loaded by open_media_convert_with_items; nothing to reload.
             }
+            PaneView::Watercolor(view) => self.load_watercolor_view(slot, view),
         }
     }
 
@@ -7303,6 +7454,14 @@ impl BrowserController {
         if file_type == gio::FileType::Unknown
             && !target_file.query_exists(None::<&gio::Cancellable>)
         {
+            if !looks_like_explicit_path(&raw_input) {
+                let slot = self.active_slot();
+                let mut query = SearchQuery::new(self.current_dir_for(slot));
+                query.name = raw_input;
+                query.recursive = false;
+                self.open_search(slot, query);
+                return;
+            }
             self.show_error_dialog(
                 "Path Not Found",
                 &format!("No file or folder exists at:\n\n{}", target_path.display()),
@@ -7356,12 +7515,18 @@ impl BrowserController {
     }
 
     fn begin_path_entry_editing(self: &Rc<Self>) {
-        let absolute = self
-            .current_dir_for(self.active_slot())
-            .display()
-            .to_string();
+        let slot = self.active_slot();
+        let text = if self.path_box_scope_dir.borrow().is_some() {
+            if let PaneView::Search(ref q) = self.current_view_for(slot) {
+                q.name.clone()
+            } else {
+                self.current_dir_for(slot).display().to_string()
+            }
+        } else {
+            self.current_dir_for(slot).display().to_string()
+        };
         self.toolbar.show_entry_mode();
-        self.toolbar.path_entry.set_text(&absolute);
+        self.toolbar.path_entry.set_text(&text);
         let entry = self.toolbar.path_entry.clone();
         glib::idle_add_local_once(move || {
             entry.grab_focus();
@@ -7370,11 +7535,21 @@ impl BrowserController {
     }
 
     fn finish_path_entry_editing(&self) {
+        if let Some(id) = self.path_box_debounce.borrow_mut().take() {
+            id.remove();
+        }
         self.sync_path_entry_to_display();
     }
 
-    fn cancel_path_entry_editing(&self) {
-        self.sync_path_entry_to_display();
+    fn cancel_path_entry_editing(self: &Rc<Self>) {
+        if let Some(id) = self.path_box_debounce.borrow_mut().take() {
+            id.remove();
+        }
+        if let Some(dir) = self.path_box_scope_dir.borrow_mut().take() {
+            self.navigate_to(self.active_slot(), dir, false);
+        } else {
+            self.sync_path_entry_to_display();
+        }
         self.pane_widgets(self.active_slot())
             .file_grid
             .flow
@@ -7490,7 +7665,9 @@ impl BrowserController {
                 if !self.show_shape_badges_cell(slot).get() {
                     self.badges_hidden_by_paint_cell(slot).set(true);
                     self.show_shape_badges_cell(slot).set(true);
-                    self.pane_widgets(slot).file_grid.set_shape_badges_visible(true);
+                    self.pane_widgets(slot)
+                        .file_grid
+                        .set_shape_badges_visible(true);
                     self.sync_show_shape_badges_button_state(slot);
                 }
             }
@@ -7501,8 +7678,7 @@ impl BrowserController {
                 .set_tints(&tints, self.active_paint_tint_id.get());
             self.painting_toolbar
                 .set_active_shape(self.active_paint_shape.get());
-            self.painting_toolbar
-                .set_active_tool(PaintTool::Cursor);
+            self.painting_toolbar.set_active_tool(PaintTool::Cursor);
             self.painting_toolbar
                 .set_paint_contents(self.paint_contents.get());
             self.painting_toolbar
@@ -7529,8 +7705,7 @@ impl BrowserController {
                     ctrl.active_paint_tool.set(t);
                     // Cursor and FillSelection keep normal selection; stroke tools disable it
                     // so dragging paints rather than rubber-band selects
-                    let sel_enabled =
-                        matches!(t, PaintTool::Cursor | PaintTool::FillSelection);
+                    let sel_enabled = matches!(t, PaintTool::Cursor | PaintTool::FillSelection);
                     for slot in ctrl.visible_slots() {
                         ctrl.pane_widgets(slot)
                             .file_grid
@@ -7569,11 +7744,15 @@ impl BrowserController {
         } else {
             // Restore selection and badge state for all visible panes
             for slot in self.visible_slots() {
-                self.pane_widgets(slot).file_grid.set_selection_enabled(true);
+                self.pane_widgets(slot)
+                    .file_grid
+                    .set_selection_enabled(true);
                 if self.badges_hidden_by_paint_cell(slot).get() {
                     self.badges_hidden_by_paint_cell(slot).set(false);
                     self.show_shape_badges_cell(slot).set(false);
-                    self.pane_widgets(slot).file_grid.set_shape_badges_visible(false);
+                    self.pane_widgets(slot)
+                        .file_grid
+                        .set_shape_badges_visible(false);
                     self.sync_show_shape_badges_button_state(slot);
                 }
             }
@@ -9002,7 +9181,8 @@ impl BrowserController {
                 | PaneView::ProjectManager
                 | PaneView::TagManager
                 | PaneView::SpaceViewer { .. }
-                | PaneView::MediaConvert { .. } => "",
+                | PaneView::MediaConvert { .. }
+                | PaneView::Watercolor(_) => "",
             });
 
         let display_path = match self.current_view_for(slot) {
@@ -9817,6 +9997,35 @@ impl BrowserController {
         true
     }
 
+    fn run_path_box_search(self: &Rc<Self>) {
+        let text = self.toolbar.path_entry.text().to_string();
+        if text.is_empty() || looks_like_explicit_path(&text) {
+            return;
+        }
+        let slot = self.active_slot();
+        let scope = {
+            let saved = self.path_box_scope_dir.borrow().clone();
+            match saved {
+                Some(dir) => dir,
+                None => {
+                    let dir = self.current_dir_for(slot);
+                    *self.path_box_scope_dir.borrow_mut() = Some(dir.clone());
+                    dir
+                }
+            }
+        };
+        let mut query = SearchQuery::new(scope);
+        query.name = text;
+        query.recursive = false;
+        self.open_search(slot, query);
+        let toolbar = self.toolbar.clone();
+        let entry = self.toolbar.path_entry.clone();
+        glib::idle_add_local_once(move || {
+            toolbar.show_entry_mode();
+            entry.grab_focus();
+        });
+    }
+
     fn open_search_in_current_dir(self: &Rc<Self>) {
         let slot = self.active_slot();
         if matches!(self.current_view_for(slot), PaneView::Search(_)) {
@@ -10610,6 +10819,16 @@ impl BrowserController {
             PaneView::MediaConvert { .. } => {
                 self.preview
                     .show_folder("Convert", display_label, None, None, "Media Conversion");
+                self.preview.set_action_state(false, false, false);
+            }
+            PaneView::Watercolor(view) => {
+                self.preview.show_folder(
+                    watercolor_tab_title(&view),
+                    display_label,
+                    None,
+                    None,
+                    "Watercolor",
+                );
                 self.preview.set_action_state(false, false, false);
             }
         }
@@ -12252,6 +12471,7 @@ impl BrowserController {
                         controller
                             .preview
                             .set_action_state(false, true, path.parent().is_some());
+                        controller.load_terroir_context_for_preview(generation, path.clone());
                     }
                     Err(error) => {
                         controller
@@ -12336,6 +12556,7 @@ impl BrowserController {
             self.preview
                 .set_identity(&tint_name, shape, tint_color.as_deref(), &tags);
             self.preview.set_action_state(true, true, true);
+            self.load_terroir_context_for_preview(generation, item.path.clone());
             return;
         }
 
@@ -12359,6 +12580,7 @@ impl BrowserController {
                 .set_identity(&tint_name, shape, tint_color.as_deref(), &tags);
             self.preview.set_mime_type(Some(mime));
             self.preview.set_action_state(true, true, true);
+            self.load_terroir_context_for_preview(generation, item.path.clone());
             return;
         }
 
@@ -12396,6 +12618,7 @@ impl BrowserController {
             .set_identity(&tint_name, shape, tint_color.as_deref(), &tags);
         self.preview.set_mime_type(Some(mime));
         self.preview.set_action_state(true, true, true);
+        self.load_terroir_context_for_preview(generation, item.path.clone());
     }
 
     fn load_text_preview(
@@ -12466,6 +12689,7 @@ impl BrowserController {
                         );
                         controller.preview.set_mime_type(Some(&mime));
                         controller.preview.set_action_state(true, true, true);
+                        controller.load_terroir_context_for_preview(generation, item.path.clone());
                     }
                     Err(error) => {
                         controller.preview.show_basic_file(
@@ -12487,10 +12711,47 @@ impl BrowserController {
                         );
                         controller.preview.set_mime_type(Some(&mime));
                         controller.preview.set_action_state(true, true, true);
+                        controller.load_terroir_context_for_preview(generation, item.path.clone());
                     }
                 }
             },
         );
+    }
+
+    fn load_terroir_context_for_preview(self: &Rc<Self>, generation: u64, path: PathBuf) {
+        if !self.config.enable_terroir_context {
+            self.preview.clear_watercolor_context();
+            return;
+        }
+
+        let (sender, receiver) = mpsc::channel::<
+            Result<crate::terroir_client::TerroirContext, terroir_client::TerroirError>,
+        >();
+        std::thread::spawn(move || {
+            let result =
+                terroir_client::status().and_then(|_| terroir_client::context_for_path(&path));
+            let _ = sender.send(result);
+        });
+
+        let controller = Rc::clone(self);
+        glib::timeout_add_local(std::time::Duration::from_millis(40), move || {
+            if !controller.is_current_preview(generation) {
+                return glib::ControlFlow::Break;
+            }
+
+            match receiver.try_recv() {
+                Ok(Ok(context)) => {
+                    controller.preview.set_watercolor_context(&context);
+                    glib::ControlFlow::Break
+                }
+                Ok(Err(_)) => {
+                    controller.preview.set_watercolor_unavailable();
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+            }
+        });
     }
 
     fn activate_index(self: &Rc<Self>, slot: PaneSlot, index: i32) {
@@ -14115,7 +14376,8 @@ impl BrowserController {
             | PaneView::ProjectManager
             | PaneView::TagManager
             | PaneView::SpaceViewer { .. }
-            | PaneView::MediaConvert { .. } => None,
+            | PaneView::MediaConvert { .. }
+            | PaneView::Watercolor(_) => None,
         }
     }
 
@@ -14753,6 +15015,16 @@ impl BrowserController {
             PaneView::BulkNaming { .. } => Some(SidebarTarget::BulkNaming),
             PaneView::SpaceViewer { .. } => Some(SidebarTarget::SpaceViewer),
             PaneView::MediaConvert { .. } => Some(SidebarTarget::Convert),
+            PaneView::Watercolor(WatercolorView::Status) => Some(SidebarTarget::WatercolorStatus),
+            PaneView::Watercolor(WatercolorView::Workspaces) => {
+                Some(SidebarTarget::WatercolorWorkspaces)
+            }
+            PaneView::Watercolor(WatercolorView::Palettes) => {
+                Some(SidebarTarget::WatercolorPalettes)
+            }
+            PaneView::Watercolor(WatercolorView::BrokenRefs) => {
+                Some(SidebarTarget::WatercolorBrokenRefs)
+            }
             PaneView::Directory(_) => {
                 let current = self.current_dir_for(self.active_slot());
                 self.user_places
@@ -14760,6 +15032,13 @@ impl BrowserController {
                     .iter()
                     .find(|place| current.starts_with(&place.folder_path))
                     .map(|place| SidebarTarget::Place(place.id))
+                    .or_else(|| {
+                        self.removable_drives
+                            .borrow()
+                            .iter()
+                            .find(|d| current.starts_with(&d.path))
+                            .map(|d| SidebarTarget::Drive(d.path.clone()))
+                    })
                     .or_else(|| {
                         current
                             .starts_with(&self.places.home)
@@ -15713,33 +15992,6 @@ fn should_queue_actions_state(plan_mode_active: bool, executing_plan_queue: bool
     plan_mode_active && !executing_plan_queue
 }
 
-#[allow(dead_code)]
-fn project_action_plan(
-    action: TrayProjectAction,
-    paths: &[PathBuf],
-    project_name: &str,
-    project_root: &Path,
-) -> ConfirmationPreview {
-    let verb = match action {
-        TrayProjectAction::Copy => "Copy",
-        TrayProjectAction::Move => "Move",
-    };
-    let mut lines = vec![
-        format!(
-            "{verb} {} staged item(s) to palette \"{project_name}\".",
-            paths.len()
-        ),
-        format!("Destination: {}", project_root.display()),
-    ];
-    lines.extend(plan_path_lines(paths));
-    ConfirmationPreview::new(
-        action.title(),
-        verb,
-        action == TrayProjectAction::Move,
-        lines,
-    )
-}
-
 fn tag_action_plan(paths: &[PathBuf], tag_name: &str) -> ConfirmationPreview {
     let mut lines = vec![format!(
         "Apply tag #{tag_name} to {} staged item(s).",
@@ -16067,6 +16319,7 @@ fn action_availability(
             | PaneView::CloudLanding(_)
             | PaneView::SpaceViewer { .. }
             | PaneView::MediaConvert { .. }
+            | PaneView::Watercolor(_)
     );
     let can_paste_files =
         has_file_clipboard && matches!(view, PaneView::Directory(_) | PaneView::Triage { .. });
@@ -16079,6 +16332,57 @@ fn action_availability(
         can_rename: selected_count > 0 && !read_only_mutation_view,
         can_trash: selected_count > 0 && !read_only_mutation_view,
         can_new_folder: matches!(view, PaneView::Directory(_) | PaneView::Triage { .. }),
+    }
+}
+
+fn watercolor_panel_view(view: &WatercolorView) -> WatercolorPanelView {
+    match view {
+        WatercolorView::Status => WatercolorPanelView::Status,
+        WatercolorView::Workspaces => WatercolorPanelView::Workspaces,
+        WatercolorView::Palettes => WatercolorPanelView::Palettes,
+        WatercolorView::BrokenRefs => WatercolorPanelView::BrokenRefs,
+    }
+}
+
+fn watercolor_tab_title(view: &WatercolorView) -> &'static str {
+    match view {
+        WatercolorView::Status => "Watercolor",
+        WatercolorView::Workspaces => "Watercolor Workspaces",
+        WatercolorView::Palettes => "Watercolor Palettes",
+        WatercolorView::BrokenRefs => "Broken References",
+    }
+}
+
+fn watercolor_display_label(view: &WatercolorView) -> &'static str {
+    match view {
+        WatercolorView::Status => "Watercolor Context",
+        WatercolorView::Workspaces => "Watercolor Workspaces",
+        WatercolorView::Palettes => "Watercolor Palettes",
+        WatercolorView::BrokenRefs => "Broken Watercolor References",
+    }
+}
+
+fn terroir_error_message(error: &terroir_client::TerroirError) -> String {
+    match error {
+        terroir_client::TerroirError::Unavailable(message)
+        | terroir_client::TerroirError::Protocol(message)
+        | terroir_client::TerroirError::Api(message) => message.clone(),
+    }
+}
+
+fn fetch_watercolor_panel_data() -> WatercolorPanelData {
+    let status = terroir_client::status().map_err(|error| terroir_error_message(&error));
+    let workspaces = terroir_client::list_workspaces().unwrap_or_default();
+    let palettes = terroir_client::list_palettes().unwrap_or_default();
+    let broken_refs = terroir_client::broken_refs().unwrap_or_default();
+    let doctor = terroir_client::doctor_summary().ok();
+
+    WatercolorPanelData {
+        status,
+        workspaces,
+        palettes,
+        broken_refs,
+        doctor,
     }
 }
 
@@ -16849,6 +17153,30 @@ struct RecentFolderListing {
     skipped_missing: usize,
 }
 
+fn collect_removable_drives() -> Vec<DriveEntry> {
+    let monitor = gio::VolumeMonitor::get();
+    let mut drives = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+    for mount in monitor.mounts() {
+        let root = mount.root();
+        let Some(path) = root.path() else { continue };
+        if !seen_paths.insert(path.clone()) {
+            continue;
+        }
+        let name = mount.name().to_string();
+        let is_removable = mount
+            .volume()
+            .and_then(|v| v.drive())
+            .map_or(false, |d| d.is_removable());
+        drives.push(DriveEntry {
+            name,
+            path,
+            is_removable,
+        });
+    }
+    drives
+}
+
 fn collect_mounted_volume_items() -> MountedVolumeListing {
     let monitor = gio::VolumeMonitor::get();
     let mut items = Vec::new();
@@ -17175,6 +17503,7 @@ fn tab_title_for_view(view: &PaneView, path: &Path) -> String {
             format!("Space: {folder}")
         }
         PaneView::MediaConvert { .. } => "Convert".to_string(),
+        PaneView::Watercolor(view) => watercolor_tab_title(view).to_string(),
     }
 }
 
@@ -17207,6 +17536,7 @@ fn view_display_label(view: &PaneView, home: &Path) -> String {
         PaneView::MediaConvert { from_dir } => {
             format!("Convert · {}", format_path(from_dir, home))
         }
+        PaneView::Watercolor(view) => watercolor_display_label(view).to_string(),
     }
 }
 
@@ -17312,6 +17642,10 @@ fn generate_tint_css(tints: &[TintRecord]) -> String {
 
 /// Returns true for GIO/GVfs remote URI schemes (sftp, ftp, smb, dav, davs, nfs, ssh, afp).
 /// Does NOT match file://, trash://, or other virtual GIO backends.
+fn looks_like_explicit_path(input: &str) -> bool {
+    input.starts_with('/') || input.starts_with('~') || input.contains('/') || is_gio_uri(input)
+}
+
 fn is_gio_uri(s: &str) -> bool {
     let scheme = s.split_once("://").map(|(s, _)| s).unwrap_or("");
     matches!(
@@ -17527,7 +17861,8 @@ fn pane_view_scope_dir(view: &PaneView) -> Option<PathBuf> {
         | PaneView::ProjectLanding(_)
         | PaneView::CloudLanding(_)
         | PaneView::ProjectManager
-        | PaneView::TagManager => None,
+        | PaneView::TagManager
+        | PaneView::Watercolor(_) => None,
     }
 }
 

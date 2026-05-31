@@ -25,6 +25,7 @@ pub mod tab_strip;
 pub mod tag_filter;
 pub mod tints_tags_panel;
 pub mod toolbar;
+pub mod watercolor_panel;
 
 use glib::SourceId;
 use gtk::prelude::*;

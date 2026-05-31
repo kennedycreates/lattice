@@ -20,6 +20,7 @@ Lattice is a powerful graphical GTK4 file manager for Linux, built with Rust. De
 
 **Workspace**
 - Tints, Shapes, and Marks: global color categories managed with a visual color picker plus fixed shape categories; every file/folder resolves to one Mark, defaulting to Beige + Square when no explicit mark exists. Tint glow stays visible while each pane can independently hide or show the small Shape badge overlay.
+- Optional read-only Watercolor context from Terroir: when the user-level Terroir daemon is available, the preview pane can show `.water` workspace references, clearly labeled Watercolor palettes, referencing object titles/types, and broken-reference warnings for the selected file or folder. A quiet Watercolor sidebar section can also show Terroir status, indexed workspaces, Watercolor palettes, and broken references. Lattice-local Palettes remain separate and unchanged.
 - **Painting Mode**: a dedicated paint-style marking mode toggled from the toolbar. When active, a compact tool strip appears with a Tint selector, Shape selector, and four tools — Brush (click or drag to mark files), Eraser (reset to Beige Square), Eyedropper (pick a mark from a file), and Fill Selection (mark all selected files at once). A Paint Contents toggle makes folder painting apply recursively; recursive operations show a confirmation dialog and run off the GTK main thread. All painting operations log to the Activity Log with counts and names ("Marked 12 items Cyan Triangle").
 - Tags: secondary text labels; create, rename, delete, and filter folder views by tag
 - **Palette Boards**: open any Palette to enter a spatial board — add file, folder, or note cards; move and resize cards freely; draw weak (dashed) or strong (solid) links between cards; all card geometry and links persist across sessions; removing a card never deletes the underlying file
@@ -89,6 +90,11 @@ Other Linux distributions may work if they provide equivalent GTK4, GIO/GVfs, UD
 **Optional — GVfs remote URI support** (`sftp://`, `smb://`, `ftp://`, `dav://` paths):
 - `gvfs-backends` (Ubuntu) / `gvfs-smb` (Arch) — SMB/SFTP/FTP/WebDAV support
 - `gvfs-fuse` (Arch) — needed on some systems for SFTP/FTP URIs
+
+**Optional — Watercolor context**
+- `terroird` from Terroir — exposes read-only `.water` context over `$XDG_RUNTIME_DIR/watercolor/terroir/terroir.sock`.
+- Lattice starts and works normally when Terroir is unavailable, slow, or has malformed `.water` files in its index.
+- Watercolor palettes shown by Terroir are labeled separately from Lattice-local Palettes. Lattice does not write `.water` files or migrate local Palette data.
 
 > **Rust version note:** `apt install cargo` on Ubuntu 22.04 LTS provides Rust 1.66, which is below the required 1.75. Ubuntu 24.04 LTS provides 1.75. If your distro Rust is too old, install via [rustup](https://rustup.rs/) instead: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
@@ -299,6 +305,7 @@ On first run, Lattice creates `~/.config/lattice/config.toml`.
 
 ```toml
 theme = "default" # or "high-contrast"
+enable_terroir_context = true
 
 [shortcuts]
 custom.open_in_gimp = "Ctrl+Alt+G"

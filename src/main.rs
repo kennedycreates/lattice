@@ -5,6 +5,7 @@ mod converter;
 mod launch;
 mod metadata;
 mod rclone;
+mod terroir_client;
 mod thumbnail;
 mod ui;
 mod view_state;
