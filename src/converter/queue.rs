@@ -12,9 +12,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 #[cfg(test)]
-use super::{command::MockRunner, ConversionPreset};
-#[cfg(test)]
-use std::path::PathBuf;
+use super::command::MockRunner;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -551,7 +549,7 @@ fn truncate(s: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::{ConversionJobStatus, OutputConflictPolicy, OutputLocationMode};
+    use crate::converter::ConversionJobStatus;
 
     // ── BatchProgress ─────────────────────────────────────────────────────────
 
@@ -745,7 +743,6 @@ mod tests {
     // Requires a thread with a running GLib default main context.
 
     fn make_test_jobs(dir: &std::path::Path, count: usize) -> Vec<ConversionJob> {
-        use std::path::PathBuf;
         let preset = crate::converter::preset_by_id("to_jpeg").unwrap();
         (0..count)
             .map(|i| {

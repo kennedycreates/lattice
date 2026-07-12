@@ -1,3 +1,14 @@
+// `type_complexity` and `too_many_arguments` fire constantly on idiomatic GTK
+// code — callback fields typed `RefCell<Option<Box<dyn Fn(..)>>>` and widget
+// builder/loader functions that take several callbacks. The suggested "fixes"
+// (a type alias per closure, a params struct per builder) tend to reduce
+// clarity here, so we allow these two crate-wide rather than scatter
+// suppressions. All other clippy lints are kept on.
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+
+#[macro_use]
+mod logging;
 mod action_plan;
 mod app;
 mod config;

@@ -11,7 +11,7 @@ Lattice is a powerful graphical GTK4 file manager for Linux, built with Rust. De
 - Sidebar: Home, user-pinned Places, System Drives, Recent, Trash, Cloud Drives, Palettes, Tints & Tags, Search, Space Viewer, Triage, Bulk Naming, and Activity Log
 
 **File Operations**
-- Copy, move, rename, visual bulk naming, new folder, new text document, add folders to Places from the right-click menu, compress to ZIP, extract common archive formats, and move to trash
+- Cut, copy, paste, move, rename, visual bulk naming, new folder, new text document, add folders to Places from the right-click menu, compress to ZIP, extract common archive formats, and move to trash
 - Batched conflict resolver before copy/move operations begin, with Keep Both, Replace, and Skip choices
 - Drag and drop within and between panes, and onto sidebar targets
 - Plan Mode queues file-affecting actions for review before execution: copy/move, drag/drop, rename, duplicate, bulk rename, new file/folder, trash, permanent delete, empty trash, trash restore, tag apply/remove, Mark apply/reset, path-copy receipts, and Palette send actions

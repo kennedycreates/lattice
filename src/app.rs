@@ -66,14 +66,14 @@ fn load_css(theme: &str) {
     if let Some(path) = find_theme(theme) {
         provider.load_from_path(&path);
     } else if theme != "default" {
-        eprintln!("lattice: theme '{theme}' not found, falling back to default");
+        log_warn!("theme '{theme}' not found, falling back to default");
         if let Some(path) = find_theme("default") {
             provider.load_from_path(&path);
         }
     }
 
     let Some(display) = gtk::gdk::Display::default() else {
-        eprintln!("lattice: could not connect to a display for CSS loading");
+        log_warn!("could not connect to a display for CSS loading");
         return;
     };
 
@@ -174,7 +174,7 @@ fn install_dev_assets() {
         return;
     }
 
-    let data_dir = PathBuf::from(glib::user_data_dir());
+    let data_dir = glib::user_data_dir();
 
     let icon_dest_dir = data_dir.join("icons/hicolor/256x256/apps");
     if fs::create_dir_all(&icon_dest_dir).is_ok() {

@@ -996,7 +996,7 @@ fn show_card_context_menu(
                 .borrow()
                 .iter()
                 .find(|i| i.id == other_id)
-                .map(|i| card_display_name(i))
+                .map(card_display_name)
                 .unwrap_or_else(|| format!("#{other_id}"));
             let link_label = format!("→ {} ({})", other_name, link.strength);
             let del_btn = Button::with_label(&link_label);

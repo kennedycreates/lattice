@@ -494,10 +494,11 @@ enable_terroir_context = true
 # menu for that context. Unknown entries are ignored.
 #
 # Shared item entries:
-#   separator, open, rename, bulk_rename, duplicate, copy_path,
+#   separator, open, cut, copy, paste, rename, bulk_rename, duplicate, copy_path,
 #   add_to_holding_tray, compress, terminal_here, send_to_project, add_tag,
 #   remove_tag, move_to_trash, delete_permanently, custom.<id>
 #   send_to_project is a legacy entry id; the visible action is Send to Palette.
+#   paste appears only when files are waiting on the internal file clipboard.
 #
 # File-only entries:
 #   open_with, convert, extract
@@ -507,21 +508,21 @@ enable_terroir_context = true
 #   pin_project is a legacy entry id; the visible action is Pin as Palette.
 #
 # Background entries:
-#   new_folder, new_text_document, pin_place, pin_project, terminal_here,
+#   new_folder, new_text_document, paste, pin_place, pin_project, terminal_here,
 #   copy_path, custom.<id>
 #
 # Conditional entries are skipped when they do not apply. For example,
 # bulk_rename appears only with two or more selected items and opens Bulk Naming;
 # open_in_pane adapts to the current pane layout; custom actions appear only in their contexts.
 [context_menu]
-# file = ["open", "open_with", "convert", "extract", "compress", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
-# folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "compress", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
-# background = ["new_folder", "new_text_document", "separator", "pin_place", "pin_project", "terminal_here", "copy_path"]
+# file = ["open", "open_with", "convert", "extract", "compress", "separator", "cut", "copy", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "compress", "separator", "cut", "copy", "paste", "separator", "add_to_holding_tray", "separator", "rename", "bulk_rename", "duplicate", "copy_path", "terminal_here", "separator", "pin_place", "pin_project", "send_to_project", "add_tag", "remove_tag", "separator", "move_to_trash", "delete_permanently"]
+# background = ["new_folder", "new_text_document", "paste", "separator", "pin_place", "pin_project", "terminal_here", "copy_path"]
 #
 # Example with custom actions inserted:
-# file = ["open", "open_with", "separator", "custom.open_in_gimp", "add_to_holding_tray", "separator", "rename", "copy_path", "terminal_here", "separator", "move_to_trash"]
-# folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "separator", "custom.compress_here", "pin_place", "pin_project", "terminal_here"]
-# background = ["new_folder", "new_text_document", "separator", "custom.open_terminal_at_selection", "terminal_here", "copy_path"]
+# file = ["open", "open_with", "separator", "custom.open_in_gimp", "cut", "copy", "add_to_holding_tray", "separator", "rename", "copy_path", "terminal_here", "separator", "move_to_trash"]
+# folder = ["open", "open_new_tab", "open_in_pane", "triage_folder", "separator", "custom.compress_here", "cut", "copy", "paste", "pin_place", "pin_project", "terminal_here"]
+# background = ["new_folder", "new_text_document", "paste", "separator", "custom.open_terminal_at_selection", "terminal_here", "copy_path"]
 
 # Custom actions never run through a shell. Each argv entry is passed as a
 # separate argument, so shell syntax such as pipes, globs, and "$VAR" is not
@@ -622,6 +623,9 @@ contexts = ["file"]
         for entry in [
             "open",
             "open_with",
+            "cut",
+            "copy",
+            "paste",
             "convert",
             "extract",
             "compress",

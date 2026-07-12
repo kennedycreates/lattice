@@ -736,7 +736,7 @@ mod tests {
         );
         // Temp dest likewise
         assert!(
-            args.last().map(|s| s.as_str()) == Some(&temp.to_string_lossy().as_ref()),
+            args.last().map(|s| s.as_str()) == Some(temp.to_string_lossy().as_ref()),
             "last arg should be temp dest"
         );
     }

@@ -354,7 +354,7 @@ impl Sidebar {
             let is_active = drive
                 .path
                 .as_ref()
-                .map_or(false, |p| active == Some(&SidebarTarget::Drive(p.clone())));
+                .is_some_and(|p| active == Some(&SidebarTarget::Drive(p.clone())));
             if is_active {
                 button.add_css_class("active");
             } else {

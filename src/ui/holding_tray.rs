@@ -20,6 +20,8 @@ pub struct HoldingTray {
     pub add_by_shape_button: Button,
     pub move_to_project_button: Button,
     pub copy_to_project_button: Button,
+    pub send_to_folder_button: Button,
+    pub copy_to_folder_button: Button,
     pub tag_button: Button,
     pub apply_mark_button: Button,
     pub reset_mark_button: Button,
@@ -78,6 +80,18 @@ impl HoldingTray {
             "edit-copy-symbolic",
         );
         header.append(&copy_to_project_host);
+
+        let (send_to_folder_button, send_to_folder_host) = action_button(
+            &shortcut_tooltip(config, "Move to current folder", "tray_move_to_folder"),
+            "go-jump-symbolic",
+        );
+        header.append(&send_to_folder_host);
+
+        let (copy_to_folder_button, copy_to_folder_host) = action_button(
+            &shortcut_tooltip(config, "Copy to current folder", "tray_copy_to_folder"),
+            "document-save-symbolic",
+        );
+        header.append(&copy_to_folder_host);
 
         let (tag_button, tag_host) = action_button(
             &shortcut_tooltip(config, "Tag tray", "tray_tag"),
@@ -149,6 +163,8 @@ impl HoldingTray {
             add_by_shape_button,
             move_to_project_button,
             copy_to_project_button,
+            send_to_folder_button,
+            copy_to_folder_button,
             tag_button,
             apply_mark_button,
             reset_mark_button,
@@ -230,6 +246,8 @@ impl HoldingTray {
         self.add_by_shape_button.set_sensitive(true);
         self.move_to_project_button.set_sensitive(sensitive);
         self.copy_to_project_button.set_sensitive(sensitive);
+        self.send_to_folder_button.set_sensitive(sensitive);
+        self.copy_to_folder_button.set_sensitive(sensitive);
         self.tag_button.set_sensitive(sensitive);
         self.apply_mark_button.set_sensitive(sensitive);
         self.reset_mark_button.set_sensitive(sensitive);
@@ -329,6 +347,26 @@ where
     let path = item.path.clone();
     remove_button.connect_clicked(move |_| on_remove(path.clone()));
     row.append(&remove_button);
+
+    // Drag-out: let the user drag a staged item into the file view or onto a
+    // folder card. The existing pane/folder drop targets deposit it into the
+    // current folder via the normal copy/move path.
+    let drag_source = gtk::DragSource::new();
+    drag_source.set_actions(gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE);
+    let drag_path = item.path.clone();
+    drag_source.connect_prepare(move |_, _, _| {
+        let files = [gtk::gio::File::for_path(&drag_path)];
+        let file_list = gtk::gdk::FileList::from_array(&files);
+        Some(gtk::gdk::ContentProvider::for_value(&file_list.to_value()))
+    });
+    let drag_name = item.name.clone();
+    drag_source.connect_drag_begin(move |_, drag| {
+        let preview = Label::new(Some(&drag_name));
+        preview.add_css_class("holding-tray-drag-preview");
+        let drag_icon = gtk::DragIcon::for_drag(drag);
+        drag_icon.set_child(Some(&preview));
+    });
+    row.add_controller(drag_source);
 
     let click_path = item.path.clone();
     let click_select = on_select.clone();

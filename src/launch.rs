@@ -24,7 +24,7 @@ impl LaunchConfig {
                         config.path = Some(PathBuf::from(&args[i + 1]));
                         i += 2;
                     } else {
-                        eprintln!("lattice: --path requires a folder argument");
+                        log_err!("--path requires a folder argument");
                         i += 1;
                     }
                 }
@@ -37,7 +37,7 @@ impl LaunchConfig {
                         config.project = Some(args[i + 1].clone());
                         i += 2;
                     } else {
-                        eprintln!("lattice: --project requires a palette name");
+                        log_err!("--project requires a palette name");
                         i += 1;
                     }
                 }
@@ -53,7 +53,7 @@ impl LaunchConfig {
                         }
                         config.split = Some(paths);
                     } else {
-                        eprintln!("lattice: --split requires two or three folder arguments");
+                        log_err!("--split requires two or three folder arguments");
                         i += 1;
                     }
                 }
@@ -133,16 +133,16 @@ impl PickerLaunchConfig {
             Some("save") => PickerSubcommand::SaveFile,
             other => {
                 if let Some(s) = other {
-                    eprintln!("lattice --picker: unknown subcommand '{s}'; expected open, open-files, folder, or save");
+                    log_err!("--picker: unknown subcommand '{s}'; expected open, open-files, folder, or save");
                 } else {
-                    eprintln!("lattice --picker: missing subcommand; expected open, open-files, folder, or save");
+                    log_err!("--picker: missing subcommand; expected open, open-files, folder, or save");
                 }
                 PickerSubcommand::OpenFile
             }
         };
 
         let rest = if args.is_empty() {
-            &args[..]
+            args
         } else {
             &args[1..]
         };
@@ -156,7 +156,7 @@ impl PickerLaunchConfig {
                         initial_path = Some(PathBuf::from(&rest[i + 1]));
                         i += 2;
                     } else {
-                        eprintln!("lattice --picker: --path requires a directory argument");
+                        log_err!("--picker: --path requires a directory argument");
                         i += 1;
                     }
                 }
@@ -165,7 +165,7 @@ impl PickerLaunchConfig {
                         suggested_name = Some(rest[i + 1].clone());
                         i += 2;
                     } else {
-                        eprintln!("lattice --picker: --name requires a filename argument");
+                        log_err!("--picker: --name requires a filename argument");
                         i += 1;
                     }
                 }
@@ -185,7 +185,7 @@ impl PickerLaunchConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{LaunchConfig, LaunchMode, PickerSubcommand};
+    use super::{LaunchConfig, PickerSubcommand};
     use std::path::PathBuf;
 
     fn args(values: &[&str]) -> Vec<String> {

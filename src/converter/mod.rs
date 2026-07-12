@@ -10,13 +10,6 @@ pub use command::cleanup_orphaned_temps_in;
 pub use queue::{BatchProgress, ConversionQueue};
 pub use settings::ConvertSettings;
 
-// Test-only re-exports (command execution internals used by integration tests).
-#[cfg(test)]
-pub use command::{
-    build_commands, build_ffprobe, cleanup_temp, finalize_output, temp_dest, CommandRunner,
-    CommandSpec, MockRunner, ProcessOutput, RealRunner, RunResult,
-};
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -300,12 +293,7 @@ pub fn detect_tools() -> ToolAvailability {
 }
 
 pub fn imagemagick_binary() -> Option<&'static str> {
-    for name in ["magick", "convert"] {
-        if probe_tool_real(name) {
-            return Some(name);
-        }
-    }
-    None
+    ["magick", "convert"].into_iter().find(|&name| probe_tool_real(name)).map(|v| v as _)
 }
 
 // ── MediaKind detection ───────────────────────────────────────────────────────
@@ -611,12 +599,10 @@ pub fn plan_batch(
 ) -> ConversionBatch {
     let tool_ok = avail.has(preset.tool);
     let mut reserved: HashSet<PathBuf> = HashSet::new();
-    let mut next_id: ConversionJobId = 0;
     let mut jobs = Vec::with_capacity(sources.len());
 
-    for source in sources {
-        let id = next_id;
-        next_id += 1;
+    for (index, source) in sources.iter().enumerate() {
+        let id = index as ConversionJobId;
 
         let ct = content_types.get(source).map(String::as_str);
         let kind = media_kind_from_path(source, ct);
@@ -1117,7 +1103,7 @@ mod tests {
         std::fs::write(&source, b"").unwrap();
         let preset = preset_by_id("to_jpeg").unwrap();
         let batch = plan_batch(
-            &[source.clone()],
+            std::slice::from_ref(&source),
             preset,
             OutputLocationMode::NextToSource,
             OutputConflictPolicy::AutoRename,

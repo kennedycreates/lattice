@@ -111,14 +111,15 @@ mod tests {
 
     #[test]
     fn round_trip_serialization() {
-        let mut vs = ViewState::default();
-        vs.sidebar_visible = false;
-        vs.preview_visible = false;
-        vs.view_mode = "list".to_string();
-        vs.show_hidden = true;
-        vs.show_shape_badges = false;
-        vs.sort_field = "modified".to_string();
-        vs.sort_direction = "descending".to_string();
+        let vs = ViewState {
+            sidebar_visible: false,
+            preview_visible: false,
+            view_mode: "list".to_string(),
+            show_hidden: true,
+            show_shape_badges: false,
+            sort_field: "modified".to_string(),
+            sort_direction: "descending".to_string(),
+        };
 
         // Serialize to string, then parse back via load logic.
         let content = format!(

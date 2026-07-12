@@ -5,8 +5,8 @@ use gio::FileType;
 use glib::SourceId;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, FlowBox, Label, ListBox, ListBoxRow, Orientation, Overlay, Picture, ScrolledWindow,
-    Stack,
+    Align, Box, DrawingArea, FlowBox, Label, ListBox, ListBoxRow, Orientation, Overlay, Picture,
+    ScrolledWindow, Stack,
 };
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -200,7 +200,7 @@ impl FileItem {
             return None;
         }
 
-        let child = parent.child(&info.name());
+        let child = parent.child(info.name());
         // For GVfs-mounted remotes, path() may be None when GVfs FUSE is not bridging
         // to the local filesystem. Fall back to the URI so the item is still browsable.
         let path = match child.path() {
@@ -218,8 +218,7 @@ impl FileItem {
             kind,
             size_bytes: (info.size() >= 0).then_some(info.size() as u64),
             modified_unix: info
-                .modification_date_time()
-                .and_then(|value| Some(value.to_unix())),
+                .modification_date_time().map(|value| value.to_unix()),
             tags: Vec::new(),
             original_path: None,
             mark_tint_id: 0,
@@ -238,6 +237,8 @@ pub struct FileGrid {
     pub list_box: ListBox,
     content_stack: Stack,
     empty_state: Label,
+    marquee: DrawingArea,
+    marquee_rect: Rc<Cell<Option<(f64, f64, f64, f64)>>>,
     pub view_mode: Cell<ViewMode>,
     show_shape_badges: Cell<bool>,
     thumb_targets: RefCell<Vec<ThumbnailTarget>>,
@@ -261,7 +262,12 @@ impl FileGrid {
         flow.set_homogeneous(true);
         flow.set_column_spacing(FILE_GRID_COLUMN_SPACING);
         flow.set_row_spacing(FILE_GRID_ROW_SPACING);
-        flow.set_valign(Align::Start);
+        // Fill the viewport vertically so the empty area below the last row still
+        // belongs to the FlowBox — the custom marquee gesture (in connect_pane) can
+        // then start a rubber-band selection from that dead space. Rows still
+        // top-pack because children keep their own valign.
+        flow.set_valign(Align::Fill);
+        flow.set_vexpand(true);
         flow.set_margin_top(FILE_GRID_MARGIN);
         flow.set_margin_bottom(FILE_GRID_MARGIN);
         flow.set_margin_start(FILE_GRID_MARGIN);
@@ -279,6 +285,9 @@ impl FileGrid {
         list_box.set_selection_mode(gtk::SelectionMode::Multiple);
         list_box.set_activate_on_single_click(false);
         list_box.set_can_focus(true);
+        // Fill the viewport so marquee drags can begin below the last row.
+        list_box.set_valign(Align::Fill);
+        list_box.set_vexpand(true);
         list_scroll.set_child(Some(&list_box));
 
         let content_stack = Stack::new();
@@ -293,9 +302,32 @@ impl FileGrid {
         empty_state.set_halign(Align::Center);
         empty_state.set_valign(Align::Center);
 
+        // Transparent overlay used only to paint the marquee selection rectangle.
+        // It never handles input (can_target=false) so drags/clicks pass through
+        // to the FlowBox/ListBox underneath.
+        let marquee = DrawingArea::new();
+        marquee.set_can_target(false);
+        marquee.add_css_class("marquee-overlay");
+        let marquee_rect: Rc<Cell<Option<(f64, f64, f64, f64)>>> = Rc::new(Cell::new(None));
+        {
+            let marquee_rect = marquee_rect.clone();
+            marquee.set_draw_func(move |_, cr, _, _| {
+                let Some((x, y, w, h)) = marquee_rect.get() else {
+                    return;
+                };
+                cr.rectangle(x, y, w, h);
+                cr.set_source_rgba(0.30, 0.55, 0.95, 0.20);
+                let _ = cr.fill_preserve();
+                cr.set_source_rgba(0.30, 0.55, 0.95, 0.90);
+                cr.set_line_width(1.0);
+                let _ = cr.stroke();
+            });
+        }
+
         let root = Overlay::new();
         root.set_child(Some(&content_stack));
         root.add_overlay(&empty_state);
+        root.add_overlay(&marquee);
 
         Self {
             root,
@@ -305,6 +337,8 @@ impl FileGrid {
             list_box,
             content_stack,
             empty_state,
+            marquee,
+            marquee_rect,
             view_mode: Cell::new(ViewMode::Icons),
             show_shape_badges: Cell::new(true),
             thumb_targets: RefCell::new(Vec::new()),
@@ -565,6 +599,77 @@ impl FileGrid {
                 }
             }
         }
+    }
+
+    /// Replace the current selection with exactly the given indices.
+    /// Used by the marquee gesture to apply rubber-band hits each drag update.
+    pub fn set_selected_indices(&self, indices: &[i32]) {
+        match self.view_mode.get() {
+            ViewMode::Icons => {
+                self.flow.unselect_all();
+                for &index in indices {
+                    if let Some(child) = self.flow.child_at_index(index) {
+                        self.flow.select_child(&child);
+                    }
+                }
+            }
+            ViewMode::List => {
+                self.list_box.unselect_all();
+                for &index in indices {
+                    if let Some(row) = self.list_box.row_at_index(index) {
+                        self.list_box.select_row(Some(&row));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Return the indices of items whose bounds intersect `rect`, expressed in the
+    /// active container's (FlowBox/ListBox) coordinate space.
+    pub fn children_in_rect(&self, rect: &gtk::graphene::Rect) -> Vec<i32> {
+        let mut hits = Vec::new();
+        match self.view_mode.get() {
+            ViewMode::Icons => {
+                let container: gtk::Widget = self.flow.clone().upcast();
+                let mut idx = 0;
+                while let Some(child) = self.flow.child_at_index(idx) {
+                    if let Some(bounds) = child.compute_bounds(&container) {
+                        if bounds.intersection(rect).is_some() {
+                            hits.push(idx);
+                        }
+                    }
+                    idx += 1;
+                }
+            }
+            ViewMode::List => {
+                let container: gtk::Widget = self.list_box.clone().upcast();
+                let mut idx = 0;
+                while let Some(row) = self.list_box.row_at_index(idx) {
+                    if let Some(bounds) = row.compute_bounds(&container) {
+                        if bounds.intersection(rect).is_some() {
+                            hits.push(idx);
+                        }
+                    }
+                    idx += 1;
+                }
+            }
+        }
+        hits
+    }
+
+    /// The widget of the active view's scrollable container, so callers can map
+    /// gesture coordinates to overlay coordinates via `compute_point`.
+    pub fn active_container(&self) -> gtk::Widget {
+        match self.view_mode.get() {
+            ViewMode::Icons => self.flow.clone().upcast(),
+            ViewMode::List => self.list_box.clone().upcast(),
+        }
+    }
+
+    /// Set (or clear) the marquee rectangle to paint, in `root`/overlay coordinates.
+    pub fn set_marquee_rect(&self, rect: Option<(f64, f64, f64, f64)>) {
+        self.marquee_rect.set(rect);
+        self.marquee.queue_draw();
     }
 
     pub fn focus_index(&self, index: i32) {

@@ -1295,7 +1295,7 @@ impl MetadataStore {
                 "DELETE FROM activity_log WHERE timestamp_ms < ?1",
                 params![cutoff_ms],
             )
-            .unwrap_or(0) as usize
+            .unwrap_or(0)
     }
 
     pub fn get_folder_view_state(&self, folder_path: &str) -> Option<FolderViewState> {

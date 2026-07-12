@@ -282,7 +282,7 @@ impl SearchPanel {
                 }
                 MarkChip::DefaultMark => query.default_mark_only,
                 MarkChip::Tint(id) => query.tint_id == Some(*id),
-                MarkChip::Shape(s) => query.shape.as_ref().map_or(false, |qs| qs == s),
+                MarkChip::Shape(s) => query.shape.as_ref() == Some(s),
             };
             set_chip_active(btn, active);
         }
