@@ -206,4 +206,3 @@ fn search_entry_kind(e: &SearchEntry, gio_type: gio::FileType) -> FileKind {
 
     kind
 }
-

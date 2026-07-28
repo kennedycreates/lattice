@@ -201,6 +201,48 @@ The xdg-desktop-portal FileChooser protocol returns results exclusively as `file
 > **This will not activate until you explicitly run the `--portal-config` step.**
 > Installing the system files alone does not change any desktop behavior.
 
+### Step 0 — Install the portal frontend and a fallback backend
+
+The Lattice backend only implements **FileChooser**. It must sit alongside a
+full portal frontend plus at least one backend that implements the other
+interfaces (Settings, ScreenCast, …). The GTK backend is the usual fallback and
+is what the generated `portals.conf` pairs Lattice with.
+
+```bash
+# Ubuntu/Pop!_OS
+sudo apt install xdg-desktop-portal xdg-desktop-portal-gtk
+
+# Arch/CachyOS/EndeavourOS
+sudo pacman -S xdg-desktop-portal xdg-desktop-portal-gtk
+
+# Fedora Workstation
+sudo dnf install xdg-desktop-portal xdg-desktop-portal-gtk
+
+# Void Linux
+sudo xbps-install dbus xdg-desktop-portal xdg-desktop-portal-gtk
+```
+
+The installer does **not** assume the GTK backend is present just because the
+frontend is. It checks for the `gtk` FileChooser descriptor and, if it is
+missing, warns you and writes Lattice without a fallback rather than silently
+breaking other portal apps. Install `xdg-desktop-portal-gtk` before opting in.
+
+### Startup mechanism: systemd vs runit (automatic)
+
+The backend must run **inside your graphical session** so it inherits
+`WAYLAND_DISPLAY`/`DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`, and
+`XDG_CURRENT_DESKTOP` — D-Bus auto-activation alone does not reliably propagate
+these. `install-portal.sh` detects the service manager (via `/run/systemd/system`)
+and picks the right mechanism automatically:
+
+- **systemd systems** → a `systemctl --user` service (`lattice-filechooser-portal.service`).
+- **runit / non-systemd systems (Void)** → a per-user **XDG autostart entry** at
+  `~/.config/autostart/lattice-filechooser-portal.desktop`, launched by the
+  graphical session with the full session environment. No `systemctl` is used or
+  required on these systems.
+
+See [Void / runit notes](#void--runit-notes-no-systemd) below for the Void path.
+
 ### Step 1 — Build release binaries
 
 ```bash
@@ -213,7 +255,8 @@ cargo build --release
 sudo ./scripts/install-portal.sh
 ```
 
-This installs the following and attempts to enable the systemd user service:
+This installs the following common files, then sets up startup with the
+mechanism this system has (systemd service **or** XDG autostart — see above):
 
 | File | Destination |
 |------|-------------|
@@ -221,18 +264,27 @@ This installs the following and attempts to enable the systemd user service:
 | `lattice-filechooser-portal` | `/usr/local/lib/lattice/lattice-filechooser-portal` |
 | `data/portals/lattice.portal` | `/usr/share/xdg-desktop-portal/portals/lattice.portal` |
 | D-Bus service file | `/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.lattice.service` |
-| Systemd service file | `/usr/lib/systemd/user/lattice-filechooser-portal.service` |
+| Startup (systemd) | `/usr/lib/systemd/user/lattice-filechooser-portal.service` |
+| Startup (runit/Void) | `~/.config/autostart/lattice-filechooser-portal.desktop` |
+
+Only the startup file for the detected service manager is installed.
 
 To skip the confirmation prompt: `sudo ./scripts/install-portal.sh --yes`
 
-**Why a systemd service?** xdg-desktop-portal needs to call the Lattice backend, which in turn spawns `lattice --picker` — a GTK window that requires `WAYLAND_DISPLAY` (or `DISPLAY`). D-Bus auto-activation does not reliably propagate display variables, so the portal backend runs as a systemd user service that starts after `graphical-session.target`, where the full session environment is available.
+**Why a session-scoped startup?** xdg-desktop-portal calls the Lattice backend, which spawns `lattice --picker` — a GTK window that requires `WAYLAND_DISPLAY` (or `DISPLAY`) and the session bus. D-Bus auto-activation does not reliably propagate those, so the backend is started **inside the graphical session** — via a `systemctl --user` service on systemd, or an XDG autostart entry on runit systems.
 
-**If the service did not enable automatically**, run these as your normal user:
+**On systemd, if the service did not enable automatically**, run these as your normal user:
 
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now lattice-filechooser-portal.service
 systemctl --user status lattice-filechooser-portal.service
+```
+
+**On Void/runit**, the autostart entry starts the backend at your next graphical login. To start it now without logging out, run in your desktop session (not via sudo):
+
+```sh
+setsid -f /usr/local/lib/lattice/lattice-filechooser-portal
 ```
 
 ### Step 3 — Opt in to the portal backend (no sudo)
@@ -268,17 +320,26 @@ If a `portals.conf` already exists, it is backed up to a timestamped `.bak` file
 ### Step 4 — Restart xdg-desktop-portal
 
 ```bash
+# systemd:
 systemctl --user restart xdg-desktop-portal
+
+# runit / Void (no systemctl) — it re-activates on the next portal call:
+pkill -x xdg-desktop-portal
 ```
 
 ### Step 5 — Verify
 
 ```bash
-# Service is running
-systemctl --user status lattice-filechooser-portal.service
-
-# Backend is on the session bus
+# Backend is on the session bus (works on any init):
 busctl --user list | grep lattice
+# ...or without busctl:
+dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply \
+  / org.freedesktop.DBus.ListNames | grep lattice
+
+# systemd only — service is running:
+systemctl --user status lattice-filechooser-portal.service
+# runit / Void — backend process is running:
+pgrep -af lattice-filechooser-portal
 
 # End-to-end test: should open the Lattice picker
 ./scripts/test-portal.sh
@@ -292,40 +353,143 @@ busctl --user list | grep lattice
 
 ```bash
 ./scripts/install-portal.sh --remove-portal-config
-systemctl --user restart xdg-desktop-portal
+systemctl --user restart xdg-desktop-portal   # systemd
+# or, on runit/Void:  pkill -x xdg-desktop-portal
 ```
 
 This deletes the generated `portals.conf` entirely; xdg-desktop-portal reverts to auto-detection.
 
-### Remove system files and disable service (sudo)
+### Remove system files and disable startup (sudo)
 
 ```bash
 sudo ./scripts/install-portal.sh --uninstall
 ```
 
-This disables the systemd user service, removes all five installed files, and removes `/usr/local/lib/lattice/` if empty. It does **not** touch `portals.conf`.
+This removes the installed files and, depending on the system, disables the
+systemd user service **or** removes the `~/.config/autostart` entry. It also
+removes `/usr/local/lib/lattice/` if empty. It does **not** touch `portals.conf`.
 
 ### Manual rollback
 
 ```bash
-# portals.conf — delete the generated file and restart:
+# portals.conf — delete the generated file and restart the portal:
 rm ~/.config/xdg-desktop-portal/portals.conf
-systemctl --user restart xdg-desktop-portal
+systemctl --user restart xdg-desktop-portal   # or: pkill -x xdg-desktop-portal
 
-# Systemd service:
+# Startup entry:
+#   systemd:
 systemctl --user disable --now lattice-filechooser-portal.service
+#   runit / Void:
+rm -f ~/.config/autostart/lattice-filechooser-portal.desktop
+pkill -x lattice-filechooser-portal
 
 # System files:
 sudo rm -f /usr/local/lib/lattice/lattice-filechooser-portal
 sudo rm -f /usr/share/xdg-desktop-portal/portals/lattice.portal
 sudo rm -f /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.lattice.service
-sudo rm -f /usr/lib/systemd/user/lattice-filechooser-portal.service
-systemctl --user daemon-reload
+sudo rm -f /usr/lib/systemd/user/lattice-filechooser-portal.service   # systemd only
 ```
 
 ---
 
 ## Troubleshooting
+
+### Fedora notes and SELinux
+
+The install destinations are the same on Fedora as elsewhere:
+
+```text
+/usr/local/lib/lattice/                          # lattice + portal binaries
+/usr/share/xdg-desktop-portal/portals/           # lattice.portal descriptor
+/usr/share/dbus-1/services/                       # D-Bus activation file
+/usr/lib/systemd/user/                            # systemd user service
+```
+
+Fedora ships portal packages via `dnf` (RPM), which `install-portal.sh` detects
+with `rpm -q` — Debian and Arch detection are unaffected.
+
+Fedora service and bus diagnostics:
+
+```bash
+systemctl --user status lattice-filechooser-portal.service
+systemctl --user status xdg-desktop-portal
+journalctl --user -b -u lattice-filechooser-portal.service
+journalctl --user -b -u xdg-desktop-portal
+busctl --user list | grep -E 'portal|lattice'
+```
+
+**SELinux:** Fedora runs SELinux in enforcing mode. If the portal backend or the
+picker it spawns is blocked, inspect the recent audit denials — **do not disable
+SELinux**:
+
+```bash
+sudo ausearch -m AVC -ts recent
+sudo journalctl -b -t setroubleshoot --no-pager
+```
+
+The Lattice binaries install to `/usr/local/lib/lattice/` and `/usr/local/bin/`,
+which normally carry a permissive `bin_t`/`usr_t` context. If you see denials
+tied to those paths, capture the AVC lines above and include them in your report
+rather than turning SELinux off.
+
+### Void / runit notes (no systemd)
+
+Void uses **runit**. There is no `systemctl --user` and no `journalctl`, so the
+systemd-oriented commands elsewhere in this doc do not apply. `install-portal.sh`
+detects this automatically and installs a per-user XDG autostart entry instead of
+a systemd unit.
+
+**Startup entry:** `~/.config/autostart/lattice-filechooser-portal.desktop`
+(installed by `sudo ./scripts/install-portal.sh`, removed by `--uninstall`).
+
+**A session bus is required.** GVfs and the portal need `DBUS_SESSION_BUS_ADDRESS`
+to be set. Full desktops (GNOME, XFCE, KDE) provide it; a minimal Wayland session
+usually needs to be launched with `dbus-run-session <compositor>`. Do **not** nest
+another `dbus-run-session` inside an already-working desktop. Also make sure the
+system `dbus` service is up: `sv status dbus` (enable with
+`sudo ln -s /etc/sv/dbus /var/service/`).
+
+**Minimal Wayland compositors** (sway, labwc) do not read XDG autostart. Start the
+backend from the compositor config instead:
+
+```sh
+# sway (~/.config/sway/config)
+exec /usr/local/lib/lattice/lattice-filechooser-portal
+
+# labwc (~/.config/labwc/autostart)
+/usr/local/lib/lattice/lattice-filechooser-portal &
+```
+
+**Start it now** (in your session, not via sudo):
+
+```sh
+setsid -f /usr/local/lib/lattice/lattice-filechooser-portal
+```
+
+**Diagnostics without systemctl/journalctl:**
+
+```sh
+echo "${DBUS_SESSION_BUS_ADDRESS:-missing}"
+echo "${XDG_RUNTIME_DIR:-missing}"
+echo "${WAYLAND_DISPLAY:-${DISPLAY:-missing}}"
+
+pgrep -af lattice-filechooser-portal
+pgrep -af xdg-desktop-portal
+
+busctl --user list 2>/dev/null | grep -E 'portal|lattice'
+# busctl unavailable? ask the bus directly:
+dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply \
+  / org.freedesktop.DBus.ListNames | grep -E 'portal|lattice'
+
+sv status dbus
+ls -l /var/service/dbus
+```
+
+**Logs:** run the backend in the foreground to capture its stderr —
+`/usr/local/lib/lattice/lattice-filechooser-portal 2>portal.log` — or read the
+terminal you launched it from. There is no journald on Void.
+
+The read-only helper `scripts/void-diagnostics.sh` collects all of the above.
 
 ### Check the Lattice portal service is running
 

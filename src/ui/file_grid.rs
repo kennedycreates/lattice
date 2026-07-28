@@ -217,8 +217,7 @@ impl FileItem {
             detail: None,
             kind,
             size_bytes: (info.size() >= 0).then_some(info.size() as u64),
-            modified_unix: info
-                .modification_date_time().map(|value| value.to_unix()),
+            modified_unix: info.modification_date_time().map(|value| value.to_unix()),
             tags: Vec::new(),
             original_path: None,
             mark_tint_id: 0,

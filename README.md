@@ -1,6 +1,6 @@
 # Lattice
 
-Lattice is a powerful graphical GTK4 file manager for Linux, built with Rust. Designed for media and computer professionals who constantly deal with file management. The supported distribution families are Ubuntu-based systems and Arch-based systems.
+Lattice is a powerful graphical GTK4 file manager for Linux, built with Rust. Designed for media and computer professionals who constantly deal with file management. The supported distribution families are Ubuntu-based systems, Arch-based systems, and Fedora Workstation.
 
 ## Features
 
@@ -60,6 +60,23 @@ Lattice is documented and supported for:
 
 - Ubuntu-based systems: Ubuntu, Pop!_OS, Linux Mint, and similar derivatives
 - Arch-based systems: Arch Linux, CachyOS, EndeavourOS, and similar derivatives
+- Fedora Workstation 43 and 44
+- Void Linux (x86_64 glibc)
+
+For Fedora specifically:
+
+- **Source builds and manual system-wide installs are supported by this repository**, and Fedora 43/44 compilation is checked continuously in CI (see [Continuous Integration](#continuous-integration)). CI verifies that Lattice *compiles* on Fedora's own Rust/GTK4 toolchain — it does not, and cannot, test graphical runtime behavior.
+- **Runtime behavior on Fedora must still be validated** through the Fedora test checklist in [docs/fedora-testing.md](docs/fedora-testing.md). No claim is made here that a full graphical Fedora runtime pass has been completed.
+- **Fedora Atomic variants (Silverblue, Kinoite, Sericea) are not covered** by the normal host installation instructions below. Their immutable `/usr` requires a different workflow (layering with `rpm-ostree`, a toolbox/distrobox dev container, or a Flatpak), which this repository does not yet provide.
+- Other RPM-based distributions (RHEL, openSUSE, etc.) are **not** automatically considered supported just because Fedora works.
+
+For Void Linux specifically (Void is rolling release — there is no numbered version; instructions target a fully updated current install):
+
+- **Void x86_64 glibc: source-build and manual-install support.** x86_64 glibc compilation is checked continuously in CI, and manual `/usr/local` installation works **without systemd** (Void uses runit). Runtime behavior must still be validated through [docs/void-testing.md](docs/void-testing.md).
+- **Void x86_64 musl: compile-checked / experimental.** musl compilation is exercised in CI but is informational only — no musl **runtime** support is claimed until it is tested on a real musl machine. If a dependency turns out to be musl-incompatible, the specific limitation will be documented rather than declaring Void musl broadly unsupported.
+- **Other Void architectures (aarch64, etc.) are not yet validated.** x86_64 working does not imply they do.
+- GVfs and the portal need a **graphical D-Bus user session**. Full desktop sessions (GNOME, XFCE, KDE) establish this automatically; a minimal custom Wayland session may need to be started via `dbus-run-session <compositor>`.
+- Being runit-based does **not** by itself make a distribution supported — this covers Void specifically.
 
 Other Linux distributions may work if they provide equivalent GTK4, GIO/GVfs, UDisks, Polkit, Rust, font, desktop-entry, and icon-cache packages, but they are not covered by this README.
 
@@ -77,26 +94,27 @@ Other Linux distributions may work if they provide equivalent GTK4, GIO/GVfs, UD
 **Optional — media conversion** (`🔄 Convert Media` sidebar tool):
 - `ffmpeg` — required for image, audio, and video conversion (most presets)
 - `imagemagick` — required for AVIF output only
+- On Fedora, the default `ffmpeg-free` package ships a **reduced codec set**. Common presets (JPEG/PNG/WebP, MP3, H.264 MP4) work, but some presets can legitimately fail with a "required codec is not available" message. Lattice reports the codec failure clearly in the Conversion Queue rather than pretending every preset will run. Install the full `ffmpeg` from [RPM Fusion](https://rpmfusion.org/) if you need the complete codec set.
 
 **Optional — archive actions** (right-click menu):
 - `zip` and `unzip` — create ZIP archives and extract ZIP/JAR/EPUB archives
 - `tar` — extract TAR, TAR.GZ, TGZ, TAR.XZ, and TAR.BZ2 archives
-- `7z` — extract 7-Zip and RAR archives
+- `7z` — extract 7-Zip and RAR archives (Ubuntu: `p7zip-full`; Arch: `p7zip`; Fedora/Void: `7zip`)
 
 **Optional — cloud drive mounting** (rclone Cloud entries):
 - `rclone` — install from https://rclone.org/install/ or your distro package
-- `fuse3` (Ubuntu) / `fuse2` (Arch) — provides `fusermount3`/`fusermount` for unmounting
+- `fuse3` (Ubuntu/Fedora/Void) / `fuse2` (Arch) — provides `fusermount3`/`fusermount` for unmounting
 
 **Optional — GVfs remote URI support** (`sftp://`, `smb://`, `ftp://`, `dav://` paths):
-- `gvfs-backends` (Ubuntu) / `gvfs-smb` (Arch) — SMB/SFTP/FTP/WebDAV support
-- `gvfs-fuse` (Arch) — needed on some systems for SFTP/FTP URIs
+- `gvfs-backends` (Ubuntu) / `gvfs-smb` (Arch/Fedora/Void) — SMB support (on Void, `sftp://`/`ftp://`/`dav://` are already in the base `gvfs` package)
+- `gvfs-fuse` (Arch/Fedora) — needed on some systems for SFTP/FTP URIs
 
 **Optional — Watercolor context**
 - `terroird` from Terroir — exposes read-only `.water` context over `$XDG_RUNTIME_DIR/watercolor/terroir/terroir.sock`.
 - Lattice starts and works normally when Terroir is unavailable, slow, or has malformed `.water` files in its index.
 - Watercolor palettes shown by Terroir are labeled separately from Lattice-local Palettes. Lattice does not write `.water` files or migrate local Palette data.
 
-> **Rust version note:** `apt install cargo` on Ubuntu 22.04 LTS provides Rust 1.66, which is below the required 1.75. Ubuntu 24.04 LTS provides 1.75. If your distro Rust is too old, install via [rustup](https://rustup.rs/) instead: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+> **Rust version note:** `apt install cargo` on Ubuntu 22.04 LTS provides Rust 1.66, which is below the required 1.75. Ubuntu 24.04 LTS provides 1.75. Fedora 43/44 and current Arch both ship a new-enough Rust/Cargo, so no `rustup` is needed there. If your distro Rust is too old, install via [rustup](https://rustup.rs/) instead: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
 ### Ubuntu-Based Dependencies
 
@@ -201,6 +219,189 @@ Optional filesystem support for removable or external drives:
 sudo pacman -Syu --needed exfatprogs dosfstools ntfs-3g btrfs-progs xfsprogs
 ```
 
+### Fedora Workstation Dependencies
+
+Fedora Workstation 43 and 44. Package names below were verified against Fedora 43/44 repositories.
+
+**1. Required to build and run:**
+
+```sh
+sudo dnf install -y \
+  gcc \
+  gcc-c++ \
+  make \
+  git \
+  rust \
+  cargo \
+  rustfmt \
+  pkgconf-pkg-config \
+  gtk4-devel \
+  glib2-devel \
+  desktop-file-utils \
+  gtk-update-icon-cache \
+  gvfs \
+  gvfs-fuse \
+  udisks2 \
+  polkit \
+  google-noto-sans-fonts \
+  google-noto-color-emoji-fonts \
+  jetbrains-mono-fonts
+```
+
+`pkgconf-pkg-config` provides the `pkg-config` command, `desktop-file-utils` provides `update-desktop-database`, and `gtk-update-icon-cache` is a standalone package on Fedora.
+
+**2. Recommended desktop integration:**
+
+```sh
+sudo dnf install -y gvfs-smb   # SMB/SFTP/FTP/WebDAV browsing via GVfs
+```
+
+Fedora's Rust and Cargo packages are current enough to build Lattice (well above the required Rust `1.75`), so `rustup` is not needed. This is the same toolchain the Fedora CI jobs use.
+
+**3. Optional — media conversion:**
+
+```sh
+sudo dnf install ffmpeg-free ImageMagick
+```
+
+`ffmpeg-free` is Fedora's default FFmpeg build and has a **reduced codec set** — see the media-conversion note under [Requirements](#requirements). For the full codec set, enable [RPM Fusion](https://rpmfusion.org/) and install `ffmpeg`.
+
+**4. Optional — archive support:**
+
+```sh
+sudo dnf install zip unzip 7zip
+```
+
+On Fedora the `7z` binary comes from the `7zip` package (not `p7zip`).
+
+**5. Optional — cloud / rclone support:**
+
+```sh
+sudo dnf install rclone fuse3
+```
+
+**6. Optional — experimental file-picker portal:**
+
+```sh
+sudo dnf install xdg-desktop-portal xdg-desktop-portal-gtk
+```
+
+`xdg-desktop-portal-gtk` provides the GTK FileChooser backend that Lattice's experimental portal uses as its fallback. See [docs/file_picker_portal.md](docs/file_picker_portal.md).
+
+Optional filesystem support for removable or external drives:
+
+```sh
+sudo dnf install exfatprogs dosfstools ntfs-3g btrfs-progs xfsprogs
+```
+
+### Void Linux Dependencies
+
+Void Linux is rolling release — there is no numbered version, so these instructions
+target a **fully updated current** install (x86_64 glibc). Package names were verified
+against the current Void repositories. Void uses **runit**, not systemd, and a graphical
+D-Bus session is required for GVfs and the portal (full desktops set this up; a minimal
+Wayland session may need `dbus-run-session <compositor>`).
+
+Update first. Void's own rule is to let XBPS update itself before installing anything,
+so do it in two steps:
+
+```sh
+sudo xbps-install -Suy xbps   # update the package manager first
+sudo xbps-install -Suy        # then update the rest of the system
+```
+
+**1. Required to compile:**
+
+```sh
+sudo xbps-install -S \
+  base-devel \
+  git \
+  rust \
+  cargo \
+  pkg-config \
+  gtk4-devel
+```
+
+Void's `rust` package ships `rustfmt` and `cargo-fmt`, so `cargo fmt` works with
+`rust` + `cargo` — there is no separate `rustfmt` package. `glib-devel`, `fontconfig`,
+and `shared-mime-info` are pulled in transitively by `gtk4-devel`, so you do not need
+to list them explicitly.
+
+**2. Required to run:**
+
+```sh
+sudo xbps-install -S \
+  gtk4 \
+  dbus \
+  gvfs \
+  udisks2 \
+  polkit
+```
+
+(If you built from source you already have `gtk4` via `gtk4-devel`.) A running `dbus`
+service and a graphical D-Bus session are needed for Trash, drives, and the portal.
+
+**3. Recommended desktop integration:**
+
+```sh
+sudo xbps-install -S \
+  desktop-file-utils \
+  gtk-update-icon-cache \
+  xdg-utils \
+  gsettings-desktop-schemas \
+  noto-fonts-ttf \
+  noto-fonts-emoji
+```
+
+`desktop-file-utils` provides `update-desktop-database`; `gtk-update-icon-cache` is a
+standalone package on Void; `noto-fonts-ttf` includes a monospace fallback (Noto Sans
+Mono).
+
+**4. Optional — remote / GVfs backends** (install only the backends you need — the base
+`gvfs` package already provides Trash and the `sftp://`, `ftp://`, `dav://`, and `davs://`
+backends):
+
+```sh
+sudo xbps-install gvfs-smb        # smb:// (Windows/Samba shares)
+sudo xbps-install gvfs-mtp        # MTP devices (phones)
+sudo xbps-install gvfs-gphoto2    # PTP cameras / some media players
+```
+
+**5. Optional — media conversion:**
+
+```sh
+sudo xbps-install ffmpeg ImageMagick
+```
+
+On current Void the concrete FFmpeg package is `ffmpeg6` (the `ffmpeg` name pulls it in);
+check `xbps-query -Rs ffmpeg` if the default version has since moved on.
+
+**6. Optional — archive support:**
+
+```sh
+sudo xbps-install zip unzip 7zip
+```
+
+On Void the `7z` binary comes from `7zip` (the old `p7zip` is a transitional dummy).
+
+**7. Optional — cloud / rclone support:**
+
+```sh
+sudo xbps-install rclone fuse3
+```
+
+`fuse3` provides `fusermount3` for unmounting rclone/FUSE mounts.
+
+**8. Optional — experimental file-picker portal:**
+
+```sh
+sudo xbps-install dbus xdg-desktop-portal xdg-desktop-portal-gtk
+```
+
+`xdg-desktop-portal-gtk` provides the GTK FileChooser backend Lattice uses as its
+fallback. On Void the portal backend starts via an **XDG autostart entry**, not a systemd
+unit — see [docs/file_picker_portal.md](docs/file_picker_portal.md).
+
 ## Build From Source
 
 ```sh
@@ -213,15 +414,48 @@ The release binary is written to `target/release/lattice`.
 
 ## Install
 
-Build first:
+The same install path works on Ubuntu, Arch, and Fedora — it installs only
+Lattice's own files and does not touch user data or change your default file
+manager.
+
+### Recommended: centralized installer
+
+Build first, then run the installer:
 
 ```sh
 cargo build --release
+sudo ./scripts/install-system.sh
 ```
 
-Then install for all users:
+`scripts/install-system.sh`:
+
+- installs the binary, desktop entry, application icon, and bundled themes under `/usr/local` (override with `--prefix`),
+- refreshes the desktop metadata and icon cache,
+- prints every destination it writes,
+- never touches `~/.config`, `~/.local/share`, or `~/.cache`, and never sets a default file manager.
+
+To remove exactly those files later:
 
 ```sh
+sudo ./scripts/install-system.sh --uninstall
+```
+
+**Fedora icon-cache note:** a freedesktop icon-theme directory must contain an
+`index.theme`. Under `/usr/local` (which has no distro-provided hicolor
+`index.theme`), running `gtk-update-icon-cache` bare fails with an
+"index.theme not found" error on a fresh Fedora layout. The installer fixes the
+cause — it writes a minimal valid `index.theme` (marked, and removed again on
+uninstall) before refreshing the cache — rather than hiding the error. The icon
+lands at `/usr/local/share/icons/hicolor/256x256/apps/lattice.png` and resolves
+as `Icon=lattice`.
+
+### Manual install (equivalent steps)
+
+If you prefer to run the steps yourself:
+
+```sh
+cargo build --release
+
 sudo install -m 755 target/release/lattice /usr/local/bin/lattice
 
 sudo install -Dm 644 com.lattice.filemanager.desktop \
@@ -238,7 +472,14 @@ sudo install -Dm 644 themes/high-contrast.css \
   /usr/local/share/lattice/themes/high-contrast.css
 
 sudo update-desktop-database /usr/local/share/applications/
-sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
+
+# Fedora/fresh-prefix safe icon cache: ensure a hicolor index.theme exists so
+# gtk-update-icon-cache does not fail with "index.theme not found".
+if [ ! -f /usr/local/share/icons/hicolor/index.theme ]; then
+  printf '[Icon Theme]\nName=Hicolor\nHidden=true\nDirectories=256x256/apps\n\n[256x256/apps]\nSize=256\nContext=Applications\nType=Fixed\n' \
+    | sudo tee /usr/local/share/icons/hicolor/index.theme >/dev/null
+fi
+sudo gtk-update-icon-cache -f -t /usr/local/share/icons/hicolor/
 ```
 
 Make sure `/usr/local/bin` is in your `PATH`:
@@ -473,12 +714,18 @@ Lattice uses font stacks rather than requiring a single UI font. The bundled the
 Install the recommended runtime fonts:
 
 ```sh
-# Ubuntu-based
+# Ubuntu/Pop!_OS
 sudo apt update
 sudo apt install fonts-dejavu-core fonts-jetbrains-mono fonts-noto-color-emoji fonts-noto-core
 
-# Arch-based
+# Arch/CachyOS/EndeavourOS
 sudo pacman -Syu --needed noto-fonts noto-fonts-emoji ttf-jetbrains-mono
+
+# Fedora Workstation
+sudo dnf install google-noto-sans-fonts google-noto-color-emoji-fonts jetbrains-mono-fonts
+
+# Void Linux
+sudo xbps-install noto-fonts-ttf noto-fonts-emoji
 ```
 
 If font warnings still appear, launch from a terminal and check the fallback that Fontconfig is selecting:
@@ -499,12 +746,25 @@ Lattice reads Trash through GIO/GVfs (`trash:///`) and discovers drives through 
 Install the recommended desktop storage plumbing:
 
 ```sh
-# Ubuntu-based
+# Ubuntu/Pop!_OS
 sudo apt update
 sudo apt install gvfs udisks2 polkitd
 
-# Arch-based
+# Arch/CachyOS/EndeavourOS
 sudo pacman -Syu --needed gvfs udisks2 polkit
+
+# Fedora Workstation
+sudo dnf install gvfs udisks2 polkit
+
+# Void Linux
+sudo xbps-install gvfs udisks2 polkit dbus
+```
+
+On Void (runit), make sure the `dbus` service is enabled so a session bus is available:
+
+```sh
+sudo ln -s /etc/sv/dbus /var/service/   # enable dbus if not already
+sv status dbus
 ```
 
 Useful diagnostics:
@@ -521,13 +781,21 @@ Some filesystems and mounts do not support Trash. Lattice keeps Move to Trash as
 
 ## Uninstall
 
+If you installed with the centralized script, uninstall the same way:
+
+```sh
+sudo ./scripts/install-system.sh --uninstall
+```
+
+Or remove the files manually:
+
 ```sh
 sudo rm -f /usr/local/bin/lattice
 sudo rm -f /usr/local/share/applications/com.lattice.filemanager.desktop
 sudo rm -f /usr/local/share/icons/hicolor/256x256/apps/lattice.png
 sudo rm -rf /usr/local/share/lattice
 sudo update-desktop-database /usr/local/share/applications/
-sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/
+sudo gtk-update-icon-cache /usr/local/share/icons/hicolor/ 2>/dev/null || true
 ```
 
 User data is not removed by those commands. Lattice stores config in `~/.config/lattice/` and metadata in `~/.local/share/lattice/metadata.db`.
@@ -542,4 +810,14 @@ cargo run
 
 During development, `cargo run` refreshes the desktop entry and icon under the current account when the source copies are newer. Use the install steps above for release-style testing of the binary, bundled themes, and system-wide paths.
 
-The project uses GitHub Actions (`.github/workflows/ci.yml`) for `cargo fmt --check` and `cargo check` on every push.
+Fedora testers should follow [docs/fedora-testing.md](docs/fedora-testing.md) and Void testers [docs/void-testing.md](docs/void-testing.md); both can attach the read-only report from the matching `scripts/*-diagnostics.sh` to any bug report.
+
+## Continuous Integration
+
+The project uses GitHub Actions (`.github/workflows/ci.yml`):
+
+- **Ubuntu job** — `cargo fmt --check`, `cargo check`, and `cargo test --no-run` using the upstream Rust toolchain.
+- **Fedora jobs** — a matrix of `fedora:43` and `fedora:44` containers using Fedora's own `rust`/`cargo`/`rustfmt` and `gtk4-devel`, running `cargo fmt --check`, `cargo check`, `cargo test --no-run`, and `cargo build --release`.
+- **Void jobs** — `x86_64` **glibc** and **musl** using the official `ghcr.io/void-linux/void-glibc-full` / `void-musl-full` images and Void's own `rust`/`cargo` (which ship `rustfmt`), running the same four commands. glibc is a required gate; musl is `continue-on-error` (compile-checked and informational until validated on a real musl machine).
+
+CI verifies **compilation only**. Container jobs have no display server, so they do not exercise the GTK graphical runtime, Wayland, Trash, GVfs, UDisks, Polkit, removable drives, desktop launchers, or the file-picker portal. Runtime behavior is validated by a tester via the platform test guides ([Fedora](docs/fedora-testing.md), [Void](docs/void-testing.md)).

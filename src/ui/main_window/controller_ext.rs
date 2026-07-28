@@ -3,6 +3,22 @@
 //! uses only a subset.
 #![allow(unused_imports)]
 
+use super::action_preview::*;
+use super::activity::*;
+use super::archive::*;
+use super::copy_util::*;
+use super::dedup::*;
+use super::drive::*;
+use super::format::*;
+use super::keys::*;
+use super::path_complete::*;
+use super::paths::*;
+use super::search::*;
+use super::sort::*;
+use super::tint_css::*;
+use super::triage::*;
+use super::view_label::*;
+use super::*;
 use crate::action_plan::{ActionPlan as FileOpPlan, OpKind as FileOpKind, RestoreSpec};
 use crate::config::{shortcut_tooltip, AppConfig, CustomActionConfig};
 use crate::converter::{
@@ -62,22 +78,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
 };
-use super::*;
-use super::action_preview::*;
-use super::activity::*;
-use super::archive::*;
-use super::copy_util::*;
-use super::dedup::*;
-use super::drive::*;
-use super::format::*;
-use super::keys::*;
-use super::path_complete::*;
-use super::paths::*;
-use super::search::*;
-use super::sort::*;
-use super::tint_css::*;
-use super::triage::*;
-use super::view_label::*;
 
 impl BrowserController {
     pub(super) fn queue_plan(self: &Rc<Self>, mut plan: crate::action_plan::ActionPlan) {
@@ -349,18 +349,20 @@ impl BrowserController {
                 tint_name,
                 shape.display_name(),
             );
-            log_activity_result(meta.log_activity(
-                "paint_mark",
-                count,
-                &summary,
-                paths
-                    .first()
-                    .map(|p| p.to_string_lossy())
-                    .unwrap_or_default()
-                    .as_ref(),
-                None,
-                &[],
-            ));
+            log_activity_result(
+                meta.log_activity(
+                    "paint_mark",
+                    count,
+                    &summary,
+                    paths
+                        .first()
+                        .map(|p| p.to_string_lossy())
+                        .unwrap_or_default()
+                        .as_ref(),
+                    None,
+                    &[],
+                ),
+            );
         }
         self.reload_active_tab();
     }
@@ -377,18 +379,20 @@ impl BrowserController {
                 count,
                 if count == 1 { "" } else { "s" },
             );
-            log_activity_result(meta.log_activity(
-                "erase_mark",
-                count,
-                &summary,
-                paths
-                    .first()
-                    .map(|p| p.to_string_lossy())
-                    .unwrap_or_default()
-                    .as_ref(),
-                None,
-                &[],
-            ));
+            log_activity_result(
+                meta.log_activity(
+                    "erase_mark",
+                    count,
+                    &summary,
+                    paths
+                        .first()
+                        .map(|p| p.to_string_lossy())
+                        .unwrap_or_default()
+                        .as_ref(),
+                    None,
+                    &[],
+                ),
+            );
         }
         self.reload_active_tab();
     }
@@ -2167,7 +2171,8 @@ impl BrowserController {
                                 detail: None,
                                 size_bytes: (info.size() >= 0).then_some(info.size() as u64),
                                 modified_unix: info
-                                    .modification_date_time().map(|value| value.to_unix()),
+                                    .modification_date_time()
+                                    .map(|value| value.to_unix()),
                                 tags: Vec::new(),
                                 mark_tint_id: 0,
                                 mark_tint_color: None,
@@ -2314,7 +2319,12 @@ impl BrowserController {
         self.tint_css_provider.load_from_string(&css);
     }
 
-    pub(super) fn show_empty_selection_preview(&self, slot: PaneSlot, display_label: &str, item_count: usize) {
+    pub(super) fn show_empty_selection_preview(
+        &self,
+        slot: PaneSlot,
+        display_label: &str,
+        item_count: usize,
+    ) {
         match self.current_view_for(slot) {
             PaneView::Directory(_) => self.preview.show_current_folder(display_label, item_count),
             PaneView::Tag(tag) => {
@@ -3913,5 +3923,4 @@ impl BrowserController {
         popover.set_child(Some(&vbox));
         popover.popup();
     }
-
 }

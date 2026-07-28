@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Lattice FileChooser Portal (experimental)
+Comment=Starts the Lattice xdg-desktop-portal FileChooser backend inside the graphical session
+# Launched by the session's XDG autostart handler, so it inherits the live
+# graphical + session-bus environment (WAYLAND_DISPLAY/DISPLAY,
+# DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR, XDG_CURRENT_DESKTOP). This is the
+# non-systemd startup path used on runit systems such as Void Linux, where
+# there is no `systemctl --user`. The backend stays inert until you route
+# FileChooser to it via `install-portal.sh --portal-config`.
+Exec=/usr/local/lib/lattice/lattice-filechooser-portal
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

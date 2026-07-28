@@ -205,7 +205,9 @@ pub(super) struct FallbackMountListing {
     pub(super) skipped_inaccessible: usize,
 }
 
-pub(super) fn collect_fallback_mounted_locations(seen_paths: &mut HashSet<PathBuf>) -> FallbackMountListing {
+pub(super) fn collect_fallback_mounted_locations(
+    seen_paths: &mut HashSet<PathBuf>,
+) -> FallbackMountListing {
     let user_name = glib::user_name();
     let candidates = [
         PathBuf::from("/run/media").join(user_name),
@@ -361,4 +363,3 @@ pub(super) fn collect_recent_folder_items(
         skipped_missing,
     })
 }
-

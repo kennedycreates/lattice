@@ -42,17 +42,18 @@ impl ConversionTool {
         }
     }
 
-    /// Short install hint for the two documented distros.
+    /// Short install hint for the documented distros. Fedora's `ffmpeg-free`
+    /// has a reduced codec set but still provides the `ffmpeg` command.
     pub fn install_hint(self) -> &'static str {
         match self {
             Self::Ffmpeg => {
-                "Install ffmpeg — Ubuntu: sudo apt install ffmpeg  |  Arch: sudo pacman -S ffmpeg"
+                "Install ffmpeg — Ubuntu: sudo apt install ffmpeg  |  Arch: sudo pacman -S ffmpeg  |  Fedora: sudo dnf install ffmpeg-free  |  Void: sudo xbps-install ffmpeg"
             }
             Self::ImageMagick => {
-                "Install ImageMagick — Ubuntu: sudo apt install imagemagick  |  Arch: sudo pacman -S imagemagick"
+                "Install ImageMagick — Ubuntu: sudo apt install imagemagick  |  Arch: sudo pacman -S imagemagick  |  Fedora: sudo dnf install ImageMagick  |  Void: sudo xbps-install ImageMagick"
             }
             Self::Vips => {
-                "Install libvips — Ubuntu: sudo apt install libvips-tools  |  Arch: sudo pacman -S libvips"
+                "Install libvips — Ubuntu: sudo apt install libvips-tools  |  Arch: sudo pacman -S libvips  |  Fedora: sudo dnf install vips-tools  |  Void: sudo xbps-install vips"
             }
         }
     }
@@ -293,7 +294,10 @@ pub fn detect_tools() -> ToolAvailability {
 }
 
 pub fn imagemagick_binary() -> Option<&'static str> {
-    ["magick", "convert"].into_iter().find(|&name| probe_tool_real(name)).map(|v| v as _)
+    ["magick", "convert"]
+        .into_iter()
+        .find(|&name| probe_tool_real(name))
+        .map(|v| v as _)
 }
 
 // ── MediaKind detection ───────────────────────────────────────────────────────
@@ -390,7 +394,9 @@ pub fn format_job_error(raw_stderr: &str) -> String {
         || lower.contains("unknown encoder")
         || lower.contains("decoder not found")
     {
-        "Required codec is not available in this build of the tool."
+        // Fedora's default `ffmpeg-free` ships a reduced codec set, so a preset
+        // that works elsewhere can legitimately fail here. Say so plainly.
+        "Required codec is not available in this build of the tool. On Fedora, the default ffmpeg-free package omits some codecs — install the full ffmpeg from RPM Fusion (or the matching codec library) for this preset."
     } else if lower.contains("no space left") {
         "No disk space left on the output device."
     } else if lower.contains("output file is empty") || lower.contains("nothing was encoded") {

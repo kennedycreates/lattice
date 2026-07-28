@@ -7,6 +7,7 @@ on:
   pull_request:
 
 jobs:
+  # Ubuntu job — unchanged baseline. Uses the upstream Rust toolchain action.
   check:
     runs-on: ubuntu-latest
 
@@ -31,3 +32,112 @@ jobs:
 
       - name: Verify test build
         run: cargo test --no-run
+
+  # Fedora jobs — validate the toolchain Fedora users actually receive by using
+  # Fedora's own rust/cargo/rustfmt packages inside the release container.
+  #
+  # NOTE: this is a compile-only gate. Container CI has no display server, so it
+  # does NOT exercise the GTK graphical runtime, Trash, GVfs, UDisks, Polkit, or
+  # the file-picker portal. Runtime behaviour must be validated by a real Fedora
+  # tester following docs/fedora-testing.md.
+  fedora:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - fedora:43
+          - fedora:44
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      # Install git before checkout so actions/checkout performs a real git
+      # checkout inside the container.
+      - name: Install build dependencies (Fedora packages)
+        run: |
+          dnf -y install \
+            git \
+            gcc \
+            gcc-c++ \
+            make \
+            rust \
+            cargo \
+            rustfmt \
+            pkgconf-pkg-config \
+            gtk4-devel \
+            glib2-devel
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+          rustfmt --version
+          pkg-config --modversion gtk4
+
+      - name: Verify formatting
+        run: cargo fmt --check
+
+      - name: Verify build
+        run: cargo check
+
+      - name: Verify test build
+        run: cargo test --no-run
+
+      - name: Verify release build
+        run: cargo build --release
+
+  # Void Linux jobs — compile-check on Void's own rolling toolchain. Void ships
+  # rustfmt inside the `rust` package, so `cargo fmt --check` works with
+  # rust + cargo. We use the official, actively-maintained Void OCI images
+  # (ghcr.io/void-linux/*-full, updated with dated tags) rather than a stale
+  # third-party image.
+  #
+  # These run via `docker run` from an Ubuntu host instead of a `container:`
+  # job on purpose: actions/checkout relies on GitHub's bundled glibc Node,
+  # which cannot execute inside the musl image. Checking out on the host and
+  # bind-mounting the tree into the Void container avoids that entirely and
+  # works identically for glibc and musl.
+  #
+  # Compile-only gate: the container has no display server, so it does NOT
+  # exercise GTK rendering, Wayland, Trash, UDisks, Polkit, GVfs, removable
+  # drives, desktop launchers, portals, or graphical D-Bus propagation. Runtime
+  # behaviour must be validated on a real Void machine per docs/void-testing.md.
+  void:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - libc: glibc
+            image: ghcr.io/void-linux/void-glibc-full:latest
+          - libc: musl
+            image: ghcr.io/void-linux/void-musl-full:latest
+    # x86_64 glibc is the required target. musl is compile-checked only and its
+    # runtime is untested, so a musl compile failure is reported but does not
+    # fail the whole workflow (see docs/void-testing.md). If musl fails, read
+    # the captured compiler error in this job's log before changing anything.
+    continue-on-error: ${{ matrix.libc == 'musl' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compile in Void ${{ matrix.libc }} (${{ matrix.image }})
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src "${{ matrix.image }}" sh -eux -c '
+            # Void two-step update: refresh xbps itself first (the retry covers
+            # the case where xbps updates itself and wants a second pass), then
+            # install the verified build dependencies.
+            xbps-install -Suy xbps || xbps-install -Suy xbps
+            xbps-install -Sy base-devel git rust cargo pkg-config gtk4-devel
+            rustc --version
+            cargo --version
+            rustfmt --version
+            pkg-config --modversion gtk4
+            cargo fmt --check
+            cargo check
+            cargo test --no-run
+            cargo build --release
+          '

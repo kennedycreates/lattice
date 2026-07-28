@@ -197,4 +197,3 @@ pub(super) fn common_parent_for_items(items: &[FileItem]) -> Option<PathBuf> {
     }
     Some(parent)
 }
-

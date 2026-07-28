@@ -174,4 +174,3 @@ fn mime_to_friendly_type(mime: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-

@@ -8,8 +8,7 @@ use crate::converter::{
     cleanup_orphaned_temps_in, ConversionQueue, ConvertItem, ConvertSettings, MediaKind,
 };
 use crate::metadata::{
-    ActivityLogEntry, CloudRecord, MetadataStore, PlaceRecord, ProjectRecord,
-    Shape, TagRecord,
+    ActivityLogEntry, CloudRecord, MetadataStore, PlaceRecord, ProjectRecord, Shape, TagRecord,
 };
 use crate::terroir_client;
 use crate::ui::{
@@ -56,12 +55,8 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{
-    atomic::AtomicBool,
-    mpsc, Arc,
-};
+use std::sync::{atomic::AtomicBool, mpsc, Arc};
 
-use super::*;
 use super::action_preview::*;
 use super::activity::*;
 use super::archive::*;
@@ -78,6 +73,7 @@ use super::sort::*;
 use super::tint_css::*;
 use super::triage::*;
 use super::view_label::*;
+use super::*;
 
 impl BrowserController {
     pub(super) fn new(
@@ -1027,7 +1023,11 @@ impl BrowserController {
         }
     }
 
-    pub(super) fn load_space_viewer_mark_stats(self: &Rc<Self>, root: &std::path::Path, slot: PaneSlot) {
+    pub(super) fn load_space_viewer_mark_stats(
+        self: &Rc<Self>,
+        root: &std::path::Path,
+        slot: PaneSlot,
+    ) {
         use crate::ui::space_viewer_panel::{ShapeStat, TintStat};
         let marks = self
             .metadata
@@ -3306,7 +3306,11 @@ impl BrowserController {
         );
     }
 
-    pub(super) fn show_edit_cloud_dialog(self: &Rc<Self>, cloud_id: i64, prefill_path: Option<String>) {
+    pub(super) fn show_edit_cloud_dialog(
+        self: &Rc<Self>,
+        cloud_id: i64,
+        prefill_path: Option<String>,
+    ) {
         let Some(record) = self
             .cloud_locations
             .borrow()
@@ -3830,7 +3834,11 @@ impl BrowserController {
         );
     }
 
-    pub(super) fn refresh_cloud_landing_availability(self: &Rc<Self>, cloud_id: i64, available: bool) {
+    pub(super) fn refresh_cloud_landing_availability(
+        self: &Rc<Self>,
+        cloud_id: i64,
+        available: bool,
+    ) {
         for slot in [PaneSlot::Primary, PaneSlot::Secondary, PaneSlot::Tertiary] {
             if matches!(self.current_view_for(slot), PaneView::CloudLanding(id) if id == cloud_id) {
                 self.pane_widgets(slot)
@@ -3888,7 +3896,9 @@ impl BrowserController {
                     controller.status.set_message("Mounted successfully.");
                 }
                 Err(err) => {
-                    controller.ops_panel.finish_op(op_id, std::slice::from_ref(&err));
+                    controller
+                        .ops_panel
+                        .finish_op(op_id, std::slice::from_ref(&err));
                     controller.refresh_cloud_landing_availability(cloud_id, false);
                     controller
                         .status
@@ -3897,5 +3907,4 @@ impl BrowserController {
             }
         });
     }
-
 }

@@ -30,6 +30,30 @@ info() { echo "  $*"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── Service-manager capability detection (not distro-name detection) ──────────
+
+# True only when systemd is the running init AND a systemctl exists. This is the
+# canonical sd_booted() check: /run/systemd/system exists iff systemd is PID 1.
+# On runit systems (Void) it is absent, so we take the XDG-autostart path.
+system_is_systemd() {
+    [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1
+}
+
+# Home directory of the user who invoked sudo (empty if not run via sudo).
+sudo_user_home() {
+    [[ -n "${SUDO_USER:-}" ]] || { echo ""; return; }
+    getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6
+}
+
+# Print the correct "restart the portal frontend" command for this system.
+portal_restart_hint() {
+    if system_is_systemd; then
+        echo "  systemctl --user restart xdg-desktop-portal"
+    else
+        echo "  pkill -x xdg-desktop-portal   # it re-activates on the next portal call"
+    fi
+}
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 MODE="install"  # default
@@ -56,6 +80,11 @@ DEST_PORTAL=/usr/local/lib/lattice/lattice-filechooser-portal
 DEST_PORTAL_FILE=/usr/share/xdg-desktop-portal/portals/lattice.portal
 DEST_DBUS_SERVICE=/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.lattice.service
 DEST_SYSTEMD_SERVICE=/usr/lib/systemd/user/lattice-filechooser-portal.service
+
+# Non-systemd startup: a per-user XDG autostart entry launched by the graphical
+# session. Scoped to the invoking user (mirrors `systemctl --user enable`).
+SRC_AUTOSTART="$SOURCE_ROOT/data/autostart/lattice-filechooser-portal.desktop"
+AUTOSTART_BASENAME="lattice-filechooser-portal.desktop"
 
 # ── Mode: system install ──────────────────────────────────────────────────────
 
@@ -103,12 +132,30 @@ do_install() {
             | grep -q "install ok installed" && _xdp_found=true
         pacman -Qq xdg-desktop-portal &>/dev/null 2>&1 && _xdp_found=true
         rpm -q xdg-desktop-portal &>/dev/null 2>&1 && _xdp_found=true
+        xbps-query -p pkgver xdg-desktop-portal &>/dev/null 2>&1 && _xdp_found=true
     fi
     if ! $_xdp_found; then
         warn "xdg-desktop-portal does not appear to be installed."
         warn "The portal backend will not be callable until it is installed."
         warn "  Ubuntu/Pop!_OS: sudo apt install xdg-desktop-portal xdg-desktop-portal-gtk"
         warn "  Arch:           sudo pacman -S xdg-desktop-portal xdg-desktop-portal-gtk"
+        warn "  Fedora:         sudo dnf install xdg-desktop-portal xdg-desktop-portal-gtk"
+        warn "  Void:           sudo xbps-install dbus xdg-desktop-portal xdg-desktop-portal-gtk"
+        echo ""
+    fi
+
+    # The frontend portal being present does NOT imply a GTK FileChooser backend
+    # is installed. The --portal-config step needs a real fallback backend that
+    # implements FileChooser (normally 'gtk'). Warn early if the gtk descriptor
+    # is missing so the user can install it before opting in.
+    if [[ ! -f /usr/share/xdg-desktop-portal/portals/gtk.portal ]]; then
+        warn "The GTK portal backend (xdg-desktop-portal-gtk) does not appear to be installed."
+        warn "Lattice uses it as the FileChooser fallback. Without a fallback backend,"
+        warn "non-FileChooser portal apps could lose their file dialog if you opt in."
+        warn "  Ubuntu/Pop!_OS: sudo apt install xdg-desktop-portal-gtk"
+        warn "  Arch:           sudo pacman -S xdg-desktop-portal-gtk"
+        warn "  Fedora:         sudo dnf install xdg-desktop-portal-gtk"
+        warn "  Void:           sudo xbps-install xdg-desktop-portal-gtk"
         echo ""
     fi
 
@@ -128,22 +175,49 @@ do_install() {
         "$DEST_DBUS_SERVICE"
     info "✓ $DEST_DBUS_SERVICE"
 
-    install -Dm 644 \
-        "$SOURCE_ROOT/data/systemd/lattice-filechooser-portal.service" \
-        "$DEST_SYSTEMD_SERVICE"
-    info "✓ $DEST_SYSTEMD_SERVICE"
+    # ── Startup mechanism: pick the one this system actually has ───────────────
+    # A backend needs the live graphical + session-bus environment to spawn the
+    # picker window. On systemd we use a `systemctl --user` service; on runit
+    # systems (Void) there is no `systemctl --user`, so we install a per-user
+    # XDG autostart entry that the graphical session launches with the right env.
+    if system_is_systemd; then
+        install -Dm 644 \
+            "$SOURCE_ROOT/data/systemd/lattice-filechooser-portal.service" \
+            "$DEST_SYSTEMD_SERVICE"
+        info "✓ $DEST_SYSTEMD_SERVICE"
 
-    # Enable and start the systemd user service for the invoking user.
-    # The service runs in the graphical session so WAYLAND_DISPLAY/DISPLAY are set,
-    # which D-Bus auto-activation does not guarantee.
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        if runuser -l "$SUDO_USER" -c 'systemctl --user daemon-reload' 2>/dev/null; then
-            runuser -l "$SUDO_USER" -c \
-                'systemctl --user enable --now lattice-filechooser-portal.service' 2>/dev/null \
-                && info "✓ systemd user service enabled and started" \
-                || info "  (service enable failed — run manually: systemctl --user enable --now lattice-filechooser-portal.service)"
+        # Enable and start the systemd user service for the invoking user.
+        if [[ -n "${SUDO_USER:-}" ]]; then
+            if runuser -l "$SUDO_USER" -c 'systemctl --user daemon-reload' 2>/dev/null; then
+                runuser -l "$SUDO_USER" -c \
+                    'systemctl --user enable --now lattice-filechooser-portal.service' 2>/dev/null \
+                    && info "✓ systemd user service enabled and started" \
+                    || info "  (service enable failed — run manually: systemctl --user enable --now lattice-filechooser-portal.service)"
+            else
+                info "  (systemd reload skipped — run manually: systemctl --user daemon-reload && systemctl --user enable --now lattice-filechooser-portal.service)"
+            fi
+        fi
+    else
+        # Non-systemd (e.g. Void/runit): install a per-user XDG autostart entry.
+        info "No systemd user manager detected — using the XDG autostart startup path."
+        _user_home="$(sudo_user_home)"
+        if [[ -n "$_user_home" && -d "$_user_home" ]]; then
+            _autostart_dir="$_user_home/.config/autostart"
+            _autostart_dest="$_autostart_dir/$AUTOSTART_BASENAME"
+            install -Dm 644 "$SRC_AUTOSTART" "$_autostart_dest"
+            chown "$SUDO_USER":"$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")" \
+                "$_autostart_dest" "$_autostart_dir" 2>/dev/null || true
+            info "✓ $_autostart_dest"
+            info "  It starts at your next graphical login. To start it now without"
+            info "  logging out, run in your desktop session (NOT via sudo):"
+            info "    setsid -f /usr/local/lib/lattice/lattice-filechooser-portal"
+            info "  Minimal Wayland sessions that don't read XDG autostart (sway, labwc)"
+            info "  need a compositor exec line — see docs/file_picker_portal.md."
         else
-            info "  (systemd reload skipped — run manually: systemctl --user daemon-reload && systemctl --user enable --now lattice-filechooser-portal.service)"
+            warn "Could not resolve the invoking user's home for the autostart entry."
+            warn "Install it yourself (as your normal user):"
+            warn "  install -Dm 644 data/autostart/$AUTOSTART_BASENAME \\"
+            warn "    ~/.config/autostart/$AUTOSTART_BASENAME"
         fi
     fi
 
@@ -270,14 +344,46 @@ do_portal_config() {
         done
     fi
 
+    # ── Determine a real, installed FileChooser fallback backend ───────────────
+    # The frontend portal existing does NOT mean a GTK FileChooser backend is
+    # installed. Verify a descriptor actually implements FileChooser before we
+    # write it as the fallback. Prefer 'gtk'; otherwise use whatever installed
+    # backend the scan found for FileChooser; otherwise write Lattice alone and
+    # tell the user how to get a fallback.
+    local _fc_fallback=""
+    if [[ -f "$PORTALS_DIR/gtk.portal" ]] \
+        && grep -qE '^[[:space:]]*Interfaces=.*org\.freedesktop\.impl\.portal\.FileChooser' \
+            "$PORTALS_DIR/gtk.portal"; then
+        _fc_fallback="gtk"
+    elif [[ -n "${_iface_backend[org.freedesktop.impl.portal.FileChooser]:-}" ]]; then
+        _fc_fallback="${_iface_backend[org.freedesktop.impl.portal.FileChooser]}"
+    fi
+
+    local _fc_line _fc_comment
+    if [[ -n "$_fc_fallback" ]]; then
+        _fc_line="org.freedesktop.impl.portal.FileChooser=lattice;$_fc_fallback"
+        _fc_comment="# FileChooser: Lattice (experimental) with '$_fc_fallback' fallback (verified installed)"
+    else
+        _fc_line="org.freedesktop.impl.portal.FileChooser=lattice"
+        _fc_comment="# FileChooser: Lattice (experimental). No installed fallback backend found."
+        warn "No installed portal backend implements FileChooser as a fallback."
+        warn "If the Lattice backend is ever unavailable, apps will have no file dialog."
+        warn "Install a fallback backend, then re-run --portal-config:"
+        warn "  Ubuntu/Pop!_OS: sudo apt install xdg-desktop-portal-gtk"
+        warn "  Arch:           sudo pacman -S xdg-desktop-portal-gtk"
+        warn "  Fedora:         sudo dnf install xdg-desktop-portal-gtk"
+        warn "  Void:           sudo xbps-install xdg-desktop-portal-gtk"
+        echo ""
+    fi
+
     # ── Write complete portals.conf ───────────────────────────────────────────
     {
         echo "# Generated by install-portal.sh — $(date)"
         echo "# Revert with: ./scripts/install-portal.sh --remove-portal-config"
         echo "[preferred]"
         echo ""
-        echo "# FileChooser: Lattice (experimental) with gtk fallback"
-        echo "org.freedesktop.impl.portal.FileChooser=lattice;gtk"
+        echo "$_fc_comment"
+        echo "$_fc_line"
         if (( ${#_iface_backend[@]} > 0 )); then
             echo ""
             echo "# Other interfaces: auto-detected from installed portal backends"
@@ -296,7 +402,7 @@ do_portal_config() {
     echo ""
     echo "Restart xdg-desktop-portal for the change to take effect:"
     echo ""
-    echo "  systemctl --user restart xdg-desktop-portal"
+    portal_restart_hint
     echo ""
     echo "────────────────────────────────────────────────────────────────"
     echo "  GTK apps (GIMP, Inkscape, etc.) require GTK_USE_PORTAL=1"
@@ -348,7 +454,7 @@ do_remove_portal_config() {
     info "✓ portals.conf removed (xdg-desktop-portal will use auto-detection again)"
     echo ""
     echo "Restart xdg-desktop-portal for the change to take effect:"
-    echo "  systemctl --user restart xdg-desktop-portal"
+    portal_restart_hint
 }
 
 # ── Mode: uninstall system files ──────────────────────────────────────────────
@@ -359,8 +465,9 @@ do_uninstall() {
     echo "Removing Lattice portal backend system files..."
     echo ""
 
-    # Disable the systemd user service before removing files
-    if [[ -n "${SUDO_USER:-}" ]]; then
+    # Disable the systemd user service before removing files — only where a
+    # systemd user manager actually exists (skipped cleanly on runit/Void).
+    if system_is_systemd && [[ -n "${SUDO_USER:-}" ]]; then
         runuser -l "$SUDO_USER" -c \
             'systemctl --user disable --now lattice-filechooser-portal.service 2>/dev/null || true'
         info "✓ systemd user service disabled"
@@ -377,7 +484,18 @@ do_uninstall() {
         fi
     done
 
-    if [[ -n "${SUDO_USER:-}" ]]; then
+    # Remove the per-user XDG autostart entry (non-systemd startup path).
+    _user_home="$(sudo_user_home)"
+    if [[ -n "$_user_home" ]]; then
+        _autostart_dest="$_user_home/.config/autostart/$AUTOSTART_BASENAME"
+        if [[ -f "$_autostart_dest" ]]; then
+            rm -f "$_autostart_dest"
+            info "✓ removed $_autostart_dest"
+            removed=$((removed + 1))
+        fi
+    fi
+
+    if system_is_systemd && [[ -n "${SUDO_USER:-}" ]]; then
         runuser -l "$SUDO_USER" -c 'systemctl --user daemon-reload 2>/dev/null || true'
     fi
 

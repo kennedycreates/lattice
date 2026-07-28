@@ -1,9 +1,6 @@
 use crate::config::{shortcut_tooltip, AppConfig, CustomActionConfig};
 use crate::converter::ConversionQueue;
-use crate::metadata::{
-    CloudRecord, MetadataStore, PlaceRecord, ProjectRecord,
-    Shape, TagRecord,
-};
+use crate::metadata::{CloudRecord, MetadataStore, PlaceRecord, ProjectRecord, Shape, TagRecord};
 use crate::terroir_client;
 use crate::ui::{
     activity_log_panel::ActivityLogPanel,
@@ -37,26 +34,23 @@ use glib::UserDirectory;
 use gtk::gdk;
 use gtk::prelude::*;
 use gtk::{
-    Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider,
-    FlowBox, HeaderBar, Image, Label, Orientation, Paned, Popover, Revealer,
-    Separator,
+    Align, Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, FlowBox, HeaderBar,
+    Image, Label, Orientation, Paned, Popover, Revealer, Separator,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{
-    atomic::AtomicBool, Arc,
-};
+use std::sync::{atomic::AtomicBool, Arc};
 
 mod action_preview;
+mod activity;
+mod archive;
 mod controller_core;
 mod controller_core2;
 mod controller_ext;
 mod controller_ext2;
-mod activity;
-mod archive;
 mod copy_util;
 mod dedup;
 mod drive;
@@ -64,37 +58,37 @@ mod format;
 mod keys;
 mod path_complete;
 mod paths;
-use paths::resolve_launch;
 #[cfg(test)]
 use path_complete::{
     path_completion_display, path_completion_query, PathCompletionMode, PathCompletionQuery,
 };
 #[cfg(test)]
 use paths::pane_view_scope_dir;
+use paths::resolve_launch;
 mod search;
 mod sort;
-mod triage;
 mod tint_css;
+mod triage;
 mod view_label;
-use view_label::tab_title_for_view;
-#[cfg(test)]
-use archive::{archive_kind, archive_output_folder_name, suggested_archive_name, ArchiveKind};
-#[cfg(test)]
-use action_preview::trash_action_plan;
-#[cfg(test)]
-use copy_util::common_parent;
-#[cfg(test)]
-use paths::next_new_text_document_path;
-#[cfg(test)]
-use keys::{builtin_command, configured_window_command_from_key, window_command_from_key};
 #[cfg(test)]
 use crate::ui::file_grid::FileKind;
 #[cfg(test)]
+use action_preview::trash_action_plan;
+#[cfg(test)]
+use archive::{archive_kind, archive_output_folder_name, suggested_archive_name, ArchiveKind};
+#[cfg(test)]
+use copy_util::common_parent;
+#[cfg(test)]
 use dedup::compute_duplicate_set_from_dir;
+#[cfg(test)]
+use keys::{builtin_command, configured_window_command_from_key, window_command_from_key};
+#[cfg(test)]
+use paths::next_new_text_document_path;
 #[cfg(test)]
 use paths::resolve_tool_scope_dir;
 #[cfg(test)]
 use view_label::pane_view_uses_file_grid_controls;
+use view_label::tab_title_for_view;
 
 pub(super) const DIRECTORY_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::content-type,standard::is-hidden,standard::size,time::modified";
 const TRASH_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::content-type,standard::is-hidden,standard::size,time::modified,trash::orig-path,standard::target-uri";
@@ -104,9 +98,9 @@ pub(super) const TERMINAL_ENV_VAR: &str = "LATTICE_TERMINAL";
 const TEXT_PREVIEW_LIMIT_BYTES: usize = 64 * 1024;
 const TEXT_PREVIEW_DISPLAY_CHARS: usize = 4_000;
 pub(super) const TRIAGE_LARGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
-const TRASH_GVFS_DIAGNOSTIC: &str = "Trash support may require GVfs. On Arch/CachyOS, install gvfs, udisks2, and polkit, then log out/in or reboot.\n\nTroubleshooting:\nsudo pacman -Syu --needed gvfs udisks2 polkit\ngio list trash:///\ngio trash --list\ngio mount -l";
-const DRIVES_GVFS_DIAGNOSTIC: &str = "No system drives found through GIO/GVfs.\n\nInstall gvfs, udisks2, and polkit, then log out/in or reboot.\n\nTroubleshooting:\nsudo pacman -Syu --needed gvfs udisks2 polkit\ngio mount -l\nudisksctl status\nlsblk -f";
-const GVFS_REMOTE_DIAGNOSTIC: &str = "GVfs remote is unavailable. Possible causes:\n• GVfs daemon not running or backend not installed\n• Remote host unreachable or credentials expired\n• SMB shares need gvfs-smb; SFTP/FTP need gvfs-fuse\n\nUbuntu/Debian: sudo apt install gvfs gvfs-backends\nArch/CachyOS:  sudo pacman -S gvfs gvfs-smb gvfs-mtp\n\nDiagnostics:\ngio mount <uri>\ngio mount -l";
+const TRASH_GVFS_DIAGNOSTIC: &str = "Trash support may require GVfs. Install gvfs, udisks2, and polkit, then log out/in or reboot.\n\nUbuntu/Pop!_OS: sudo apt install gvfs udisks2 polkitd\nArch/CachyOS:   sudo pacman -Syu --needed gvfs udisks2 polkit\nFedora:         sudo dnf install gvfs udisks2 polkit\nVoid:           sudo xbps-install gvfs udisks2 polkit dbus\n\nTroubleshooting:\ngio list trash:///\ngio trash --list\ngio mount -l";
+const DRIVES_GVFS_DIAGNOSTIC: &str = "No system drives found through GIO/GVfs.\n\nInstall gvfs, udisks2, and polkit, then log out/in or reboot.\n\nUbuntu/Pop!_OS: sudo apt install gvfs udisks2 polkitd\nArch/CachyOS:   sudo pacman -Syu --needed gvfs udisks2 polkit\nFedora:         sudo dnf install gvfs udisks2 polkit\nVoid:           sudo xbps-install gvfs udisks2 polkit dbus\n\nTroubleshooting:\ngio mount -l\nudisksctl status\nlsblk -f";
+const GVFS_REMOTE_DIAGNOSTIC: &str = "GVfs remote is unavailable. Possible causes:\n• GVfs daemon not running or backend not installed\n• Remote host unreachable or credentials expired\n• SMB shares need gvfs-smb; SFTP/FTP/DAV are in the core gvfs package\n\nUbuntu/Debian: sudo apt install gvfs gvfs-backends\nArch/CachyOS:  sudo pacman -S gvfs gvfs-smb gvfs-mtp\nFedora:        sudo dnf install gvfs gvfs-smb gvfs-fuse\nVoid:          sudo xbps-install gvfs gvfs-smb\n\nDiagnostics:\ngio mount <uri>\ngio mount -l";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaneSlot {
@@ -1206,7 +1200,6 @@ struct BrowserController {
     tint_css_provider: CssProvider,
 }
 
-
 fn add_unique_tray_items(existing: &mut Vec<FileItem>, incoming: Vec<FileItem>) -> usize {
     let mut seen = existing
         .iter()
@@ -1389,7 +1382,6 @@ fn parse_dropped_uris(value: &glib::Value) -> Vec<PathBuf> {
         .map(|fl| fl.files().iter().filter_map(|f| f.path()).collect())
         .unwrap_or_default()
 }
-
 
 fn fmt_bytes(bytes: u64) -> String {
     if bytes >= 1_000_000_000 {

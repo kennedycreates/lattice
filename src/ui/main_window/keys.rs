@@ -31,7 +31,10 @@ enum BindingKey {
 }
 
 #[cfg(test)]
-pub(super) fn window_command_from_key(key: gdk::Key, modifiers: gdk::ModifierType) -> Option<WindowCommand> {
+pub(super) fn window_command_from_key(
+    key: gdk::Key,
+    modifiers: gdk::ModifierType,
+) -> Option<WindowCommand> {
     configured_window_command_from_key(&AppConfig::default(), key, modifiers)
 }
 

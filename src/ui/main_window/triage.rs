@@ -37,7 +37,8 @@ fn matches_triage_filter(
             .modified_unix
             .zip(
                 glib::DateTime::now_local()
-                    .ok().map(|value| value.to_unix()),
+                    .ok()
+                    .map(|value| value.to_unix()),
             )
             .map(|(modified, now)| now.saturating_sub(modified) <= 7 * 24 * 60 * 60)
             .unwrap_or(false),
@@ -56,7 +57,8 @@ fn matches_triage_filter(
             .modified_unix
             .zip(
                 glib::DateTime::now_local()
-                    .ok().map(|value| value.to_unix()),
+                    .ok()
+                    .map(|value| value.to_unix()),
             )
             .map(|(modified, now)| now.saturating_sub(modified) > 30 * 24 * 60 * 60)
             .unwrap_or(false),
@@ -93,5 +95,3 @@ fn is_executable(path: &Path) -> bool {
 fn is_executable(_path: &Path) -> bool {
     false
 }
-
-

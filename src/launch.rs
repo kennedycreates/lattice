@@ -135,17 +135,15 @@ impl PickerLaunchConfig {
                 if let Some(s) = other {
                     log_err!("--picker: unknown subcommand '{s}'; expected open, open-files, folder, or save");
                 } else {
-                    log_err!("--picker: missing subcommand; expected open, open-files, folder, or save");
+                    log_err!(
+                        "--picker: missing subcommand; expected open, open-files, folder, or save"
+                    );
                 }
                 PickerSubcommand::OpenFile
             }
         };
 
-        let rest = if args.is_empty() {
-            args
-        } else {
-            &args[1..]
-        };
+        let rest = if args.is_empty() { args } else { &args[1..] };
         let mut initial_path: Option<PathBuf> = None;
         let mut suggested_name: Option<String> = None;
         let mut i = 0;

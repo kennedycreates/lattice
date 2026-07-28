@@ -8,8 +8,7 @@ use crate::converter::{
     cleanup_orphaned_temps_in, ConversionQueue, ConvertItem, ConvertSettings, MediaKind,
 };
 use crate::metadata::{
-    ActivityLogEntry, CloudRecord, MetadataStore, PlaceRecord, ProjectRecord,
-    Shape, TagRecord,
+    ActivityLogEntry, CloudRecord, MetadataStore, PlaceRecord, ProjectRecord, Shape, TagRecord,
 };
 use crate::terroir_client;
 use crate::ui::{
@@ -56,12 +55,8 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{
-    atomic::AtomicBool,
-    mpsc, Arc,
-};
+use std::sync::{atomic::AtomicBool, mpsc, Arc};
 
-use super::*;
 use super::action_preview::*;
 use super::activity::*;
 use super::archive::*;
@@ -78,6 +73,7 @@ use super::sort::*;
 use super::tint_css::*;
 use super::triage::*;
 use super::view_label::*;
+use super::*;
 
 impl BrowserController {
     pub(super) fn unmount_cloud_profile(self: &Rc<Self>, cloud_id: i64) {
@@ -111,7 +107,9 @@ impl BrowserController {
                     controller.status.set_message("Unmounted.");
                 }
                 Err(err) => {
-                    controller.ops_panel.finish_op(op_id, std::slice::from_ref(&err));
+                    controller
+                        .ops_panel
+                        .finish_op(op_id, std::slice::from_ref(&err));
                     let still_mounted =
                         crate::rclone::is_mounted(std::path::Path::new(&record_path));
                     controller.refresh_cloud_landing_availability(cloud_id, still_mounted);
@@ -387,7 +385,11 @@ impl BrowserController {
         self.update_navigation_state();
     }
 
-    pub(super) fn open_media_convert_with_items(self: &Rc<Self>, slot: PaneSlot, items: Vec<FileItem>) {
+    pub(super) fn open_media_convert_with_items(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        items: Vec<FileItem>,
+    ) {
         let convert_items: Vec<ConvertItem> = items
             .into_iter()
             .filter(|i| matches!(i.kind, FileKind::Image | FileKind::Video | FileKind::Audio))
@@ -632,7 +634,12 @@ impl BrowserController {
         self.load_bulk_naming_folder(slot, root, recursive);
     }
 
-    pub(super) fn load_bulk_naming_folder(self: &Rc<Self>, slot: PaneSlot, root: PathBuf, recursive: bool) {
+    pub(super) fn load_bulk_naming_folder(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        root: PathBuf,
+        recursive: bool,
+    ) {
         self.cancel_active_load(slot);
         if slot == self.active_slot() {
             self.cancel_active_preview();
@@ -1928,7 +1935,12 @@ impl BrowserController {
         }
     }
 
-    pub(super) fn move_grid_keyboard_selection(self: &Rc<Self>, offset: i32, ctrl: bool, shift: bool) {
+    pub(super) fn move_grid_keyboard_selection(
+        self: &Rc<Self>,
+        offset: i32,
+        ctrl: bool,
+        shift: bool,
+    ) {
         let slot = self.active_slot();
         let count = self.pane_widgets(slot).file_grid.child_count();
         if count <= 0 {
@@ -2032,7 +2044,13 @@ impl BrowserController {
         }
     }
 
-    pub(super) fn select_range_in_slot(&self, slot: PaneSlot, anchor: i32, target: i32, clear_first: bool) {
+    pub(super) fn select_range_in_slot(
+        &self,
+        slot: PaneSlot,
+        anchor: i32,
+        target: i32,
+        clear_first: bool,
+    ) {
         self.pane_widgets(slot)
             .file_grid
             .select_range(anchor, target, clear_first);
@@ -2226,7 +2244,10 @@ impl BrowserController {
         }
     }
 
-    pub(super) fn load_cancellable_cell(&self, slot: PaneSlot) -> &RefCell<Option<gio::Cancellable>> {
+    pub(super) fn load_cancellable_cell(
+        &self,
+        slot: PaneSlot,
+    ) -> &RefCell<Option<gio::Cancellable>> {
         match slot {
             PaneSlot::Primary => &self.load_cancellable,
             PaneSlot::Secondary => &self.secondary_load_cancellable,
@@ -2386,7 +2407,11 @@ impl BrowserController {
         }
     }
 
-    pub(super) fn set_show_shape_badges_for_slot(self: &Rc<Self>, slot: PaneSlot, show_badges: bool) {
+    pub(super) fn set_show_shape_badges_for_slot(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        show_badges: bool,
+    ) {
         // User explicitly changed state; cancel any paint-mode auto-show tracking
         self.badges_hidden_by_paint_cell(slot).set(false);
         if self.show_shape_badges_cell(slot).get() == show_badges {
@@ -2792,7 +2817,12 @@ impl BrowserController {
         }
     }
 
-    pub(super) fn navigate_to(self: &Rc<Self>, slot: PaneSlot, path: PathBuf, remember_current: bool) {
+    pub(super) fn navigate_to(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        path: PathBuf,
+        remember_current: bool,
+    ) {
         if remember_current {
             let current = self.current_dir_for(slot);
             if current != path {
@@ -3971,5 +4001,4 @@ impl BrowserController {
             controller.status.set_message(&summary);
         });
     }
-
 }

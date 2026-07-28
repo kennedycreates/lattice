@@ -33,7 +33,7 @@ All standard Lattice tools (Tints, Shapes, Tags, Action Plans, Holding Tray, Act
 
 rclone is a command-line tool for mounting many cloud providers (Google Drive, Dropbox, OneDrive, S3, SFTP, and more) as local filesystems.
 
-1. Install rclone: `sudo pacman -S rclone` (Arch) or `sudo apt install rclone`
+1. Install rclone: `sudo pacman -S rclone` (Arch), `sudo apt install rclone` (Ubuntu), `sudo dnf install rclone` (Fedora), or `sudo xbps-install rclone` (Void)
 2. Configure a remote: `rclone config`
 3. Mount it:
    ```bash
@@ -141,6 +141,33 @@ After installing, restart the desktop session (log out/in or `systemctl restart 
 ```bash
 sudo apt install gvfs gvfs-backends
 ```
+
+**Fedora Workstation:**
+```bash
+sudo dnf install gvfs gvfs-smb gvfs-fuse
+```
+
+**Void Linux:**
+```bash
+sudo xbps-install gvfs gvfs-smb
+```
+
+On Void the backends are split into separate packages, and the base `gvfs`
+package already includes the FUSE bridge plus the `sftp://`, `ftp://`, `dav://`,
+and `davs://` backends. Add only the extra backends you need:
+
+| Backend | Void package |
+|---|---|
+| SFTP / FTP / WebDAV, Trash, FUSE bridge | `gvfs` (base) |
+| SMB / CIFS (`smb://`) | `gvfs-smb` |
+| MTP devices (phones) | `gvfs-mtp` |
+| PTP cameras / some media players | `gvfs-gphoto2` |
+| Apple mobile devices | `gvfs-afc` |
+
+`gvfs-fuse` (Ubuntu/Fedora) exposes remotes under `/run/user/$(id -u)/gvfs/` so
+full file operations work; `gvfs-smb` adds SMB. After installing, log out/in so
+the session picks up the new backends. On Void, also confirm the `dbus` service
+is running (`sv status dbus`).
 
 ### How Open Drive works for URI Cloud entries
 

@@ -28,7 +28,11 @@ pub(super) fn copy_path_action_plan(paths: &[PathBuf]) -> ConfirmationPreview {
     ConfirmationPreview::new("Copy Tray Paths", "Copy Paths", false, lines)
 }
 
-pub(super) fn apply_mark_action_plan(paths: &[PathBuf], tint_name: &str, shape: Shape) -> ConfirmationPreview {
+pub(super) fn apply_mark_action_plan(
+    paths: &[PathBuf],
+    tint_name: &str,
+    shape: Shape,
+) -> ConfirmationPreview {
     let mut lines = vec![format!(
         "Mark {} staged item(s) as {} {}.",
         paths.len(),

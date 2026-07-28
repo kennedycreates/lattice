@@ -29,7 +29,11 @@ impl ArchiveOpResult {
     }
 }
 
-pub(super) fn compress_paths_to_zip(paths: Vec<PathBuf>, parent: PathBuf, dest: PathBuf) -> ArchiveOpResult {
+pub(super) fn compress_paths_to_zip(
+    paths: Vec<PathBuf>,
+    parent: PathBuf,
+    dest: PathBuf,
+) -> ArchiveOpResult {
     if paths.is_empty() {
         return ArchiveOpResult::failure("No files were selected.");
     }
@@ -227,4 +231,3 @@ pub(super) fn suggested_archive_name(paths: &[PathBuf]) -> String {
     };
     format!("{base}.zip")
 }
-

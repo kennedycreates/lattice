@@ -3,6 +3,22 @@
 //! uses only a subset.
 #![allow(unused_imports)]
 
+use super::action_preview::*;
+use super::activity::*;
+use super::archive::*;
+use super::copy_util::*;
+use super::dedup::*;
+use super::drive::*;
+use super::format::*;
+use super::keys::*;
+use super::path_complete::*;
+use super::paths::*;
+use super::search::*;
+use super::sort::*;
+use super::tint_css::*;
+use super::triage::*;
+use super::view_label::*;
+use super::*;
 use crate::action_plan::{ActionPlan as FileOpPlan, OpKind as FileOpKind, RestoreSpec};
 use crate::config::{shortcut_tooltip, AppConfig, CustomActionConfig};
 use crate::converter::{
@@ -62,22 +78,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
 };
-use super::*;
-use super::action_preview::*;
-use super::activity::*;
-use super::archive::*;
-use super::copy_util::*;
-use super::dedup::*;
-use super::drive::*;
-use super::format::*;
-use super::keys::*;
-use super::path_complete::*;
-use super::paths::*;
-use super::search::*;
-use super::sort::*;
-use super::tint_css::*;
-use super::triage::*;
-use super::view_label::*;
 
 impl BrowserController {
     pub(super) fn show_add_to_tray_by_shape_popover(
@@ -198,7 +198,12 @@ impl BrowserController {
         );
     }
 
-    pub(super) fn record_tray_receipt(&self, action: &str, success_count: usize, failure_count: usize) {
+    pub(super) fn record_tray_receipt(
+        &self,
+        action: &str,
+        success_count: usize,
+        failure_count: usize,
+    ) {
         let detail = format!("{} succeeded · {} failed", success_count, failure_count);
         self.ops_panel
             .add_receipt(action, &detail, failure_count > 0);
@@ -600,7 +605,11 @@ impl BrowserController {
         );
     }
 
-    pub(super) fn load_terroir_context_for_preview(self: &Rc<Self>, generation: u64, path: PathBuf) {
+    pub(super) fn load_terroir_context_for_preview(
+        self: &Rc<Self>,
+        generation: u64,
+        path: PathBuf,
+    ) {
         if !self.config.enable_terroir_context {
             self.preview.clear_watercolor_context();
             return;
@@ -1133,7 +1142,11 @@ impl BrowserController {
         self.start_copy_move_op(items, true, &summary, None, Some("duplicate"), false);
     }
 
-    pub(super) fn compress_selection_from_menu(self: &Rc<Self>, slot: PaneSlot, fallback_path: PathBuf) {
+    pub(super) fn compress_selection_from_menu(
+        self: &Rc<Self>,
+        slot: PaneSlot,
+        fallback_path: PathBuf,
+    ) {
         if is_gio_uri(&fallback_path.to_string_lossy()) {
             self.show_error_dialog(
                 "Compress Unavailable",
@@ -1222,7 +1235,12 @@ impl BrowserController {
         });
     }
 
-    pub(super) fn finish_archive_op(self: &Rc<Self>, op_id: OpId, result: ArchiveOpResult, op_kind: &str) {
+    pub(super) fn finish_archive_op(
+        self: &Rc<Self>,
+        op_id: OpId,
+        result: ArchiveOpResult,
+        op_kind: &str,
+    ) {
         let errors = result.error.clone().into_iter().collect::<Vec<_>>();
         self.ops_panel.finish_op(op_id, &errors);
         if errors.is_empty() {
@@ -1242,19 +1260,21 @@ impl BrowserController {
                     .and_then(|path| path.parent())
                     .and_then(|path| path.to_str())
                     .unwrap_or("");
-                log_activity_result(self.metadata.borrow().log_activity_with_items(
-                    op_kind,
-                    result.source_paths.len() as i32,
-                    summary,
-                    source,
-                    output.parent().and_then(|parent| parent.to_str()),
-                    &[],
-                    &result
-                        .source_paths
-                        .iter()
-                        .map(|path| (path.clone(), Some(output.clone())))
-                        .collect::<Vec<_>>(),
-                ));
+                log_activity_result(
+                    self.metadata.borrow().log_activity_with_items(
+                        op_kind,
+                        result.source_paths.len() as i32,
+                        summary,
+                        source,
+                        output.parent().and_then(|parent| parent.to_str()),
+                        &[],
+                        &result
+                            .source_paths
+                            .iter()
+                            .map(|path| (path.clone(), Some(output.clone())))
+                            .collect::<Vec<_>>(),
+                    ),
+                );
             }
             self.refresh();
         } else {
@@ -1414,15 +1434,17 @@ impl BrowserController {
                                 controller
                                     .pending_status_message
                                     .replace(Some("Text document created.".to_string()));
-                                log_activity_result(controller.metadata.borrow().log_activity_with_items(
-                                    "new_file",
-                                    1,
-                                    "Created text document",
-                                    parent.to_str().unwrap_or(""),
-                                    Some(parent.to_str().unwrap_or("")),
-                                    &[],
-                                    &[(parent.clone(), Some(document_path_for_close.clone()))],
-                                ));
+                                log_activity_result(
+                                    controller.metadata.borrow().log_activity_with_items(
+                                        "new_file",
+                                        1,
+                                        "Created text document",
+                                        parent.to_str().unwrap_or(""),
+                                        Some(parent.to_str().unwrap_or("")),
+                                        &[],
+                                        &[(parent.clone(), Some(document_path_for_close.clone()))],
+                                    ),
+                                );
                                 controller.refresh();
                                 controller
                                     .open_created_text_document(document_path_for_close.clone());
@@ -2416,18 +2438,20 @@ impl BrowserController {
                 .and_then(|p| p.to_str())
                 .unwrap_or("")
                 .to_string();
-            log_activity_result(self.metadata.borrow().log_activity_with_items(
-                "trash",
-                n,
-                &summary,
-                &source,
-                None,
-                &errs,
-                &paths
-                    .iter()
-                    .map(|path| (path.clone(), None))
-                    .collect::<Vec<_>>(),
-            ));
+            log_activity_result(
+                self.metadata.borrow().log_activity_with_items(
+                    "trash",
+                    n,
+                    &summary,
+                    &source,
+                    None,
+                    &errs,
+                    &paths
+                        .iter()
+                        .map(|path| (path.clone(), None))
+                        .collect::<Vec<_>>(),
+                ),
+            );
             if let Some(completion) = completion {
                 let successful_paths = successes.borrow().clone();
                 self.record_tray_receipt(&completion.action, successful_paths.len(), errs.len());
@@ -2711,7 +2735,7 @@ impl BrowserController {
                 .set_message("No terminal command is configured.");
             self.show_error_dialog(
                 "Terminal Unavailable",
-                "No terminal command was found. Set LATTICE_TERMINAL or install kitty or x-terminal-emulator.",
+                "No terminal command was found. Set LATTICE_TERMINAL or install a terminal such as ptyxis, gnome-terminal, konsole, or kitty.",
             );
             return;
         };
@@ -2756,7 +2780,11 @@ impl BrowserController {
         self.run_custom_action(&action, paths);
     }
 
-    pub(super) fn run_custom_action(self: &Rc<Self>, action: &CustomActionConfig, paths: Vec<PathBuf>) {
+    pub(super) fn run_custom_action(
+        self: &Rc<Self>,
+        action: &CustomActionConfig,
+        paths: Vec<PathBuf>,
+    ) {
         if action.needs_selection && paths.is_empty() {
             let message = format!("Select one or more items before using {}.", action.label);
             self.status.set_message(&message);
@@ -3113,7 +3141,11 @@ impl BrowserController {
     }
 
     /// Adds a DropTarget to one sidebar place button so files can be dragged into it.
-    pub(super) fn attach_sidebar_place_dnd(self: &Rc<Self>, button: gtk::Button, dest_path: PathBuf) {
+    pub(super) fn attach_sidebar_place_dnd(
+        self: &Rc<Self>,
+        button: gtk::Button,
+        dest_path: PathBuf,
+    ) {
         let last_action = Rc::new(Cell::new(gdk::DragAction::MOVE));
         let la_motion = last_action.clone();
 
@@ -3167,7 +3199,11 @@ impl BrowserController {
         // drag-autoscroll path out of this non-file-operation staging flow.
     }
 
-    pub(super) fn finish_drag_to_holding_tray(self: &Rc<Self>, drag: &gdk::Drag, paths: &[PathBuf]) -> bool {
+    pub(super) fn finish_drag_to_holding_tray(
+        self: &Rc<Self>,
+        drag: &gdk::Drag,
+        paths: &[PathBuf],
+    ) -> bool {
         if paths.is_empty() || !self.drag_is_over_holding_tray(drag) {
             return false;
         }
@@ -3342,8 +3378,7 @@ impl BrowserController {
                         return None;
                     }
                     tray_drag_paths_prepare.replace(paths.clone());
-                    let files: Vec<gio::File> =
-                        paths.iter().map(gio::File::for_path).collect();
+                    let files: Vec<gio::File> = paths.iter().map(gio::File::for_path).collect();
                     let file_list = gdk::FileList::from_array(&files);
                     Some(gdk::ContentProvider::for_value(&file_list.to_value()))
                 });

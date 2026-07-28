@@ -31,7 +31,9 @@ pub(super) fn activity_renames(entry: &ActivityLogEntry) -> Vec<(PathBuf, String
         .collect()
 }
 
-pub(super) fn activity_created_parent_and_name(entry: &ActivityLogEntry) -> Option<(PathBuf, String)> {
+pub(super) fn activity_created_parent_and_name(
+    entry: &ActivityLogEntry,
+) -> Option<(PathBuf, String)> {
     let path = activity_destinations(entry).into_iter().next()?;
     let parent = path.parent()?.to_path_buf();
     let name = path.file_name()?.to_str()?.to_string();
@@ -61,4 +63,3 @@ pub(super) fn common_activity_destination_parent(entry: &ActivityLogEntry) -> Op
     let first = parents.next()?;
     parents.all(|path| path == first).then_some(first)
 }
-

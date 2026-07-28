@@ -251,14 +251,22 @@ pub(super) fn detect_terminal_command() -> Option<Vec<OsString>> {
         }
     }
 
+    // Candidates cover Ubuntu/Arch defaults plus Fedora GNOME. Fedora Workstation
+    // 43/44 ships Ptyxis as the default GNOME terminal; older/alt GNOME uses GNOME
+    // Console (`kgx`). All of these honour the launcher's cwd when spawned with no
+    // args (see open_terminal_for_path), so no per-terminal argv is needed.
     for candidate in [
         "kitty",
-        "x-terminal-emulator",
+        "x-terminal-emulator", // Debian/Ubuntu alternatives symlink
+        "ptyxis",              // Fedora Workstation 43/44 default GNOME terminal
+        "kgx",                 // GNOME Console
         "gnome-terminal",
         "konsole",
         "xfce4-terminal",
+        "foot", // common Wayland terminal
         "alacritty",
         "wezterm",
+        "xterm", // last-resort X11 fallback (common on minimal Void setups)
     ] {
         if command_exists(candidate) {
             return Some(vec![OsString::from(candidate)]);

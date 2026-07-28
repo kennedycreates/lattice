@@ -511,10 +511,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let main_loop = glib::MainLoop::new(None, false);
     let loop_for_lost = main_loop.clone();
 
+    // DO_NOT_QUEUE keeps a single authoritative owner: if the name is already
+    // held (e.g. a duplicate launched by both XDG autostart and a manual start
+    // on non-systemd sessions), this instance gets the name-lost callback and
+    // exits cleanly instead of queuing as a shadow backend.
     let _owner = gio::bus_own_name(
         BusType::Session,
         BUS_NAME,
-        BusNameOwnerFlags::NONE,
+        BusNameOwnerFlags::DO_NOT_QUEUE,
         |connection, _name| match register_portal_object(&connection) {
             Ok(()) => eprintln!("[lattice-portal] registered object {OBJECT_PATH}"),
             Err(err) => eprintln!("[lattice-portal] failed to register object: {err}"),

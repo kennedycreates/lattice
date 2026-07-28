@@ -182,3 +182,36 @@ bindsym $mod+Mod1+e exec lattice --split ~/Downloads ~/Documents
 ```
 
 Reload Sway after editing: `swaymsg reload`
+
+---
+
+## Void Linux (runit, no systemd)
+
+Void uses **runit** rather than systemd. Installation and `xdg-mime` setup are the
+same as everywhere else (use `scripts/install-system.sh`), but two things are worth
+knowing:
+
+- **A session D-Bus bus is required** for Trash, removable drives, and the portal.
+  Full desktop sessions provide it automatically:
+  - **XFCE / GNOME / KDE** — install and log in normally; the session bus and XDG
+    autostart both work out of the box. Set the default folder opener with
+    `xdg-mime default com.lattice.filemanager.desktop inode/directory`.
+  - **Minimal Wayland compositors** (labwc, Sway) — if `echo $DBUS_SESSION_BUS_ADDRESS`
+    is empty, launch the compositor through a session bus:
+
+    ```sh
+    dbus-run-session labwc      # or: dbus-run-session sway
+    ```
+
+    Do **not** nest another `dbus-run-session` inside a desktop that already has one.
+
+- **Enable the system dbus service** if it isn't already:
+
+  ```sh
+  sudo ln -s /etc/sv/dbus /var/service/
+  sv status dbus
+  ```
+
+For the experimental file-picker portal on Void, the backend starts via an XDG
+autostart entry (no systemd) — see
+[file_picker_portal.md](file_picker_portal.md#void--runit-notes-no-systemd).
